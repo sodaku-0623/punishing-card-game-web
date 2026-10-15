@@ -26,7 +26,7 @@ git remote add origin %REPO_URL%
 
 echo.
 echo [2/2] 正在推送至 main 分支 (如首次推送，请在弹出的浏览器窗口中授权 GitHub 登录)...
-git push -u origin main
+git push -u origin main --force
 
 if %errorlevel% equ 0 (
     echo.
