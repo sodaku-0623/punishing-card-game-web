@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zhanshuang-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: zhanshuang_tcg
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: zhanshuang-server
+    restart: always
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres_password@postgres:5432/zhanshuang_tcg?schema=public"
+      PORT: 4000
+      JWT_SECRET: "zhanshuang_jwt_super_secret_key_change_in_production_2026"
+      CORS_ORIGIN: "http://localhost:3000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: zhanshuang-web
+    restart: always
+    environment:
+      NEXT_PUBLIC_SERVER_URL: "http://localhost:4000"
+      NEXT_PUBLIC_WS_URL: "ws://localhost:4000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+
+volumes:
+  pgdata:
+    driver: local

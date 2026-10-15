@@ -1,0 +1,21 @@
+{
+  "name": "@zhanshuang/game-engine",
+  "version": "1.0.0",
+  "description": "Authoritative, pure TypeScript rules engine for Zhanshuang TCG",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@zhanshuang/shared": "*",
+    "@zhanshuang/game-rules": "*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8",
+    "typescript": "^5.7.2",
+    "rimraf": "^6.0.1"
+  }
+}
