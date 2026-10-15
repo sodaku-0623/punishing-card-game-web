@@ -96,8 +96,8 @@ describe('Cloudflare Worker & EchoDO 连通性测试服务', () => {
       expect(data.status).toBe('ok');
     });
 
-    it('GET / 应返回静态测速 HTML 页面', async () => {
-      const req = new Request('https://test.example.com/');
+    it('GET /__connectivity 应返回静态测速 HTML 页面', async () => {
+      const req = new Request('https://test.example.com/__connectivity');
       const res = await worker.fetch(req, mockEnv);
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toContain('text/html');

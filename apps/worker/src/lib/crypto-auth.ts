@@ -223,3 +223,12 @@ export async function verifyJwt(token: string, secret: string): Promise<JwtPaylo
     return null;
   }
 }
+
+/**
+ * 读取 JWT 签名密钥。未配置时返回 null —— 绝不回退到源码中的默认值，
+ * 否则任何人都能用公开的默认密钥伪造管理员令牌。
+ */
+export function getJwtSecret(env: { JWT_SECRET?: string }): string | null {
+  const secret = env.JWT_SECRET?.trim();
+  return secret && secret.length >= 16 ? secret : null;
+}

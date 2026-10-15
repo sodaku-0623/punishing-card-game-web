@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { useRouteId } from '@/lib/route-id';
 import Link from 'next/link';
 import {
   ALL_OFFICIAL_CARDS,
@@ -623,9 +624,8 @@ const ATTR_OPTIONS = [
 const COST_OPTIONS = ['ALL', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 
 export default function DeckBuilderEditorPage() {
-  const params = useParams();
   const router = useRouter();
-  const deckId = params.id as string;
+  const deckId = useRouteId();
 
   const [deckName, setDeckName] = useState('新编制战术卡组');
   const [deckDesc, setDeckDesc] = useState('灰鸦/升格者战术联调构筑');

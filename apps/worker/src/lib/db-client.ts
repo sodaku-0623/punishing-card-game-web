@@ -19,181 +19,116 @@ export interface DbDeck {
   updated_at: number;
 }
 
-export interface DbCard {
-  id: string;
-  card_number: string;
-  name: string;
-  card_type: string;
-  attribute?: string;
-  cost: number;
-  base_pp?: number;
-  base_dp?: number;
-  signal_orb?: string;
-  traits_json?: string;
-  is_instant: number;
-  rules_text?: string;
-  flavor_text?: string;
-  data_json: string;
-}
-
-export interface DbGameRecord {
-  id: string;
-  room_id: string;
-  player1_id: string;
-  player2_id: string;
-  winner_id?: string;
-  turns: number;
-  replay_json?: string;
-  created_at: number;
-}
-
 export interface DbRoom {
   room_id: string;
   room_code: string;
   title: string;
   has_password: number;
-  password_hash?: string;
   creator_id: string;
   status: string;
   player_count: number;
   players_json: string;
+  current_game_id: string | null;
   created_at: number;
   updated_at: number;
 }
 
+export interface DbMatch {
+  id: string;
+  room_id: string;
+  rng_seed: string;
+  player1_id: string;
+  player2_id: string;
+  player1_deck_id: string;
+  player2_deck_id: string;
+  winner_id: string | null;
+  is_draw: number;
+  finish_reason: string | null;
+  turns: number;
+  started_at: number;
+  finished_at: number;
+  replay_json: string | null;
+}
+
+/**
+ * D1 表结构 (与 apps/worker/schema.sql 保持一致)。
+ * rooms 仅作大厅展示用的只读投影，权威房间状态 (含密码摘要) 保存在各房间的 Durable Object 中。
+ */
+export const SCHEMA_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    nickname TEXT NOT NULL,
+    role TEXT DEFAULT 'USER',
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS decks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    cards_json TEXT NOT NULL,
+    is_valid INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS lobby_rooms (
+    room_id TEXT PRIMARY KEY,
+    room_code TEXT NOT NULL,
+    title TEXT NOT NULL,
+    has_password INTEGER DEFAULT 0,
+    creator_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    player_count INTEGER DEFAULT 0,
+    players_json TEXT NOT NULL,
+    current_game_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS matches (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    rng_seed TEXT NOT NULL,
+    player1_id TEXT NOT NULL,
+    player2_id TEXT NOT NULL,
+    player1_deck_id TEXT NOT NULL,
+    player2_deck_id TEXT NOT NULL,
+    winner_id TEXT,
+    is_draw INTEGER DEFAULT 0,
+    finish_reason TEXT,
+    turns INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL,
+    replay_json TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_matches_finished_at ON matches (finished_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_lobby_rooms_updated_at ON lobby_rooms (updated_at DESC)`,
+];
+
 const initializedDbs = new WeakSet<object>();
 
 /**
- * 初始化 D1 数据库数据表并自动填充管理员与新手预组
+ * 初始化 D1 表结构并预置管理员账号。
+ * - 仅当配置了 ADMIN_PASSWORD 时才创建管理员，绝不使用默认密码；
+ * - 不在公网部署中预置任何演示账号。
+ * 每个 isolate 只执行一次。
  */
 export async function initializeDatabase(db: D1Database, adminPassword?: string): Promise<void> {
   if (initializedDbs.has(db as object)) return;
 
-  // 1. 初始化建表 (4 张核心业务表，使用 batch 保证每张表原子创建)
-  await db.batch([
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        nickname TEXT NOT NULL,
-        role TEXT DEFAULT 'USER',
-        created_at INTEGER NOT NULL
-      )
-    `),
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS decks (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        cards_json TEXT NOT NULL,
-        is_valid INTEGER DEFAULT 1,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `),
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS game_records (
-        id TEXT PRIMARY KEY,
-        room_id TEXT NOT NULL,
-        player1_id TEXT NOT NULL,
-        player2_id TEXT NOT NULL,
-        winner_id TEXT,
-        turns INTEGER NOT NULL,
-        replay_json TEXT,
-        created_at INTEGER NOT NULL
-      )
-    `),
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS rooms (
-        room_id TEXT PRIMARY KEY,
-        room_code TEXT NOT NULL,
-        title TEXT NOT NULL,
-        has_password INTEGER DEFAULT 0,
-        password_hash TEXT,
-        creator_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        player_count INTEGER DEFAULT 1,
-        players_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `),
-  ]);
+  await db.batch(SCHEMA_STATEMENTS.map((sql) => db.prepare(sql)));
 
-  // 2. 检查并预置默认管理员账号 (admin)
-  const existingAdmin = await db
-    .prepare('SELECT id FROM users WHERE username = ?')
-    .bind('admin')
-    .first<DbUser>();
-
+  const existingAdmin = await db.prepare('SELECT id FROM users WHERE username = ?').bind('admin').first<DbUser>();
   if (!existingAdmin) {
-    const pwd = adminPassword || 'admin888';
-    const pwdHash = await hashPassword(pwd);
-    await db
-      .prepare('INSERT INTO users (id, username, password_hash, nickname, role, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind('user-admin-01', 'admin', pwdHash, '总指挥·管理员', 'ADMIN', Date.now())
-      .run();
-  }
-
-  // 3. 检查并预置演示玩家账号 (player1)
-  const existingPlayer = await db
-    .prepare('SELECT id FROM users WHERE username = ?')
-    .bind('player1')
-    .first<DbUser>();
-
-  if (!existingPlayer) {
-    const playerPwdHash = await hashPassword('123456');
-    await db
-      .prepare('INSERT INTO users (id, username, password_hash, nickname, role, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind('user-player-01', 'player1', playerPwdHash, '灰鸦指挥官·爱丽丝', 'USER', Date.now())
-      .run();
-  }
-
-  // 4. 检查并预置 ST01 官方灰鸦小队新手卡组 (deck-1791110685763)
-  const existingDeck = await db
-    .prepare('SELECT id FROM decks WHERE id = ?')
-    .bind('deck-1791110685763')
-    .first<DbDeck>();
-
-  if (!existingDeck) {
-    const st01CardNumbers = [
-      'ST01-001', 'ST01-001',
-      'ST01-002', 'ST01-002', 'ST01-002', 'ST01-002',
-      'ST01-003', 'ST01-003', 'ST01-003', 'ST01-003',
-      'ST01-004', 'ST01-004', 'ST01-004', 'ST01-004',
-      'ST01-005', 'ST01-005', 'ST01-005', 'ST01-005',
-      'ST01-006', 'ST01-006', 'ST01-006', 'ST01-006',
-      'ST01-007', 'ST01-007', 'ST01-007', 'ST01-007',
-      'ST01-008', 'ST01-008',
-      'ST01-009', 'ST01-009',
-      'ST01-010', 'ST01-010', 'ST01-010', 'ST01-010',
-      'ST01-011', 'ST01-011', 'ST01-011', 'ST01-011',
-      'ST01-012', 'ST01-012', 'ST01-012', 'ST01-012',
-      'ST01-013', 'ST01-013', 'ST01-013', 'ST01-013',
-      'ST01-014', 'ST01-014', 'ST01-014', 'ST01-014',
-    ];
-
-    const cardsArray = st01CardNumbers.map((cNum) => ({
-      cardNumber: cNum,
-      cardId: `card-${cNum.toLowerCase()}`,
-      count: 1,
-    }));
-
-    await db
-      .prepare(`
-        INSERT INTO decks (id, user_id, name, cards_json, is_valid, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 1, ?, ?)
-      `)
-      .bind(
-        'deck-1791110685763',
-        'system',
-        '灰鸦小队·官方预组 (ST01)',
-        JSON.stringify(cardsArray),
-        Date.now(),
-        Date.now()
-      )
-      .run();
+    const password = adminPassword?.trim();
+    if (password && password.length >= 8) {
+      await db
+        .prepare('INSERT INTO users (id, username, password_hash, nickname, role, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind('user-admin-01', 'admin', await hashPassword(password), '总指挥·管理员', 'ADMIN', Date.now())
+        .run();
+    } else {
+      console.warn('未配置 ADMIN_PASSWORD (至少 8 位)，已跳过创建管理员账号 admin');
+    }
   }
 
   initializedDbs.add(db as object);

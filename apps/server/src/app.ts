@@ -80,12 +80,12 @@ function resolveJwtSecret(explicit?: string): string {
  */
 function resolveDefaultAdminPassword(): string {
   if (process.env.ADMIN_PASSWORD) return process.env.ADMIN_PASSWORD;
-  if (process.env.NODE_ENV === 'production') {
-    const generated = crypto.randomBytes(9).toString('base64url');
-    console.warn(`⚠️  未配置 ADMIN_PASSWORD，已生成默认管理员 admin 的随机密码: ${generated}`);
-    return generated;
-  }
-  return 'admin888';
+  // 仅自动化测试使用固定密码；其余任何环境都不存在默认管理员密码
+  // (经 index.ts 启动时，未配置的 ADMIN_PASSWORD 已被生成并持久化到 .env)
+  if (process.env.NODE_ENV === 'test') return 'admin888';
+  const generated = crypto.randomBytes(9).toString('base64url');
+  console.warn(`⚠️  未配置 ADMIN_PASSWORD，已生成默认管理员 admin 的随机密码: ${generated}`);
+  return generated;
 }
 
 const JWT_EXPIRES_IN = '7d';

@@ -103,7 +103,7 @@ cp .env.example .env
 | 变量 | 说明 |
 | --- | --- |
 | `JWT_SECRET` | 登录令牌签名密钥，使用随机长字符串（如 `openssl rand -hex 32`）。留空时每次启动随机生成。 |
-| `ADMIN_PASSWORD` | 默认管理员 `admin` 的初始密码。开发环境默认 `admin888`；`NODE_ENV=production` 且未配置时随机生成并打印到控制台。 |
+| `ADMIN_PASSWORD` | 默认管理员 `admin` 的初始密码。未配置时启动器会随机生成、打印到控制台并保存到 `.env`。 |
 | `API_PROXY_TARGET` | Next.js 将 `/api/*` 转发到的后端地址（构建时生效，Docker Compose 中为 `http://server:4000`）。 |
 
 ### 4. 启动对战平台

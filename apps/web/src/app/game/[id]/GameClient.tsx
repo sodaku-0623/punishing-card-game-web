@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { useRouteId } from '@/lib/route-id';
 import { useGameStore } from '@/stores/game-store';
 import { useAuth } from '@/lib/auth-context';
 import { getSocket, getSocketUserId, getSocketUsername } from '@/lib/socket';
@@ -64,9 +65,9 @@ import {
 } from 'lucide-react';
 
 export default function GameTabletopPage() {
-  const params = useParams();
   const router = useRouter();
-  const gameId = params.id as string;
+  // 真实对局 ID (已解码；静态导出部署时从地址栏读取，见 src/lib/route-id.tsx)
+  const gameId = useRouteId();
   const { user } = useAuth();
 
   const {
