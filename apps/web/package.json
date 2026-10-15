@@ -4,6 +4,7 @@
   "description": "Next.js Web Frontend for Zhanshuang TCG Online Battle Platform",
   "private": true,
   "scripts": {
+    "prebuild": "npm run build -w @zhanshuang/shared -w @zhanshuang/game-rules",
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",

@@ -1,0 +1,305 @@
+# 《战双帕弥什 卡牌对战》Cloudflare 生产环境部署与运维手册
+
+本文档提供将《战双帕弥什 卡牌对战》在线对战平台部署至 **Cloudflare 免费套餐（Workers + Durable Objects + D1 + R2 + Pages）** 的全流程实战指南，涵盖云端资源初始化、安全凭据配置、自动化部署、运维监控与紧急灾备回滚方案。
+
+---
+
+## 目录
+
+- [一、目标架构与免费额度保障](#一定标架构与免费额度保障)
+- [二、部署前准备](#二部署前准备)
+- [三、D1 关系型数据库初始化](#三d1-关系型数据库初始化)
+- [四、R2 卡牌资产存储与 CDN 配置](#四r2-卡牌资产存储与-cdn-配置)
+- [五、安全凭据（Secrets）配置与管理员初始化](#五安全凭据secrets配置与管理员初始化)
+- [六、Worker 权威服务端部署与域名绑定](#六worker-权威服务端部署与域名绑定)
+- [七、前端（Web）部署与连接配置](#七前端web部署与连接配置)
+- [八、日常运维与版本迭代流程](#八日常运维与版本迭代流程)
+- [九、应急切换与回滚方案（灾备至本机 Node 服务）](#九应急切换与回滚方案灾备至本机-node-服务)
+
+---
+
+## 一、目标架构与免费额度保障
+
+平台采用现代化云原生无服务器设计，彻底脱离个人电脑 24 小时开机与内网穿透限制：
+
+```mermaid
+flowchart TD
+    Player["玩家客户端 (浏览器 / 移动端)"]
+    
+    subgraph Cloudflare["Cloudflare 免费全球边缘网络"]
+        Pages["Cloudflare Pages<br/>(静态前端 Web UI，无限免费流量与请求)"]
+        R2["Cloudflare R2 对象存储<br/>(3GB 卡图与缩略图，出站流量永久免费)"]
+        Worker["Cloudflare Workers (Hono REST)<br/>(认证、房间列表、卡组管理、卡牌检索)"]
+        DO["Durable Objects (RoomDO)<br/>(每房间独占 DO、权威规则仲裁、断线重连)"]
+        D1[("Cloudflare D1 数据库<br/>(SQLite 持久化：账号/卡组/战绩)")]
+    end
+
+    Player -->|1. 访问网页| Pages
+    Player -->|2. 加载卡图 (CDN 强缓存)| R2
+    Player -->|3. REST API| Worker
+    Player -->|4. 原生 WebSocket| DO
+    Worker -->|读写| D1
+    DO -->|结算归档| D1
+```
+
+### 免费套餐额度保障设计
+1. **零消耗静态资源托管**：全站 15 个页面均为纯客户端组件（`'use client'`），由 Cloudflare Pages 静态分发，**不占用 Workers 每天 10 万次请求的额度**。
+2. **极速卡牌内存直出**：490 张官方基础卡牌在 Worker 启动时驻留静态内存，卡牌查询开销 <1ms，彻底规避 D1 批量读写和 CPU 运算超时。
+3. **合并推送与休眠**：战斗中每次操作通过 `game:bundle` 单包下发状态与事件，对局无活动时 DO 自动休眠（WebSocket Hibernation），单日万次对局亦不会超标。
+4. **全量卡图 1 年强缓存**：卡图打上 `Cache-Control: public, max-age=31536000, immutable`，首访后全由浏览器与 Cloudflare 边缘节点缓存，R2 读操作几乎为 0。
+
+---
+
+## 二、部署前准备
+
+### 1. 账号与域名
+- **Cloudflare 账号**：拥有一个普通的 Cloudflare 账号（Free Plan 免费套餐即可）。
+- **已托管的自定义域名**：
+  - 国内运营商对 Cloudflare 官方赠送的 `*.workers.dev` 存在较严重的 DNS 阻断与污染，**必须准备一个已接入 Cloudflare 的域名**（例如 `example.com`）。
+  - 建议规划以下二级子域名：
+    - `api-game.example.com`（后端 Worker 与 WebSocket）
+    - `cards.example.com`（R2 卡图 CDN 域名，或直接使用 R2.dev 公开子域）
+    - `game.example.com`（前端网页，若使用 Pages 亦可直接使用系统赠送的 `*.pages.dev`）
+
+### 2. 本地开发环境
+- 已安装 **Node.js >= 18.0.0** 与 **npm >= 9.0.0**。
+- 本地终端登录 Cloudflare 认证：
+  ```bash
+  npx wrangler login
+  ```
+  在弹出的浏览器窗口中点击授权即可。
+
+---
+
+## 三、D1 关系型数据库初始化
+
+Cloudflare D1 为全球无服务器 SQLite 数据库，用于存储玩家账号、自定义卡组、对战记录与房间元数据。
+
+### 1. 创建 D1 数据库
+在项目根目录下执行：
+```bash
+npx wrangler d1 create zhanshuang_tcg
+```
+终端将输出类似如下信息：
+```text
+[[d1_databases]]
+binding = "DB"
+database_name = "zhanshuang_tcg"
+database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+```
+
+### 2. 配置 wrangler.toml
+检查并确保 [`apps/worker/wrangler.toml`](file:///f:/zhanshuangpamishi/apps/worker/wrangler.toml) 中的 `database_id` 与上述创建的 ID 一致：
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "zhanshuang_tcg"
+database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+```
+
+### 3. 执行建表架构初始化（远端云端执行）
+运行数据库建表迁移脚本：
+```bash
+npx wrangler d1 execute zhanshuang_tcg --remote --file=apps/worker/schema.sql
+```
+该脚本将安全创建 4 张核心表：
+- `users`：玩家账户表（含加盐密码哈希、身份角色、战绩场次与胜率统计）
+- `decks`：玩家自定义卡组表（JSON 结构存储 50 张合规卡牌配额）
+- `rooms`：历史与进行中房间表
+- `game_records`：对局结算明细与确定性回放行动流
+
+---
+
+## 四、R2 卡牌资产存储与 CDN 配置
+
+本项目包含 1,262 张高清原图与 1,262 张优化缩略图（总容量约 3.01 GB），全部交由 R2 长期持久化分发。
+
+### 1. 开通 R2 服务并创建存储桶
+1. 登录 [Cloudflare 控制台](https://dash.cloudflare.com/) ➔ 进入 **存储与数据库 (Storage & Databases)** ➔ **R2**。
+2. 若首次使用，点击开通/启用 R2（Free Tier 免费套餐）。
+3. 点击 **创建存储桶 (Create Bucket)**：
+   - 存储桶名称：`zhanshuang-cards`
+   - 存储位置：选择 `自动 (Automatic)`
+   - 点击 **创建存储桶**。
+
+### 2. 开启公开访问与 CDN 域名
+1. 点击进入刚创建的 `zhanshuang-cards` 存储桶 ➔ 切换到 **设置 (Settings)** 选项卡。
+2. **公开访问方式（二选一）**：
+   - **方式 A（免自定义域名，快速）**：在 **R2.dev 子域** 区域点击 **允许访问 (Allow Access)**，记录生成的公开地址，例如：
+     ```text
+     https://pub-xxxxxxxxxxxxxxxxxxxxxxxx.r2.dev
+     ```
+   - **方式 B（绑定自定义域名，推荐）**：在 **自定义域 (Custom Domains)** 区域点击 **连接域**，输入例如 `cards.yourdomain.com`，点击继续并确认绑定。
+3. **跨域策略配置 (CORS)**：
+   在存储桶设置页面的 **CORS 策略** 中，点击添加规则并保存：
+   ```json
+   [
+     {
+       "AllowedOrigins": ["*"],
+       "AllowedMethods": ["GET", "HEAD"],
+       "AllowedHeaders": ["*"],
+       "MaxAgeSeconds": 86400
+     }
+   ]
+   ```
+
+### 3. 获取 R2 密钥并批量同步卡图
+1. 在 R2 控制台右侧点击 **管理 R2 API 令牌 (Manage R2 API Tokens)** ➔ 点击 **创建 API 令牌**。
+2. 权限选择 **对象读写 (Object Read & Write)**，应用于存储桶 `zhanshuang-cards`，点击创建。
+3. 记录生成的 `Access Key ID`、`Secret Access Key` 和 `Account ID`（即当前 Cloudflare 账号 ID）。
+4. 在本地终端执行极速批量同步脚本：
+   - **Windows PowerShell**:
+     ```powershell
+     $env:R2_ACCOUNT_ID="<您的CloudflareAccountID>"
+     $env:R2_ACCESS_KEY_ID="<您的R2AccessKeyID>"
+     $env:R2_SECRET_ACCESS_KEY="<您的R2SecretAccessKey>"
+     node scripts/upload-cards-to-r2.mjs --bucket zhanshuang-cards
+     ```
+   - **Linux / macOS**:
+     ```bash
+     R2_ACCOUNT_ID="<ID>" R2_ACCESS_KEY_ID="<Key>" R2_SECRET_ACCESS_KEY="<Secret>" node scripts/upload-cards-to-r2.mjs --bucket zhanshuang-cards
+     ```
+   脚本将通过内置的高并发 AWS S3 SigV4 引擎自动同步所有缩略图与高清原图，并在 1~2 分钟内完成 2,524 张卡图的入库与强缓存头打标。
+
+---
+
+## 五、安全凭据（Secrets）配置与管理员初始化
+
+出于最高级别安全要求，**敏感密码与 JWT 签名密钥绝不提交代码仓库或硬编码**，一律由 Cloudflare 强加密 Secrets 管理。
+
+### 1. 生成高强度安全随机密钥
+在终端运行 Node.js 随机生成工具：
+```bash
+node -e "console.log('JWT_SECRET:     ' + require('crypto').randomBytes(32).toString('hex')); console.log('ADMIN_PASSWORD: ' + require('crypto').randomBytes(16).toString('hex'));"
+```
+
+### 2. 注入云端 Worker 密钥
+在项目根目录运行以下命令依次写入：
+
+```bash
+# 写入 JWT 签名密钥
+npx wrangler secret put JWT_SECRET --name zhanshuang-worker
+
+# 写入管理员初始密码（请填入上一步生成的随机密码，例如 a9f2...）
+npx wrangler secret put ADMIN_PASSWORD --name zhanshuang-worker
+```
+
+### 3. 管理员初始化与登录说明
+- **自动化安全落库**：Worker 服务启动或接收首个认证请求时，后端会自动检测 D1 数据库中是否存在 `admin` 用户。若不存在，将自动使用注入的 `ADMIN_PASSWORD` 与 PBKDF2-SHA256 盐值哈希算法安全建立超级管理员账号（`role='admin'`）。
+- **管理员登录**：
+  - 访问前端页面 `/login`，用户名输入 `admin`，密码输入您在 secret 中配置的 `ADMIN_PASSWORD`。
+  - 登录成功后进入 `/admin` 管理后台，可自由检视对局监控、活跃房间、全服卡组与卡牌数据。
+
+---
+
+## 六、Worker 权威服务端部署与域名绑定
+
+### 1. 执行全量编译与云端发布
+在项目根目录下运行：
+```bash
+# 1. 确保全局依赖与构建通过
+npm run build
+
+# 2. 发布 Worker 与 Durable Objects 到 Cloudflare
+npm run deploy -w @zhanshuang/worker
+```
+发布成功后，Wrangler 会输出当前部署的版本 ID 与默认的 `.workers.dev` 访问地址。
+
+### 2. 绑定自定义域名（国内稳定访问的关键步骤）
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ 进入 **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
+2. 进入 **设置 (Settings)** 选项卡 ➔ 点击 **域与路由 (Domains & Routes)**。
+3. 点击 **添加 (Add)** ➔ 选择 **自定义域 (Custom Domain)**。
+4. 输入规划好的后端专用域名，例如：
+   ```text
+   api-game.example.com
+   ```
+5. 点击 **添加自定义域**。Cloudflare 将全自动配置 DNS 解析与全局 TLS 证书。通常 1 分钟即可生效。
+6. 测试访问：浏览器打开 `https://api-game.example.com/api/cards`，若正常返回 490 张卡牌 JSON，即说明后端与 D1 服务 100% 部署成功。
+
+---
+
+## 七、前端（Web）部署与连接配置
+
+本项目推荐使用 **Cloudflare Pages** 进行静态部署，享受无限免费请求配额与全球 Anycast CDN 网络加速。
+
+### 1. 配置生产环境变量
+在部署前端前，准备好以下 3 个关键环境变量：
+
+| 环境变量名 | 示例值 | 说明 |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SERVER_URL` | `https://api-game.example.com` | 指向上述部署的 Worker 自定义域名 |
+| `NEXT_PUBLIC_CARD_CDN` | `https://cards.example.com` 或 `https://pub-xxx.r2.dev` | 指向 R2 卡图公开域名（无末尾斜杠） |
+| `NEXT_PUBLIC_WS_TRANSPORT` | `native` | 使用原生 WebSocket 架构（直连 Durable Objects） |
+
+### 2. 在 Cloudflare Pages 上创建项目
+1. 登录 Cloudflare 控制台 ➔ **Workers & Pages** ➔ 点击 **创建 (Create)** ➔ 选择 **Pages** 选项卡 ➔ **连接到 Git (Connect to Git)**。
+2. 授权并选中本仓库：`sodaku-0623/zhanshuang-pamishi-official-card-game-web-platform`。
+3. **构建设置 (Build configuration)**：
+   - 框架预设 (Framework preset)：`Next.js`
+   - 构建命令 (Build command)：
+     ```bash
+     npm run build -w @zhanshuang/web
+     ```
+   - 输出目录 (Build output directory)：
+     ```text
+     apps/web/.next
+     ```
+   - 根目录 (Root directory)：留空（默认为仓库根目录 `/`）。
+4. **环境变量设置 (Environment variables)**：
+   点击 **添加变量**，填入上述的 `NEXT_PUBLIC_SERVER_URL` 与 `NEXT_PUBLIC_CARD_CDN`。
+5. 点击 **保存并部署 (Save and Deploy)**。
+6. 部署完成后，Pages 会分配一个形如 `https://zhanshuang-pamishi.pages.dev` 的访问网址。您亦可在 Pages 设置中的 **自定义域** 绑定自己的独立域名（如 `game.example.com`）。
+
+---
+
+## 八、日常运维与版本迭代流程
+
+### 1. 日常代码更新与修复发布
+当修复了游戏引擎规则、卡牌效果或服务端逻辑时：
+```bash
+# 1. 运行本地自动化测试保障质量
+npm run build && npm run lint && npm test
+
+# 2. 一键热更新云端 Worker (无缝平滑发布，玩家零感知中断)
+npm run deploy -w @zhanshuang/worker
+```
+
+### 2. 数据库备份与还原 (D1 运维)
+若需导出备份云端数据或进行本地调试分析：
+```bash
+# 导出云端数据库至本地 SQL 文件
+npx wrangler d1 export zhanshuang_tcg --remote --output=./backup_$(date +%Y%m%d).sql
+
+# 本地调试或数据恢复
+npx wrangler d1 execute zhanshuang_tcg --remote --file=./backup.sql
+```
+
+### 3. 新增卡牌与素材更新
+当后续官方推出新弹扩展包（如 BP05）时：
+1. 运行卡表生成脚本更新数据与代码。
+2. 运行缩略图生成脚本 `scripts/generate-thumbnails.ps1`。
+3. 运行增量上传命令同步新卡图：
+   ```bash
+   node scripts/upload-cards-to-r2.mjs --bucket zhanshuang-cards --skip-existing
+   ```
+4. 部署 Worker 与前端即可同步生效。
+
+---
+
+## 九、应急切换与回滚方案（灾备至本机 Node 服务）
+
+由于本项目在架构迁移全流程中严格遵循了**零侵入解耦**原则，保留了原有全部 `apps/server` 代码与构建管线，因此具备 **100% 极速回滚能力**。
+
+若 Cloudflare 遭遇大规模不可抗力网络阻断或云端服务故障，可通过以下简易步骤在 2 分钟内切换回原有运行模式：
+
+### 1. 启动本机 Node 权威服务器
+在 sodaku 本地电脑直接双击根目录下原有的 [`start.bat`](file:///f:/zhanshuangpamishi/start.bat)（或运行 `npm start`），原有的 Fastify + Socket.IO 后端（4000 端口）与统一前端网关（3000 端口）将立刻在本地接管所有联机功能。
+
+### 2. 客户端连接回滚
+若部署了公网反向代理（如 cpolar / frp / 自建 Nginx）：
+- 将域名（如 `game.example.com`）解析切回个人电脑公网 IP 或穿透地址。
+- 前端无需任何代码修改，只需通过将 `NEXT_PUBLIC_WS_TRANSPORT` 环境变量设置为 `'socketio'`，客户端会自动切换回传统的 Socket.IO 双向长连接，且未设置 `NEXT_PUBLIC_CARD_CDN` 时自动回退至本地 `/cards` 静态卡图。
+
+---
+
+至此，《战双帕弥什 卡牌对战》已具备完整的云原生高可用运行能力与完备的灾备兜底保障！
