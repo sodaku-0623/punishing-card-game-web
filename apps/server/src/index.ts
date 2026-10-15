@@ -64,26 +64,41 @@ function loadEnvironment(): void {
     dotenv.config();
   }
 
-  // 校验并确保 JWT_SECRET 的有效性与持久性（依据 AGENTS.md 规范安全生成并注入）
-  const configuredSecret = process.env.JWT_SECRET?.trim();
-  if (!configuredSecret) {
-    const autoSecret = crypto.randomBytes(32).toString('hex');
-    process.env.JWT_SECRET = autoSecret;
+  // 未配置 JWT_SECRET / ADMIN_PASSWORD 时自动生成随机值并持久化到 .env，
+  // 保证重启后登录凭据与管理员密码保持不变，且代码中不存在任何默认密钥或默认密码
+  ensurePersistedSecret(loadedEnvPath, 'JWT_SECRET', () => crypto.randomBytes(32).toString('hex'), (path) =>
+    console.log(`ℹ️  检测到 JWT_SECRET 未配置，已自动生成安全密钥并持久化至 ${path}`)
+  );
+  ensurePersistedSecret(loadedEnvPath, 'ADMIN_PASSWORD', () => crypto.randomBytes(9).toString('base64url'), (path) =>
+    console.log(
+      `🔑 已为管理员账号 admin 生成初始密码: ${process.env.ADMIN_PASSWORD}（保存在 ${path} 的 ADMIN_PASSWORD 中，可自行修改）`
+    )
+  );
+}
 
-    if (loadedEnvPath && fs.existsSync(loadedEnvPath)) {
-      try {
-        let content = fs.readFileSync(loadedEnvPath, 'utf8');
-        if (/^JWT_SECRET=.*$/m.test(content)) {
-          content = content.replace(/^JWT_SECRET=.*$/m, `JWT_SECRET="${autoSecret}"`);
-        } else {
-          content += `\nJWT_SECRET="${autoSecret}"\n`;
-        }
-        fs.writeFileSync(loadedEnvPath, content, 'utf8');
-        console.log(`ℹ️  检测到 JWT_SECRET 未配置，已自动生成安全密钥并持久化至 ${loadedEnvPath}`);
-      } catch {
-        // 忽略写入异常，确保进程能基于内存生成的密钥安全运行
-      }
+function ensurePersistedSecret(
+  envPath: string | null,
+  key: string,
+  generate: () => string,
+  onGenerated: (path: string) => void
+): void {
+  if (process.env[key]?.trim()) return;
+  const value = generate();
+  process.env[key] = value;
+  if (!envPath || !fs.existsSync(envPath)) {
+    if (key === 'ADMIN_PASSWORD') {
+      console.log(`🔑 已为管理员账号 admin 生成本次运行的随机密码: ${value}（未找到 .env，重启后会重新生成）`);
     }
+    return;
+  }
+  try {
+    let content = fs.readFileSync(envPath, 'utf8');
+    const pattern = new RegExp(`^${key}=.*$`, 'm');
+    content = pattern.test(content) ? content.replace(pattern, `${key}="${value}"`) : `${content}\n${key}="${value}"\n`;
+    fs.writeFileSync(envPath, content, 'utf8');
+    onGenerated(envPath);
+  } catch {
+    // 写入失败时仍使用内存中生成的值安全运行
   }
 }
 

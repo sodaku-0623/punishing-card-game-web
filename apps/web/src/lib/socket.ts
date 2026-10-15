@@ -20,12 +20,44 @@ export class NativeWebSocketClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private isManuallyClosed = false;
-  private url: string;
+  private url: string | null;
+  /** 当前连接对应的房间路由键 (同一房间的 /ws/rooms 与 /ws/game 共用一个 Durable Object) */
+  private routeKey: string | null = null;
   public id: string;
 
-  constructor(url: string, id: string) {
+  /**
+   * @param url 初始连接地址；为 null 时延迟到首次加入房间 / 重连对局时再建立连接
+   * @param buildUrl 根据路径 (如 /ws/rooms/123) 生成完整连接地址
+   */
+  constructor(url: string | null, id: string, private buildUrl?: (path: string) => string) {
     this.url = url;
     this.id = id;
+    if (url) {
+      this.routeKey = routeKeyFromUrl(url);
+      this.connect();
+    }
+  }
+
+  /**
+   * 切换到指定房间 / 对局的连接 (Cloudflare 版每个房间是独立的 Durable Object)。
+   * 目标与当前连接属于同一房间时不重建连接。
+   */
+  private ensureRoute(path: string): void {
+    if (!this.buildUrl) return;
+    const key = routeKeyFromPath(path);
+    if (!key || key === this.routeKey) return;
+    this.routeKey = key;
+    this.url = this.buildUrl(path);
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      old.onclose = null;
+      old.onmessage = null;
+      try {
+        old.close();
+      } catch {}
+      this.emitLocal('disconnect', 'transport switch');
+    }
     this.connect();
   }
 
@@ -71,6 +103,13 @@ export class NativeWebSocketClient {
     const payload = args.length === 1 ? args[0] : args;
     const msg = JSON.stringify({ event, payload });
 
+    // 按事件目标路由到对应房间的连接
+    if (event === 'room:join' && payload?.roomId) {
+      this.ensureRoute(`/ws/rooms/${encodeURIComponent(payload.roomId)}`);
+    } else if (event === 'game:reconnect' && payload?.gameId) {
+      this.ensureRoute(`/ws/game/${encodeURIComponent(payload.gameId)}`);
+    }
+
     if (this.connected && this.ws) {
       try {
         this.ws.send(msg);
@@ -88,6 +127,15 @@ export class NativeWebSocketClient {
 
   connect(): this {
     if (typeof window === 'undefined' && typeof WebSocket === 'undefined') return this;
+    if (!this.url && this.buildUrl) {
+      // 尚未加入任何房间：按当前页面地址推断 (刷新房间页或对局页时)
+      const path = pathFromLocation();
+      if (path) {
+        this.routeKey = routeKeyFromPath(path);
+        this.url = this.buildUrl(path);
+      }
+    }
+    if (!this.url) return this;
     if (
       this.ws &&
       (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
@@ -139,15 +187,6 @@ export class NativeWebSocketClient {
             }
           }
 
-          // 3. room:update 与 room:state_updated 互通兼容
-          if (event === 'room:update') {
-            this.emitLocal('room:state_updated', payload);
-          }
-
-          // 4. game:over 与 game:ended 互通兼容
-          if (event === 'game:over') {
-            this.emitLocal('game:ended', payload);
-          }
         } catch {
           this.emitLocal('message', e.data);
         }
@@ -279,37 +318,44 @@ export function getSocketUrl(): string {
   return 'http://127.0.0.1:4000';
 }
 
-function resolveWsUrl(finalUserId: string, finalUsername: string, token: string | null): string {
-  const baseHttp = getSocketUrl();
-  const baseWs = baseHttp.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+/** 从 /ws/rooms/:roomId 或 /ws/game/game~<roomId>~<ts> 中提取房间路由键 */
+function routeKeyFromPath(path: string): string | null {
+  const match = path.match(/^\/ws\/(rooms|game)\/([^/?]+)/);
+  if (!match) return null;
+  const id = decodeURIComponent(match[2]!);
+  if (match[1] === 'rooms') return id;
+  const parts = id.split('~');
+  return parts.length >= 3 ? parts.slice(1, -1).join('~') : id;
+}
 
-  let path = '/ws/rooms/default';
-  if (typeof window !== 'undefined') {
-    const pathname = window.location.pathname;
-    if (pathname.includes('/rooms/')) {
-      const rId = pathname.split('/rooms/')[1]?.split('/')[0]?.split('?')[0];
-      if (rId) path = `/ws/rooms/${rId}`;
-    } else if (pathname.includes('/game/')) {
-      const gId = pathname.split('/game/')[1]?.split('/')[0]?.split('?')[0];
-      if (gId) path = `/ws/game/${gId}`;
-    }
+function routeKeyFromUrl(url: string): string | null {
+  try {
+    return routeKeyFromPath(new URL(url).pathname);
+  } catch {
+    return null;
   }
+}
 
-  const queryParams = new URLSearchParams({
-    guestId: finalUserId,
-    nickname: finalUsername,
-  });
-  if (token) {
-    queryParams.set('token', token);
-  }
+/** 根据当前页面地址推断连接路径 (仅房间页与对局页) */
+function pathFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/(rooms|game)\/([^/?]+)/);
+  if (!match) return null;
+  return `/ws/${match[1]}/${match[2]}`;
+}
 
-  return `${baseWs}${path}?${queryParams.toString()}`;
+function buildNativeWsUrl(path: string, userId: string, username: string, token: string | null): string {
+  const baseWs = getSocketUrl().replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+  const query = new URLSearchParams({ guestId: userId, nickname: username });
+  if (token) query.set('token', token);
+  return `${baseWs}${path}?${query.toString()}`;
 }
 
 /**
  * 获取全局唯一 Socket 连接。
- * - 默认使用原生 WebSocket (NativeWebSocketClient)，直连 Cloudflare Workers + Durable Objects；
- * - 环境变量 NEXT_PUBLIC_WS_TRANSPORT='socketio' 时回退到传统 Socket.IO (用于本地双机调试)。
+ * - 默认使用 Socket.IO，对接 Node 版服务端 (apps/server，本地 / 局域网 / 内网穿透部署)；
+ * - 构建时设置 NEXT_PUBLIC_WS_TRANSPORT=native 时使用原生 WebSocket，对接 Cloudflare 版 (apps/worker)。
+ * 身份以握手为准：登录用户携带 JWT，游客使用本浏览器唯一的游客 ID。
  */
 export function getSocket(userId?: string, username?: string): TypedSocket {
   if (!socketInstance) {
@@ -333,10 +379,10 @@ export function getSocket(userId?: string, username?: string): TypedSocket {
       } catch {}
     }
 
-    // 传输层切换判定：环境变量 NEXT_PUBLIC_WS_TRANSPORT === 'socketio' 使用 Socket.IO，否则使用原生 WebSocket
-    const useSocketIo = process.env.NEXT_PUBLIC_WS_TRANSPORT === 'socketio';
+    // 只有显式指定 native 才使用原生 WebSocket，避免自建部署在未配置时连不上 Socket.IO 服务端
+    const useNative = process.env.NEXT_PUBLIC_WS_TRANSPORT === 'native';
 
-    if (useSocketIo) {
+    if (!useNative) {
       socketInstance = io(serverUrl, {
         query: {
           userId: finalUserId,
@@ -350,8 +396,9 @@ export function getSocket(userId?: string, username?: string): TypedSocket {
         reconnectionDelay: 1000,
       }) as TypedSocket;
     } else {
-      const wsUrl = resolveWsUrl(finalUserId, finalUsername, token);
-      socketInstance = new NativeWebSocketClient(wsUrl, finalUserId);
+      socketInstance = new NativeWebSocketClient(null, finalUserId, (path) =>
+        buildNativeWsUrl(path, finalUserId, finalUsername, token)
+      );
     }
   }
 

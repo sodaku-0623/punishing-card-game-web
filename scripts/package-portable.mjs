@@ -114,6 +114,8 @@ if (fs.existsSync(envFile)) {
         if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
           val = val.slice(1, -1);
         }
+        // NEXT_PUBLIC_* 在前端构建时已固化，运行时注入无意义且可能误导；PORT 由下方各服务单独指定
+        if (key.startsWith('NEXT_PUBLIC_') || key === 'PORT') continue;
         if (!process.env[key]) {
           process.env[key] = val;
         }
@@ -140,7 +142,8 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '') {
 }
 
 // 统一对外网关端口 (默认 3000，所有外网穿透、局域网、本机访问均连接此单一端口)
-const GATEWAY_PORT = parseInt(process.env.PORT, 10) || 3000;
+// 注意：不能读取 PORT (.env 中的 PORT 是后端端口 4000，会与后端冲突)
+const GATEWAY_PORT = parseInt(process.env.GATEWAY_PORT, 10) || 3000;
 // Next.js 内部独立服务端口
 const WEB_INTERNAL_PORT = 3001;
 // 权威后端与实时对战服务端口
@@ -318,7 +321,7 @@ function startGateway() {
 console.log('\\x1b[34m%s\\x1b[0m', '[1/3] 正在启动后端权威对战服务器 (端口: ' + SERVER_PORT + ')...');
 serverProc = spawn(nodeBin, [path.join(__dirname, 'server', 'server.bundle.cjs')], {
   cwd: __dirname,
-  env: Object.assign({}, process.env),
+  env: Object.assign({}, process.env, { PORT: String(SERVER_PORT) }),
   stdio: ['inherit', 'pipe', 'pipe'],
 });
 
@@ -437,7 +440,7 @@ const readmeContent = `=========================================================
 - 平台已开启身份验证与权限分级体系，杜绝了后台无密直入的安全风险：
   * 普通玩家：随时可点击【指挥官登录 / 注册】注册全新作战档案，亦可一键填入预设账号 (账号: player1 / 密码: 123456)。
   * 指挥官代号：登录后在首页随时点击昵称旁的编辑按钮，即可自定义个性化指挥官名称并在全服对战中向所有对手展示。
-  * 管理员后台：使用系统管理员账号 (账号: admin / 密码: admin888) 登录后，顶部导航自动开启【管理控制台】入口，并授予卡牌全量运维编辑权限。
+  * 管理员后台：使用系统管理员账号 admin 登录（初始密码在首次启动时生成，见控制台输出或 .env 中的 ADMIN_PASSWORD）后，顶部导航自动开启【管理控制台】入口。
 
 【启动方法】
 - 直接双击文件夹内的【双击启动对战平台.bat】。
