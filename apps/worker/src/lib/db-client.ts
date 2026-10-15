@@ -1,4 +1,3 @@
-import { OFFICIAL_SEED_CARDS } from '@zhanshuang/database';
 import { hashPassword } from './crypto-auth.js';
 
 export interface DbUser {
@@ -62,11 +61,15 @@ export interface DbRoom {
   updated_at: number;
 }
 
+const initializedDbs = new WeakSet<object>();
+
 /**
- * 初始化 D1 数据库数据表并自动填充官方卡牌与预组
+ * 初始化 D1 数据库数据表并自动填充管理员与新手预组
  */
 export async function initializeDatabase(db: D1Database, adminPassword?: string): Promise<void> {
-  // 1. 初始化建表
+  if (initializedDbs.has(db as object)) return;
+
+  // 1. 初始化建表 (4 张核心业务表)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -85,23 +88,6 @@ export async function initializeDatabase(db: D1Database, adminPassword?: string)
       is_valid INTEGER DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS cards (
-      id TEXT PRIMARY KEY,
-      card_number TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      card_type TEXT NOT NULL,
-      attribute TEXT,
-      cost INTEGER NOT NULL,
-      base_pp INTEGER,
-      base_dp INTEGER,
-      signal_orb TEXT,
-      traits_json TEXT,
-      is_instant INTEGER DEFAULT 0,
-      rules_text TEXT,
-      flavor_text TEXT,
-      data_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS game_records (
@@ -159,49 +145,7 @@ export async function initializeDatabase(db: D1Database, adminPassword?: string)
       .run();
   }
 
-  // 4. 检查是否已导入官方基础卡牌库
-  const cardCountRow = await db
-    .prepare('SELECT COUNT(*) as count FROM cards')
-    .first<{ count: number }>();
-
-  if (!cardCountRow || cardCountRow.count === 0) {
-    // 批量导入种子卡牌
-    const statements = OFFICIAL_SEED_CARDS.map((card) => {
-      const id = (card as any).id || `card-${card.cardNumber.toLowerCase()}`;
-      return db
-        .prepare(`
-          INSERT OR REPLACE INTO cards (
-            id, card_number, name, card_type, attribute, cost,
-            base_pp, base_dp, signal_orb, traits_json, is_instant,
-            rules_text, flavor_text, data_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .bind(
-          id,
-          card.cardNumber,
-          card.name,
-          card.cardType,
-          card.attribute ?? null,
-          card.cost,
-          card.basePP ?? null,
-          card.baseDP ?? null,
-          card.signalOrb ?? null,
-          JSON.stringify(card.traits ?? []),
-          card.isInstant ? 1 : 0,
-          card.rulesText ?? '',
-          card.flavorText ?? '',
-          JSON.stringify(card)
-        );
-    });
-
-    // 分批次执行防止超出单次 batch 上限
-    for (let i = 0; i < statements.length; i += 50) {
-      const chunk = statements.slice(i, i + 50);
-      await db.batch(chunk);
-    }
-  }
-
-  // 5. 检查并预置 ST01 官方灰鸦小队新手卡组 (deck-1791110685763)
+  // 4. 检查并预置 ST01 官方灰鸦小队新手卡组 (deck-1791110685763)
   const existingDeck = await db
     .prepare('SELECT id FROM decks WHERE id = ?')
     .bind('deck-1791110685763')
@@ -246,4 +190,6 @@ export async function initializeDatabase(db: D1Database, adminPassword?: string)
       )
       .run();
   }
+
+  initializedDbs.add(db as object);
 }

@@ -3,7 +3,8 @@ import { cors } from 'hono/cors';
 import { validateDeck, DeckCardInput } from '@zhanshuang/game-rules';
 import { Env } from '../types.js';
 import { hashPassword, verifyPassword, signJwt, verifyJwt } from '../lib/crypto-auth.js';
-import { DbUser, DbDeck, DbCard, DbRoom, DbGameRecord, initializeDatabase } from '../lib/db-client.js';
+import { DbUser, DbDeck, DbRoom, DbGameRecord, initializeDatabase } from '../lib/db-client.js';
+import { OFFICIAL_SEED_CARDS } from '@zhanshuang/database';
 
 export function createApiApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -15,16 +16,16 @@ export function createApiApp() {
     allowHeaders: ['Content-Type', 'Authorization'],
   }));
 
-  // 数据库自动预置守卫中间件
-  app.use('*', async (c, next) => {
-    if (c.env?.DB && typeof c.env.DB.exec === 'function') {
-      // 首次请求时确保表结构与种子数据就绪
-      await initializeDatabase(c.env.DB, c.env.ADMIN_PASSWORD);
-    }
-    await next();
+  // 全局异常捕获处理 (避免返回未经处理的 500 空白响应)
+  app.onError((err, c) => {
+    console.error('API Error:', err);
+    return c.json({
+      ok: false,
+      error: err.message || '内部服务异常',
+    }, 500);
   });
 
-  // 连通性测试时间戳与节点 API
+  // 连通性测试时间戳与节点 API (独立运行，不依赖数据库连接)
   app.get('/api/time', (c) => {
     const cf = (c.req.raw as any).cf;
     return c.json({
@@ -37,6 +38,18 @@ export function createApiApp() {
         city: cf?.city || 'Localhost',
       },
     });
+  });
+
+  // 数据库自动预置守卫中间件
+  app.use('*', async (c, next) => {
+    if (c.env?.DB && typeof c.env.DB.exec === 'function') {
+      try {
+        await initializeDatabase(c.env.DB, c.env.ADMIN_PASSWORD);
+      } catch (err) {
+        console.error('D1 initialization error:', err);
+      }
+    }
+    await next();
   });
 
   // ---------------- 1. 鉴权认证 API (/api/auth) ----------------
@@ -407,45 +420,41 @@ export function createApiApp() {
   });
 
   // ---------------- 4. 卡牌库 API (/api/cards) ----------------
-
-  app.get('/api/cards', async (c) => {
-    const search = c.req.query('search')?.trim();
+  // 采用内存官方卡表直接响应：0ms 延迟，零 D1 数据库额度消耗
+  app.get('/api/cards', (c) => {
+    const search = c.req.query('search')?.trim().toLowerCase();
     const type = c.req.query('type')?.trim();
     const limit = Math.min(1000, Math.max(1, parseInt(c.req.query('limit') || '100', 10)));
 
-    let sql = 'SELECT * FROM cards WHERE 1=1';
-    const params: (string | number)[] = [];
-
+    let filtered = OFFICIAL_SEED_CARDS as any[];
     if (search) {
-      sql += ' AND (name LIKE ? OR card_number LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`);
+      filtered = filtered.filter((card) =>
+        (card.name && card.name.toLowerCase().includes(search)) ||
+        (card.cardNumber && card.cardNumber.toLowerCase().includes(search))
+      );
     }
     if (type) {
-      sql += ' AND card_type = ?';
-      params.push(type);
+      filtered = filtered.filter((card) => card.cardType === type);
     }
 
-    sql += ' ORDER BY card_number ASC LIMIT ?';
-    params.push(limit);
-
-    const cursor = await c.env.DB.prepare(sql).bind(...params).all<DbCard>();
-    const cards = (cursor.results || []).map((cRecord) => JSON.parse(cRecord.data_json));
-
-    return c.json({ ok: true, cards, total: cards.length });
+    return c.json({
+      ok: true,
+      cards: filtered.slice(0, limit),
+      total: filtered.length,
+    });
   });
 
-  app.get('/api/cards/:id', async (c) => {
-    const id = c.req.param('id');
-    const card = await c.env.DB
-      .prepare('SELECT data_json FROM cards WHERE id = ? OR card_number = ?')
-      .bind(id, id)
-      .first<{ data_json: string }>();
+  app.get('/api/cards/:id', (c) => {
+    const id = c.req.param('id').toLowerCase();
+    const card = (OFFICIAL_SEED_CARDS as any[]).find((cItem) =>
+      cItem.id?.toLowerCase() === id || cItem.cardNumber?.toLowerCase() === id
+    );
 
     if (!card) {
       return c.json({ ok: false, error: '未找到指定卡牌' }, 404);
     }
 
-    return c.json({ ok: true, card: JSON.parse(card.data_json) });
+    return c.json({ ok: true, card });
   });
 
   // ---------------- 5. 历史战绩与回放 API (/api/history, /api/replays) ----------------
@@ -504,10 +513,9 @@ export function createApiApp() {
   });
 
   app.get('/api/admin/stats', async (c) => {
-    const [userRow, deckRow, cardRow, matchRow] = await Promise.all([
+    const [userRow, deckRow, matchRow] = await Promise.all([
       c.env.DB.prepare('SELECT COUNT(*) as c FROM users').first<{ c: number }>(),
       c.env.DB.prepare('SELECT COUNT(*) as c FROM decks').first<{ c: number }>(),
-      c.env.DB.prepare('SELECT COUNT(*) as c FROM cards').first<{ c: number }>(),
       c.env.DB.prepare('SELECT COUNT(*) as c FROM game_records').first<{ c: number }>(),
     ]);
 
@@ -516,16 +524,14 @@ export function createApiApp() {
       stats: {
         users: userRow?.c ?? 0,
         decks: deckRow?.c ?? 0,
-        cards: cardRow?.c ?? 0,
+        cards: OFFICIAL_SEED_CARDS.length,
         matches: matchRow?.c ?? 0,
       },
     });
   });
 
-  app.get('/api/admin/cards', async (c) => {
-    const cursor = await c.env.DB.prepare('SELECT * FROM cards ORDER BY card_number ASC LIMIT 200').all<DbCard>();
-    const cards = (cursor.results || []).map((r) => JSON.parse(r.data_json));
-    return c.json({ ok: true, cards });
+  app.get('/api/admin/cards', async (_c) => {
+    return _c.json({ ok: true, cards: OFFICIAL_SEED_CARDS });
   });
 
   app.get('/api/admin/monitor', async (_c) => {
