@@ -242,11 +242,11 @@ npm run deploy -w @zhanshuang/worker
      ```
    - 输出目录 (Build output directory)：
      ```text
-     apps/web/.next
+     apps/web/out
      ```
    - 根目录 (Root directory)：留空（默认为仓库根目录 `/`）。
 4. **环境变量设置 (Environment variables)**：
-   点击 **添加变量**，填入上述的 `NEXT_PUBLIC_SERVER_URL` 与 `NEXT_PUBLIC_CARD_CDN`。
+   点击 **添加变量**，填入上述的 `NEXT_PUBLIC_SERVER_URL` 与 `NEXT_PUBLIC_CARD_CDN`，以及 `NODE_VERSION=20`。
 5. 点击 **保存并部署 (Save and Deploy)**。
 6. 部署完成后，Pages 会分配一个形如 `https://zhanshuang-pamishi.pages.dev` 的访问网址。您亦可在 Pages 设置中的 **自定义域** 绑定自己的独立域名（如 `game.example.com`）。
 
