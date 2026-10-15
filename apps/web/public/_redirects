@@ -1,6 +1,0 @@
-# Cloudflare Pages SPA 动态路由 200 Rewrite 规则
-/cards/*   /cards/BP01-001.html 200
-/decks/*   /decks/default.html  200
-/game/*    /game/room.html      200
-/replay/*  /replay/demo.html    200
-/rooms/*   /rooms/lobby.html    200

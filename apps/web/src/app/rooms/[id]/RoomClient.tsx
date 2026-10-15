@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, Suspense } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouteId } from '@/lib/route-id';
 import Link from 'next/link';
 import { getSocket, getSocketUserId, getSocketUsername } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
@@ -45,10 +46,9 @@ const DEFAULT_DECKS: DeckOption[] = OFFICIAL_STARTER_DECKS.map((d) => ({
 }));
 
 function RoomWaitingContent() {
-  const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const roomId = params.id as string;
+  const roomId = useRouteId();
   const titleParam = searchParams.get('title') || '';
 
   const { user } = useAuth();

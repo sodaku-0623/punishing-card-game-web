@@ -1,5 +1,6 @@
 import React, { Suspense } from 'react';
 import RoomClient from './RoomClient';
+import { RouteIdProvider } from '@/lib/route-id';
 
 export function generateStaticParams() {
   return [{ id: 'lobby' }];
@@ -8,7 +9,9 @@ export function generateStaticParams() {
 export default function RoomPage() {
   return (
     <Suspense fallback={null}>
-      <RoomClient />
+      <RouteIdProvider segment="rooms">
+        <RoomClient />
+      </RouteIdProvider>
     </Suspense>
   );
 }

@@ -31,6 +31,9 @@ if (fs.existsSync(envPath)) {
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1);
       }
+      // 本地启动器中前端与后端同源访问 (经 Next.js /api 反代与 4000 端口直连)，
+      // 不注入 NEXT_PUBLIC_*：否则外网穿透访问的玩家会被指向他们自己电脑上的 localhost
+      if (key.startsWith('NEXT_PUBLIC_')) continue;
       if (!process.env[key]) {
         process.env[key] = val;
       }

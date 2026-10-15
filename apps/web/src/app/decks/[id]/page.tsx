@@ -1,5 +1,6 @@
 import React, { Suspense } from 'react';
 import DeckDetailClient from './DeckDetailClient';
+import { RouteIdProvider } from '@/lib/route-id';
 
 export function generateStaticParams() {
   return [{ id: 'default' }];
@@ -8,7 +9,9 @@ export function generateStaticParams() {
 export default function DeckDetailPage() {
   return (
     <Suspense fallback={null}>
-      <DeckDetailClient />
+      <RouteIdProvider segment="decks">
+        <DeckDetailClient />
+      </RouteIdProvider>
     </Suspense>
   );
 }

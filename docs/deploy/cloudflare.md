@@ -1,18 +1,18 @@
 # 《战双帕弥什 卡牌对战》Cloudflare 生产环境部署与运维手册
 
-本文档提供将《战双帕弥什 卡牌对战》在线对战平台部署至 **Cloudflare 免费套餐（Workers + Durable Objects + D1 + R2 + Pages）** 的全流程实战指南，涵盖云端资源初始化、安全凭据配置、自动化部署、运维监控与紧急灾备回滚方案。
+本文档提供将《战双帕弥什 卡牌对战》在线对战平台部署至 **Cloudflare 免费套餐（Workers + Durable Objects + D1 + R2）** 的全流程实战指南，涵盖云端资源初始化、安全凭据配置、自动化部署、运维监控与紧急灾备回滚方案。
 
 ---
 
 ## 目录
 
-- [一、目标架构与免费额度保障](#一定标架构与免费额度保障)
+- [一、目标架构与免费额度保障](#一目标架构与免费额度保障)
 - [二、部署前准备](#二部署前准备)
 - [三、D1 关系型数据库初始化](#三d1-关系型数据库初始化)
 - [四、R2 卡牌资产存储与 CDN 配置](#四r2-卡牌资产存储与-cdn-配置)
 - [五、安全凭据（Secrets）配置与管理员初始化](#五安全凭据secrets配置与管理员初始化)
-- [六、Worker 权威服务端部署与域名绑定](#六worker-权威服务端部署与域名绑定)
-- [七、前端（Web）部署与连接配置](#七前端web部署与连接配置)
+- [六、构建前端并发布 Worker](#六构建前端并发布-worker)
+- [七、发布前在本地完整验证](#七发布前在本地完整验证)
 - [八、日常运维与版本迭代流程](#八日常运维与版本迭代流程)
 - [九、应急切换与回滚方案（灾备至本机 Node 服务）](#九应急切换与回滚方案灾备至本机-node-服务)
 
@@ -25,25 +25,23 @@
 ```mermaid
 flowchart TD
     Player["玩家客户端 (浏览器 / 移动端)"]
-    
-    subgraph Cloudflare["Cloudflare 免费全球边缘网络"]
-        Pages["Cloudflare Pages<br/>(静态前端 Web UI，无限免费流量与请求)"]
-        R2["Cloudflare R2 对象存储<br/>(3GB 卡图与缩略图，出站流量永久免费)"]
-        Worker["Cloudflare Workers (Hono REST)<br/>(认证、房间列表、卡组管理、卡牌检索)"]
-        DO["Durable Objects (RoomDO)<br/>(每房间独占 DO、权威规则仲裁、断线重连)"]
-        D1[("Cloudflare D1 数据库<br/>(SQLite 持久化：账号/卡组/战绩)")]
+
+    subgraph Cloudflare["Cloudflare 免费套餐"]
+        Worker["单个 Worker (game.example.com)<br/>静态前端 + Hono REST + WebSocket 路由"]
+        DO["Durable Objects (RoomDO)<br/>每个房间一个实例：权威规则仲裁、断线重连"]
+        D1[("D1 数据库<br/>账号 / 卡组 / 大厅投影 / 战绩回放")]
+        R2["R2 对象存储 (cards.example.com)<br/>卡图与缩略图"]
     end
 
-    Player -->|1. 访问网页| Pages
-    Player -->|2. 加载卡图 (CDN 强缓存)| R2
-    Player -->|3. REST API| Worker
-    Player -->|4. 原生 WebSocket| DO
+    Player -->|网页与静态资源、/api、/ws| Worker
+    Player -->|卡图 (长期缓存)| R2
+    Worker -->|/ws/rooms/:id 转发| DO
     Worker -->|读写| D1
-    DO -->|结算归档| D1
+    DO -->|大厅投影 / 结算归档| D1
 ```
 
 ### 免费套餐额度保障设计
-1. **零消耗静态资源托管**：全站 15 个页面均为纯客户端组件（`'use client'`），由 Cloudflare Pages 静态分发，**不占用 Workers 每天 10 万次请求的额度**。
+1. **前端与后端同一个 Worker**：前端以 Next.js 静态导出的形式作为 Worker 的静态资源 (Workers Static Assets) 发布，前端、REST、WebSocket 同域，只需一个自定义域名、无跨域问题。命中静态文件的请求不计入 Workers 每天 10 万次请求的额度；只有 5 个动态路由页面 (`/rooms/:id`、`/game/:id`、`/cards/:id`、`/decks/:id`、`/replay/:id`) 需要 Worker 改写到占位页面，每次打开或跳转计一次请求。
 2. **极速卡牌内存直出**：490 张官方基础卡牌在 Worker 启动时驻留静态内存，卡牌查询开销 <1ms，彻底规避 D1 批量读写和 CPU 运算超时。
 3. **合并推送与休眠**：战斗中每次操作通过 `game:bundle` 单包下发状态与事件，对局无活动时 DO 自动休眠（WebSocket Hibernation），单日万次对局亦不会超标。
 4. **全量卡图 1 年强缓存**：卡图打上 `Cache-Control: public, max-age=31536000, immutable`，首访后全由浏览器与 Cloudflare 边缘节点缓存，R2 读操作几乎为 0。
@@ -57,9 +55,8 @@ flowchart TD
 - **已托管的自定义域名**：
   - 国内运营商对 Cloudflare 官方赠送的 `*.workers.dev` 存在较严重的 DNS 阻断与污染，**必须准备一个已接入 Cloudflare 的域名**（例如 `example.com`）。
   - 建议规划以下二级子域名：
-    - `api-game.example.com`（后端 Worker 与 WebSocket）
-    - `cards.example.com`（R2 卡图 CDN 域名，或直接使用 R2.dev 公开子域）
-    - `game.example.com`（前端网页，若使用 Pages 亦可直接使用系统赠送的 `*.pages.dev`）
+    - `game.example.com`（Worker：网页、REST API 与 WebSocket 共用）
+    - `cards.example.com`（R2 卡图域名；`r2.dev` 公开子域有访问频率限制，仅适合测试）
 
 ### 2. 本地开发环境
 - 已安装 **Node.js >= 18.0.0** 与 **npm >= 9.0.0**。
@@ -89,7 +86,7 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
 ### 2. 配置 wrangler.toml
-检查并确保 [`apps/worker/wrangler.toml`](file:///f:/zhanshuangpamishi/apps/worker/wrangler.toml) 中的 `database_id` 与上述创建的 ID 一致：
+检查并确保 `apps/worker/wrangler.toml` 中的 `database_id` 与上述创建的 ID 一致：
 ```toml
 [[d1_databases]]
 binding = "DB"
@@ -102,11 +99,13 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```bash
 npx wrangler d1 execute zhanshuang_tcg --remote --file=apps/worker/schema.sql
 ```
-该脚本将安全创建 4 张核心表：
-- `users`：玩家账户表（含加盐密码哈希、身份角色、战绩场次与胜率统计）
-- `decks`：玩家自定义卡组表（JSON 结构存储 50 张合规卡牌配额）
-- `rooms`：历史与进行中房间表
-- `game_records`：对局结算明细与确定性回放行动流
+该脚本创建以下表（Worker 首次处理请求时也会自动执行同样的 `CREATE TABLE IF NOT EXISTS`）：
+- `users`：玩家账户（PBKDF2 加盐密码哈希、角色）
+- `decks`：玩家同步到服务器的自定义卡组（需登录，只能写入本人名下；官方预组不入库，由代码内置）
+- `lobby_rooms`：大厅房间列表的只读投影，由各房间的 Durable Object 在状态变化时同步写入。房间的权威状态（成员、密码摘要、对局）只保存在 Durable Object 中，D1 中不保存房间密码
+- `matches`：对局结果与回放（行动流 + 事件流），对局结束时写入
+
+> 早期版本创建的 `rooms`、`game_records` 两张表已不再使用，可以手动 `DROP TABLE`。
 
 ---
 
@@ -184,71 +183,77 @@ npx wrangler secret put JWT_SECRET --name zhanshuang-worker
 npx wrangler secret put ADMIN_PASSWORD --name zhanshuang-worker
 ```
 
+> **两个 secret 都是必需的。** 未配置 `JWT_SECRET`（或少于 16 个字符）时，注册与登录接口返回 503，所有 WebSocket 连接都按游客处理——代码中不存在任何默认密钥。
+
 ### 3. 管理员初始化与登录说明
-- **自动化安全落库**：Worker 服务启动或接收首个认证请求时，后端会自动检测 D1 数据库中是否存在 `admin` 用户。若不存在，将自动使用注入的 `ADMIN_PASSWORD` 与 PBKDF2-SHA256 盐值哈希算法安全建立超级管理员账号（`role='admin'`）。
+- **自动化安全落库**：Worker 首次处理请求时会检测 D1 中是否存在 `admin` 用户。若不存在且配置了 `ADMIN_PASSWORD`（至少 8 位），则以 PBKDF2-SHA256 加盐哈希创建管理员；**未配置时不创建管理员，也不会使用任何默认密码**。公网部署不预置演示账号。
 - **管理员登录**：
   - 访问前端页面 `/login`，用户名输入 `admin`，密码输入您在 secret 中配置的 `ADMIN_PASSWORD`。
-  - 登录成功后进入 `/admin` 管理后台，可自由检视对局监控、活跃房间、全服卡组与卡牌数据。
+  - 登录成功后进入 `/admin` 管理后台，可查看活跃房间、进行中对局与卡牌数据。
+  - Cloudflare 版的卡表随代码部署，**不支持在后台在线新增或修改卡牌**（相关接口返回 501）；运行时长、内存等进程级指标在无服务器环境中不存在，监控页显示为 0。
 
 ---
 
-## 六、Worker 权威服务端部署与域名绑定
+## 六、构建前端并发布 Worker
 
-### 1. 执行全量编译与云端发布
-在项目根目录下运行：
+前端以静态导出的方式打包进 Worker 的静态资源目录 `apps/worker/static`，与后端一起发布。
+
+### 1. 一键部署 (推荐)
+首次部署与日常更新都只需在项目根目录运行 (Windows / macOS / Linux 通用，可重复执行)：
 ```bash
-# 1. 确保全局依赖与构建通过
-npm run build
+npx wrangler login                                          # 首次使用前登录一次
+npm ci
+npm run deploy:cf -- --card-cdn https://cards.example.com   # 卡图所在的 R2 公开域名
+```
+`scripts/deploy-cf.mjs` 会依次：检查登录 → 确保 D1 数据库存在并与 `wrangler.toml` 一致 → 建表 (幂等) → 构建 → 缺失时随机生成并写入 `JWT_SECRET` / `ADMIN_PASSWORD` (管理员密码只在终端显示一次，请立即保存) → 发布 → 健康检查。
+- 先用 `--dry-run` 试一遍：只构建并检查打包结果，不修改 Cloudflare 上的任何资源。
+- 绑定自定义域名后可加 `--domain game.example.com`，用域名做健康检查。
+- 若脚本更新了 `wrangler.toml` 中的 `database_id`，请把这处改动提交到仓库。
 
-# 2. 发布 Worker 与 Durable Objects 到 Cloudflare
+### 2. 手动构建与发布
+如需逐步执行 (D1 与密钥需先按第三、五节手动配置)，在项目根目录运行：
+```bash
+npm ci && npm run build
+
+# 静态导出前端并复制到 apps/worker/static (卡图由 R2 提供，不会被复制)
+NEXT_PUBLIC_CARD_CDN=https://cards.example.com npm run build:cf-static
+
+# 发布 Worker、Durable Objects 与前端静态资源
 npm run deploy -w @zhanshuang/worker
 ```
-发布成功后，Wrangler 会输出当前部署的版本 ID 与默认的 `.workers.dev` 访问地址。
 
-### 2. 绑定自定义域名（国内稳定访问的关键步骤）
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ 进入 **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
-2. 进入 **设置 (Settings)** 选项卡 ➔ 点击 **域与路由 (Domains & Routes)**。
-3. 点击 **添加 (Add)** ➔ 选择 **自定义域 (Custom Domain)**。
-4. 输入规划好的后端专用域名，例如：
-   ```text
-   api-game.example.com
-   ```
-5. 点击 **添加自定义域**。Cloudflare 将全自动配置 DNS 解析与全局 TLS 证书。通常 1 分钟即可生效。
-6. 测试访问：浏览器打开 `https://api-game.example.com/api/cards`，若正常返回 490 张卡牌 JSON，即说明后端与 D1 服务 100% 部署成功。
+说明：
+- 前端与 API 同域，**不需要**设置 `NEXT_PUBLIC_SERVER_URL`；构建脚本会自动设置 `NEXT_PUBLIC_WS_TRANSPORT=native`。
+- `NEXT_PUBLIC_*` 在构建时写入前端代码，修改后必须重新执行 `build:cf-static` 并发布。
+- 动态路由只生成一个占位页面 (`/rooms/lobby`、`/game/room`、`/cards/BP01-001`、`/decks/default`、`/replay/demo`)，其余 ID 由 Worker 改写到占位页面 (`apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`)，页面再从地址栏读取真实 ID (`apps/web/src/lib/route-id.tsx`)。修改占位 ID 时两边必须同步。
+
+### 3. 绑定自定义域名（国内访问的关键步骤）
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
+2. **设置 (Settings)** ➔ **域与路由 (Domains & Routes)** ➔ **添加 (Add)** ➔ **自定义域 (Custom Domain)**。
+3. 输入 `game.example.com` 并添加，Cloudflare 会自动配置 DNS 与 TLS 证书。
+4. 验证：打开 `https://game.example.com/` 应显示游戏首页；`https://game.example.com/api/cards` 应返回 490 张卡牌；`https://game.example.com/__connectivity` 为连通性测速页。
 
 ---
 
-## 七、前端（Web）部署与连接配置
+## 七、发布前在本地完整验证
 
-本项目推荐使用 **Cloudflare Pages** 进行静态部署，享受无限免费请求配额与全球 Anycast CDN 网络加速。
+不需要 Cloudflare 账号即可在本地真实运行时（workerd + Durable Objects + 本地 D1）中验证与线上一致的整套服务：
 
-### 1. 配置生产环境变量
-在部署前端前，准备好以下 3 个关键环境变量：
+```bash
+npm ci && npm run build
+NEXT_PUBLIC_CARD_CDN=https://cards.example.com npm run build:cf-static   # 卡图可指向已上传的 R2
 
-| 环境变量名 | 示例值 | 说明 |
-| --- | --- | --- |
-| `NEXT_PUBLIC_SERVER_URL` | `https://api-game.example.com` | 指向上述部署的 Worker 自定义域名 |
-| `NEXT_PUBLIC_CARD_CDN` | `https://cards.example.com` 或 `https://pub-xxx.r2.dev` | 指向 R2 卡图公开域名（无末尾斜杠） |
-| `NEXT_PUBLIC_WS_TRANSPORT` | `native` | 使用原生 WebSocket 架构（直连 Durable Objects） |
+cd apps/worker
+printf 'JWT_SECRET="local-dev-secret-0123456789"\nADMIN_PASSWORD="local-admin-pass"\n' > .dev.vars
+npx wrangler dev --port 8787
+```
 
-### 2. 在 Cloudflare Pages 上创建项目
-1. 登录 Cloudflare 控制台 ➔ **Workers & Pages** ➔ 点击 **创建 (Create)** ➔ 选择 **Pages** 选项卡 ➔ **连接到 Git (Connect to Git)**。
-2. 授权并选中本仓库：`sodaku-0623/zhanshuang-pamishi-official-card-game-web-platform`。
-3. **构建设置 (Build configuration)**：
-   - 框架预设 (Framework preset)：`Next.js`
-   - 构建命令 (Build command)：
-     ```bash
-     npm run build -w @zhanshuang/web
-     ```
-   - 输出目录 (Build output directory)：
-     ```text
-     apps/web/out
-     ```
-   - 根目录 (Root directory)：留空（默认为仓库根目录 `/`）。
-4. **环境变量设置 (Environment variables)**：
-   点击 **添加变量**，填入上述的 `NEXT_PUBLIC_SERVER_URL` 与 `NEXT_PUBLIC_CARD_CDN`，以及 `NODE_VERSION=20`。
-5. 点击 **保存并部署 (Save and Deploy)**。
-6. 部署完成后，Pages 会分配一个形如 `https://zhanshuang-pamishi.pages.dev` 的访问网址。您亦可在 Pages 设置中的 **自定义域** 绑定自己的独立域名（如 `game.example.com`）。
+然后用两个独立浏览器会话（如普通窗口 + 无痕窗口）打开 `http://127.0.0.1:8787/rooms`，完整打一局：建房（可带密码）→ 另一方加入 → 双方准备 → 开局 → 调度 → 对战，并在对局中刷新页面确认能恢复。`npm test` 中的 `apps/worker/test/e2e.workerd.test.ts` 也会在本地 workerd 中自动跑一遍核心流程。
+
+### 掉线规则（与 Node 版的差异）
+- 等待阶段掉线：保留席位 15 秒（刷新页面不丢座位），之后移出房间。
+- 对战中单方掉线：对手收到提示；**3 分钟内未重连判负**（Node 版会无限期保留）。
+- 对战中双方均掉线超过 1 分钟：关闭房间，对局不计战绩。
 
 ---
 
@@ -260,7 +265,10 @@ npm run deploy -w @zhanshuang/worker
 # 1. 运行本地自动化测试保障质量
 npm run build && npm run lint && npm test
 
-# 2. 一键热更新云端 Worker (无缝平滑发布，玩家零感知中断)
+# 2. 前端有改动时重新生成静态资源
+NEXT_PUBLIC_CARD_CDN=https://cards.example.com npm run build:cf-static
+
+# 3. 发布 Worker (后端与前端一起更新)
 npm run deploy -w @zhanshuang/worker
 ```
 
@@ -293,12 +301,14 @@ npx wrangler d1 execute zhanshuang_tcg --remote --file=./backup.sql
 若 Cloudflare 遭遇大规模不可抗力网络阻断或云端服务故障，可通过以下简易步骤在 2 分钟内切换回原有运行模式：
 
 ### 1. 启动本机 Node 权威服务器
-在 sodaku 本地电脑直接双击根目录下原有的 [`start.bat`](file:///f:/zhanshuangpamishi/start.bat)（或运行 `npm start`），原有的 Fastify + Socket.IO 后端（4000 端口）与统一前端网关（3000 端口）将立刻在本地接管所有联机功能。
+在 sodaku 本地电脑直接双击根目录下的 `start.bat`（或运行 `npm start`、便携版启动器），原有的 Fastify + Socket.IO 后端（4000 端口）与统一前端网关（3000 端口）将立刻在本地接管所有联机功能。
 
 ### 2. 客户端连接回滚
 若部署了公网反向代理（如 cpolar / frp / 自建 Nginx）：
 - 将域名（如 `game.example.com`）解析切回个人电脑公网 IP 或穿透地址。
-- 前端无需任何代码修改，只需通过将 `NEXT_PUBLIC_WS_TRANSPORT` 环境变量设置为 `'socketio'`，客户端会自动切换回传统的 Socket.IO 双向长连接，且未设置 `NEXT_PUBLIC_CARD_CDN` 时自动回退至本地 `/cards` 静态卡图。
+- 自建部署的前端**不要设置** `NEXT_PUBLIC_WS_TRANSPORT` 与 `NEXT_PUBLIC_SERVER_URL`：默认即使用 Socket.IO 并连接当前访问地址；未设置 `NEXT_PUBLIC_CARD_CDN` 时使用本地 `/cards` 卡图。
+- 启动器不会把 `.env` 中的 `NEXT_PUBLIC_*` 注入前端，旧版 `.env` 中残留的 `NEXT_PUBLIC_SERVER_URL="http://localhost:4000"` 不会再导致外网玩家连到自己电脑。
+- 注意：Node 版为内存存储，D1 中的账号、卡组与战绩不会带过去，回滚期间玩家需要重新注册。
 
 ---
 

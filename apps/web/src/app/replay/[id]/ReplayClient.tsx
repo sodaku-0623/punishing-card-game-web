@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { useRouteId } from '@/lib/route-id';
 import {
   Play,
   Pause,
@@ -57,10 +58,8 @@ interface ReplayData {
 }
 
 export default function GameReplayPage() {
-  const params = useParams();
   const router = useRouter();
-  const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
-  const gameId = rawId ? decodeURIComponent(rawId) : '';
+  const gameId = useRouteId();
 
   const [replayData, setReplayData] = useState<ReplayData | null>(null);
   const [loading, setLoading] = useState(true);

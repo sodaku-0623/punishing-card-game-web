@@ -104,22 +104,45 @@ describe('NativeWebSocketClient 原生 WebSocket 兼容客户端测试', () => {
     expect(choiceSpy).toHaveBeenCalledWith(mockBundle.state.currentPendingChoice);
   });
 
-  it('4. room:update 与 room:state_updated 互通触发', async () => {
-    const client = new NativeWebSocketClient('wss://test.worker/ws/rooms/room-1', 'user-1');
-    const updateSpy = vi.fn();
-    const stateUpdatedSpy = vi.fn();
+  it('4. 连接按房间路由：大厅不建连接，加入房间时连接对应房间，同房间的对局重连复用连接', async () => {
+    const client = new NativeWebSocketClient(null, 'user-1', (path) => `wss://test.worker${path}?guestId=user-1`);
+    expect(MockNativeWebSocket.instances).toHaveLength(0);
 
-    client.on('room:update', updateSpy);
-    client.on('room:state_updated', stateUpdatedSpy);
-
+    client.emit('room:join', { roomId: '123456' });
     await new Promise((r) => setTimeout(r, 15));
-    const ws = MockNativeWebSocket.instances[0];
+    expect(MockNativeWebSocket.instances).toHaveLength(1);
+    expect(MockNativeWebSocket.instances[0]!.url).toBe('wss://test.worker/ws/rooms/123456?guestId=user-1');
+    expect(MockNativeWebSocket.instances[0]!.sent[0]).toContain('room:join');
 
-    const roomPayload = { roomId: 'r1', title: '测试房' };
-    ws.receiveMessage('room:update', roomPayload);
+    // 同一房间的对局：不重建连接
+    client.emit('game:reconnect', { gameId: 'game~123456~1700000000000' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(MockNativeWebSocket.instances).toHaveLength(1);
 
-    expect(updateSpy).toHaveBeenCalledWith(roomPayload);
-    expect(stateUpdatedSpy).toHaveBeenCalledWith(roomPayload);
+    // 换到另一个房间：关闭旧连接并连接新房间，排队的消息发往新连接
+    client.emit('room:join', { roomId: '654321' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(MockNativeWebSocket.instances).toHaveLength(2);
+    expect(MockNativeWebSocket.instances[1]!.url).toBe('wss://test.worker/ws/rooms/654321?guestId=user-1');
+    expect(MockNativeWebSocket.instances[1]!.sent[0]).toContain('654321');
+  });
+
+  it('4c. 直接打开或刷新对局页时，按地址栏立即连接对应房间', async () => {
+    const original = (globalThis as any).window;
+    (globalThis as any).window = { location: { pathname: '/game/game~123456~1700000000000' } };
+    try {
+      new NativeWebSocketClient(null, 'user-1', (path) => `wss://test.worker${path}`);
+      expect(MockNativeWebSocket.instances).toHaveLength(1);
+      expect(MockNativeWebSocket.instances[0]!.url).toBe('wss://test.worker/ws/game/game~123456~1700000000000');
+    } finally {
+      (globalThis as any).window = original;
+    }
+  });
+
+  it('4b. 未设置 NEXT_PUBLIC_WS_TRANSPORT=native 时默认使用 Socket.IO (自建部署)', () => {
+    const socket = getSocket('guest_default_check', '测试');
+    expect(socket).not.toBeInstanceOf(NativeWebSocketClient);
+    resetSocket();
   });
 
   it('5. 断线触发 disconnect 事件', async () => {

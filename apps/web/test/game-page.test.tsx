@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { BattlefieldArenaView } from '../src/components/game/BattlefieldArenaView';
 import { PhaseBannerView } from '../src/components/game/PhaseBannerView';
 import { PublicGameState } from '@zhanshuang/shared';
-import GameTabletopPage from '@/app/game/[id]/page';
+import GameTabletopPage from '@/app/game/[id]/GameClient';
 import { useGameStore } from '@/stores/game-store';
 
 vi.mock('next/navigation', () => ({
@@ -140,7 +140,7 @@ describe('Game Tabletop Render Test', () => {
       return { ...actual, useGameStore: create(() => seeded) };
     });
     try {
-      const { default: Page } = await import('@/app/game/[id]/page');
+      const { default: Page } = await import('@/app/game/[id]/GameClient');
       const html = renderToString(<Page />);
       expect(html).toContain('战术交战区');
     } finally {
