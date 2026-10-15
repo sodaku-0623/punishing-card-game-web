@@ -24,7 +24,8 @@
     "db:push": "npm run push --workspace=@zhanshuang/database",
     "package:portable": "node scripts/package-portable.mjs",
     "test:stress": "node scripts/stress-test.mjs",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build:cf-static": "node scripts/build-cf-static.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

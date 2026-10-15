@@ -58,5 +58,8 @@ temp_*
 *.sln
 *.sw?
 
-# Cloudflare Pages 构建产物 (@cloudflare/next-on-pages)
-.vercel/
+# Cloudflare 版前端构建产物 (Next.js 静态导出，由 scripts/build-cf-static.mjs 复制到 Worker 静态资源目录)
+apps/web/out/
+apps/worker/static/*
+!apps/worker/static/.gitkeep
+!apps/worker/static/.assetsignore

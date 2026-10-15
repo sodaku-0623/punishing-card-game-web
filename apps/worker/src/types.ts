@@ -2,6 +2,8 @@ export interface Env {
   ECHO_DO: DurableObjectNamespace;
   ROOM_DO: DurableObjectNamespace;
   DB: D1Database;
+  /** 前端静态文件 (wrangler.toml 的 [assets])，本地测试时可能不存在 */
+  ASSETS?: Fetcher;
   JWT_SECRET?: string;
   ADMIN_PASSWORD?: string;
   NEXT_PUBLIC_CARD_CDN?: string;

@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouteId } from '@/lib/route-id';
 import {
   ALL_OFFICIAL_CARDS,
   CardData,
@@ -38,12 +39,10 @@ import {
 } from 'lucide-react';
 
 export default function CardDetailPage() {
-  const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
   const variantParam = searchParams.get('variant');
-  const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
-  const cardId = rawId ? decodeURIComponent(rawId) : '';
+  const cardId = useRouteId();
 
   const card = useMemo(() => findCardByNumberOrId(cardId), [cardId]);
   const variants = useMemo(() => (card ? getCardVariants(card.cardNumber) : []), [card]);

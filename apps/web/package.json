@@ -10,8 +10,7 @@
     "start": "next start -p 3000",
     "lint": "next lint",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "pages:build": "npx --yes --legacy-peer-deps @cloudflare/next-on-pages@1.13.16"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@zhanshuang/game-rules": "*",

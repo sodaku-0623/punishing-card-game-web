@@ -127,6 +127,18 @@ describe('NativeWebSocketClient 原生 WebSocket 兼容客户端测试', () => {
     expect(MockNativeWebSocket.instances[1]!.sent[0]).toContain('654321');
   });
 
+  it('4c. 直接打开或刷新对局页时，按地址栏立即连接对应房间', async () => {
+    const original = (globalThis as any).window;
+    (globalThis as any).window = { location: { pathname: '/game/game~123456~1700000000000' } };
+    try {
+      new NativeWebSocketClient(null, 'user-1', (path) => `wss://test.worker${path}`);
+      expect(MockNativeWebSocket.instances).toHaveLength(1);
+      expect(MockNativeWebSocket.instances[0]!.url).toBe('wss://test.worker/ws/game/game~123456~1700000000000');
+    } finally {
+      (globalThis as any).window = original;
+    }
+  });
+
   it('4b. 未设置 NEXT_PUBLIC_WS_TRANSPORT=native 时默认使用 Socket.IO (自建部署)', () => {
     const socket = getSocket('guest_default_check', '测试');
     expect(socket).not.toBeInstanceOf(NativeWebSocketClient);

@@ -34,8 +34,9 @@ export class NativeWebSocketClient {
     this.id = id;
     if (url) {
       this.routeKey = routeKeyFromUrl(url);
-      this.connect();
     }
+    // 直接打开或刷新房间页 / 对局页时按地址栏立即连接；大厅等其他页面不建立连接
+    this.connect();
   }
 
   /**

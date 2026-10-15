@@ -105,8 +105,19 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
 
   beforeAll(async () => {
     persistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zs-worker-e2e-'));
+    // 模拟前端静态导出产物 (真实产物由 scripts/build-cf-static.mjs 生成)
+    const assetsDir = path.join(persistDir, 'assets');
+    fs.mkdirSync(path.join(assetsDir, 'rooms'), { recursive: true });
+    fs.mkdirSync(path.join(assetsDir, 'game'), { recursive: true });
+    fs.writeFileSync(path.join(assetsDir, 'index.html'), '<html>HOME_PAGE</html>');
+    fs.writeFileSync(path.join(assetsDir, 'rooms.html'), '<html>LOBBY_PAGE</html>');
+    fs.writeFileSync(path.join(assetsDir, 'rooms', 'lobby.html'), '<html>ROOM_PLACEHOLDER</html>');
+    fs.writeFileSync(path.join(assetsDir, 'game', 'room.html'), '<html>GAME_PLACEHOLDER</html>');
+    fs.writeFileSync(path.join(assetsDir, 'game', 'room.txt'), 'GAME_RSC_PAYLOAD');
+    fs.writeFileSync(path.join(assetsDir, '404.html'), '<html>NOT_FOUND_PAGE</html>');
     worker = await unstable_dev(path.join(__dirname, '../src/index.ts'), {
       config: path.join(__dirname, '../wrangler.toml'),
+      assets: assetsDir,
       vars: { JWT_SECRET: 'e2e-jwt-secret-0123456789', ADMIN_PASSWORD },
       ip: '127.0.0.1',
       persistTo: persistDir,
@@ -121,6 +132,26 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     clients.forEach((c) => c.close());
     await worker?.stop();
     fs.rmSync(persistDir, { recursive: true, force: true });
+  });
+
+  it('同一个 Worker 托管前端：静态页面直出，动态路由改写到占位页面，API 与 404 正常', async () => {
+    const text = async (p: string) => {
+      const res = await fetch(`${http}${p}`, { redirect: 'manual' });
+      return { status: res.status, body: await res.text() };
+    };
+    expect((await text('/')).body).toContain('HOME_PAGE');
+    expect((await text('/rooms')).body).toContain('LOBBY_PAGE');
+    const room = await text('/rooms/123456');
+    expect(room.status).toBe(200);
+    expect(room.body).toContain('ROOM_PLACEHOLDER');
+    expect((await text(`/game/${encodeURIComponent('game~123456~1700000000000')}`)).body).toContain('GAME_PLACEHOLDER');
+    // 客户端跳转时 Next.js 请求的 RSC 数据也要改写到占位页面对应的 .txt
+    expect((await text('/game/game~123456~1700000000000.txt?_rsc=abc')).body).toBe('GAME_RSC_PAYLOAD');
+    expect((await api('/api/rooms')).body.success).toBe(true);
+    const missing = await text('/definitely-not-a-page');
+    expect(missing.status).toBe(404);
+    expect(missing.body).toContain('NOT_FOUND_PAGE');
+    expect((await text('/__connectivity')).body).toContain('连通性测试终端');
   });
 
   it('认证接口返回与 Node 版一致的 {success, data} 格式，且只用 ADMIN_PASSWORD 创建管理员', async () => {
