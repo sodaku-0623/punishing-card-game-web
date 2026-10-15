@@ -1,0 +1,14 @@
+name = "zhanshuang-worker"
+main = "src/index.ts"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 绑定 Durable Object 用于 WebSocket 连通性测试与对战房间
+[[durable_objects.bindings]]
+name = "ECHO_DO"
+class_name = "EchoDO"
+
+# 启用 SQLite 存储后端（Cloudflare Free 免费套餐兼容）
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["EchoDO"]
