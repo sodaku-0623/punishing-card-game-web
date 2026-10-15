@@ -130,10 +130,21 @@ describe('Game Tabletop Render Test', () => {
     expect(html).toContain('正在连接作战终端');
   });
 
-  it('renders GameTabletopPage with active gameState', () => {
-    useGameStore.setState({ gameState: mockState, myUserId: 'p1' });
-    console.log('Store gameState before render:', useGameStore.getState().gameState?.gameId);
-    const html = renderToString(<GameTabletopPage />);
-    expect(html).toContain('战术交战区');
+  it('renders GameTabletopPage with active gameState', async () => {
+    // zustand v5 服务端渲染时以 store 的初始状态作为快照，因此为该用例注入一个以对局状态初始化的 store
+    vi.resetModules();
+    vi.doMock('@/stores/game-store', async () => {
+      const actual = await vi.importActual<typeof import('@/stores/game-store')>('@/stores/game-store');
+      const { create } = await import('zustand');
+      const seeded = { ...actual.useGameStore.getState(), gameState: mockState, myUserId: 'p1' };
+      return { ...actual, useGameStore: create(() => seeded) };
+    });
+    try {
+      const { default: Page } = await import('@/app/game/[id]/page');
+      const html = renderToString(<Page />);
+      expect(html).toContain('战术交战区');
+    } finally {
+      vi.doUnmock('@/stores/game-store');
+    }
   });
 });

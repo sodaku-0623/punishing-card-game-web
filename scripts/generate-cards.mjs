@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const sourceDir = 'C:/Users/IkemiyaSouta/Desktop/📂 个人资料与文件归档/📁 本地项目与图包/战双帕弥什对战卡牌卡表';
+// 卡表素材目录：默认使用仓库内的「战双帕弥什对战卡牌卡表」，也可通过命令行参数指定
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sourceDir = process.argv[2] || path.join(repoRoot, '战双帕弥什对战卡牌卡表');
 const rawCardsPath = path.join(sourceDir, 'card_effects.json');
 
 if (!fs.existsSync(rawCardsPath)) {

@@ -60,6 +60,7 @@ zhanshuang-tcg/
 │   └── shared/           # 全局类型定义、Action/Event 协议与 DTO 模型
 ├── docs/                 # 官方规则规格书、架构图解与协议说明文档
 ├── scripts/              # 启动网关、高清卡图导入、数据校验与便携打包脚本
+│   └── dev/              # 开发期一次性排查脚本（不参与构建与启动）
 ├── start.bat             # Windows 一键启动脚本
 └── .env.example          # 环境变量配置模板
 ```
@@ -88,7 +89,15 @@ npm install
 ```bash
 cp .env.example .env
 ```
-（本地开发默认无需修改配置，开箱即用 SQLite 与内存模式）
+（本地开发默认无需修改配置，开箱即用内存存储模式。注意：当前服务端账号、卡组与对局记录均保存在内存中，服务重启后会清空。）
+
+**部署到公网 / 局域网共享前请务必设置：**
+
+| 变量 | 说明 |
+| --- | --- |
+| `JWT_SECRET` | 登录令牌签名密钥，使用随机长字符串（如 `openssl rand -hex 32`）。留空时每次启动随机生成。 |
+| `ADMIN_PASSWORD` | 默认管理员 `admin` 的初始密码。开发环境默认 `admin888`；`NODE_ENV=production` 且未配置时随机生成并打印到控制台。 |
+| `API_PROXY_TARGET` | Next.js 将 `/api/*` 转发到的后端地址（构建时生效，Docker Compose 中为 `http://server:4000`）。 |
 
 ### 4. 启动对战平台
 - **Windows 用户**：直接双击根目录下的 [`start.bat`](start.bat) 即可一键启动前端、后端与调度网关。
@@ -105,11 +114,15 @@ cp .env.example .env
 全工程配备严格的代码规范与自动化测试套件：
 
 ```bash
-# 运行全工作区单元测试（含 55 项引擎规则测试）
+# 全工作区 TypeScript 编译（按 shared → game-rules → game-engine → database → server → web 依赖顺序）
+npm run build
+
+# 运行全工作区单元测试（引擎规则、服务端 REST/WebSocket、安全回归与前端渲染测试）
+# 注意：需先执行一次 npm run build，测试依赖各 package 的 dist 产物
 npm test
 
-# 全工作区 TypeScript 强类型检查与生产编译
-npm run build
+# 前端 ESLint 检查 (next lint)
+npm run lint
 
 # 自动打包 Windows 便携免安装版 ZIP 归档包
 npm run package:portable

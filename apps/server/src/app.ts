@@ -17,17 +17,84 @@ import {
   MemoryUserRepository,
   OFFICIAL_SEED_CARDS,
   CardCreateInput,
+  Role,
 } from '@zhanshuang/database';
-import { Role } from '@prisma/client';
 import { RoomManager } from './services/room-manager.js';
 import { GameSessionManager } from './services/game-session-manager.js';
 import { setupSocketGateway } from './socket/gateway.js';
 import { validateDeck, DeckCardInput } from '@zhanshuang/game-rules';
 import { MetricsService } from './services/metrics-service.js';
 
+const SCRYPT_PREFIX = 'scrypt';
+const SCRYPT_KEY_LENGTH = 64;
+const LEGACY_PASSWORD_SALT = 'zhanshuang_tcg_salt_2026';
+
+/**
+ * 使用 scrypt + 每用户随机盐生成密码摘要，格式: scrypt:<saltHex>:<hashHex>
+ */
 export function hashPassword(password: string): string {
-  const salt = 'zhanshuang_tcg_salt_2026';
-  return crypto.createHmac('sha256', salt).update(password).digest('hex');
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, SCRYPT_KEY_LENGTH);
+  return `${SCRYPT_PREFIX}:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function legacyHashPassword(password: string): string {
+  return crypto.createHmac('sha256', LEGACY_PASSWORD_SALT).update(password).digest('hex');
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'hex');
+  const bb = Buffer.from(b, 'hex');
+  return ab.length > 0 && ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
+/**
+ * 校验密码；兼容旧版固定盐 HMAC 摘要 (needsRehash=true 时调用方应升级存储格式)
+ */
+export function verifyPassword(password: string, stored: string): { ok: boolean; needsRehash: boolean } {
+  if (stored.startsWith(`${SCRYPT_PREFIX}:`)) {
+    const [, saltHex, hashHex] = stored.split(':');
+    if (!saltHex || !hashHex) return { ok: false, needsRehash: false };
+    const hash = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), hashHex.length / 2);
+    return { ok: timingSafeEqualHex(hash.toString('hex'), hashHex), needsRehash: false };
+  }
+  const ok = timingSafeEqualHex(legacyHashPassword(password), stored);
+  return { ok, needsRehash: ok };
+}
+
+/**
+ * JWT 密钥：未显式配置时为每个进程生成随机密钥 (用户数据为内存存储，重启后本就需要重新登录)，
+ * 杜绝使用源码中公开的默认密钥伪造管理员令牌。
+ */
+function resolveJwtSecret(explicit?: string): string {
+  const configured = explicit || process.env.JWT_SECRET;
+  if (configured) return configured;
+  if (process.env.NODE_ENV !== 'test') {
+    console.warn('⚠️  未配置 JWT_SECRET，已为本次进程生成随机密钥（重启后所有登录凭据将失效）。');
+  }
+  return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * 默认管理员密码：生产环境必须通过 ADMIN_PASSWORD 显式配置，否则生成随机密码并打印到控制台。
+ */
+function resolveDefaultAdminPassword(): string {
+  if (process.env.ADMIN_PASSWORD) return process.env.ADMIN_PASSWORD;
+  if (process.env.NODE_ENV === 'production') {
+    const generated = crypto.randomBytes(9).toString('base64url');
+    console.warn(`⚠️  未配置 ADMIN_PASSWORD，已生成默认管理员 admin 的随机密码: ${generated}`);
+    return generated;
+  }
+  return 'admin888';
+}
+
+const JWT_EXPIRES_IN = '7d';
+
+/** 解析分页数量参数，限制在 [1, max] 区间，防止超大查询 */
+function clampTake(raw: unknown, fallback: number, max = 1000): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, max);
 }
 
 export interface AppComponents {
@@ -58,7 +125,8 @@ export async function createServerApp(options?: {
   });
 
   await fastify.register(fastifyJwt, {
-    secret: options?.jwtSecret || process.env.JWT_SECRET || 'zhanshuang_tcg_jwt_secret_key_2026',
+    secret: resolveJwtSecret(options?.jwtSecret),
+    sign: { expiresIn: JWT_EXPIRES_IN },
   });
 
   fastify.get('/health', async () => {
@@ -75,12 +143,13 @@ export async function createServerApp(options?: {
   const gameRepo = options?.gameRepo ?? new MemoryGameRepository();
   const userRepo = options?.userRepo ?? new MemoryUserRepository();
 
-  // 预置默认管理员账号 (admin / admin888) 与默认玩家账号
+  // 预置默认管理员账号 (admin，密码见 ADMIN_PASSWORD) 与默认玩家账号
   const defaultAdmin = await userRepo.findByUsername('admin');
   if (!defaultAdmin) {
-    await userRepo.create('admin', hashPassword('admin888'), '总指挥·管理员', Role.ADMIN);
+    await userRepo.create('admin', hashPassword(resolveDefaultAdminPassword()), '总指挥·管理员', Role.ADMIN);
   }
-  const defaultPlayer = await userRepo.findByUsername('player1');
+  // 演示玩家账号仅在非生产环境预置
+  const defaultPlayer = process.env.NODE_ENV === 'production' ? true : await userRepo.findByUsername('player1');
   if (!defaultPlayer) {
     await userRepo.create('player1', hashPassword('123456'), '灰鸦指挥官·爱丽丝', Role.USER);
   }
@@ -228,14 +297,17 @@ export async function createServerApp(options?: {
       return reply.code(400).send({ success: false, error: '用户名和密码不能为空' });
     }
     const trimmedUsername = body.username.trim();
-    if (trimmedUsername.length < 3) {
-      return reply.code(400).send({ success: false, error: '用户名长度至少需3个字符' });
+    if (trimmedUsername.length < 3 || trimmedUsername.length > 32) {
+      return reply.code(400).send({ success: false, error: '用户名长度需为 3~32 个字符' });
+    }
+    if (body.password.length < 6 || body.password.length > 128) {
+      return reply.code(400).send({ success: false, error: '密码长度需为 6~128 个字符' });
     }
     const existing = await userRepo.findByUsername(trimmedUsername);
     if (existing) {
       return reply.code(409).send({ success: false, error: '用户名已被注册，请尝试其他名称' });
     }
-    const nickname = (body.nickname || trimmedUsername).trim();
+    const nickname = (body.nickname?.trim() || trimmedUsername).slice(0, 32);
     const user = await userRepo.create(trimmedUsername, hashPassword(body.password), nickname, Role.USER);
     const token = fastify.jwt.sign({
       userId: user.id,
@@ -266,8 +338,12 @@ export async function createServerApp(options?: {
       return reply.code(400).send({ success: false, error: '请输入用户名和密码' });
     }
     const user = await userRepo.findByUsername(body.username.trim());
-    if (!user || user.passwordHash !== hashPassword(body.password)) {
+    const verification = user ? verifyPassword(body.password, user.passwordHash) : { ok: false, needsRehash: false };
+    if (!user || !verification.ok) {
       return reply.code(401).send({ success: false, error: '用户名或密码错误' });
+    }
+    if (verification.needsRehash) {
+      await userRepo.update(user.id, { passwordHash: hashPassword(body.password) });
     }
     const token = fastify.jwt.sign({
       userId: user.id,
@@ -317,7 +393,7 @@ export async function createServerApp(options?: {
     if (!body.nickname || !body.nickname.trim()) {
       return reply.code(400).send({ success: false, error: '昵称/指挥官名称不能为空' });
     }
-    const updated = await userRepo.update(req.user.userId, { nickname: body.nickname.trim() });
+    const updated = await userRepo.update(req.user.userId, { nickname: body.nickname.trim().slice(0, 32) });
     if (!updated) {
       return reply.code(404).send({ success: false, error: '用户不存在' });
     }
@@ -394,7 +470,7 @@ export async function createServerApp(options?: {
     return { success: true, data: deck };
   });
 
-  fastify.post('/api/decks', async (req) => {
+  fastify.post('/api/decks', async (req, reply) => {
     const body = req.body as {
       id?: string;
       userId?: string;
@@ -404,6 +480,9 @@ export async function createServerApp(options?: {
     };
     const userId = body.userId || 'user_default';
     let deck = body.id ? await deckRepo.findById(body.id) : null;
+    if (deck && deck.userId !== userId) {
+      return reply.code(403).send({ success: false, error: '无权修改系统预组或其他玩家的卡组' });
+    }
     if (!deck) {
       deck = await deckRepo.create(userId, body.name, body.description, body.id);
     } else {
@@ -451,6 +530,9 @@ export async function createServerApp(options?: {
     if (!deck) {
       return reply.code(404).send({ success: false, error: 'Deck not found' });
     }
+    if (deck.userId === 'system') {
+      return reply.code(403).send({ success: false, error: '系统预组不可修改' });
+    }
     if (body.name || body.description !== undefined) {
       deck = await deckRepo.update(id, body.name, body.description);
     }
@@ -480,8 +562,12 @@ export async function createServerApp(options?: {
     return { success: true, data: deck, validation: valResult };
   });
 
-  fastify.delete('/api/decks/:id', async (req) => {
+  fastify.delete('/api/decks/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const existing = await deckRepo.findById(id);
+    if (existing?.userId === 'system') {
+      return reply.code(403).send({ success: false, error: '系统预组不可删除' });
+    }
     const deleted = await deckRepo.delete(id);
     return { success: deleted };
   });
@@ -493,7 +579,7 @@ export async function createServerApp(options?: {
       attribute: query.attribute,
       cost: query.cost !== undefined ? Number(query.cost) : undefined,
       query: query.query,
-      take: query.take !== undefined ? Number(query.take) : 200,
+      take: clampTake(query.take, 200),
     });
     return { success: true, data: cards.cards, total: cards.total };
   });
@@ -513,7 +599,7 @@ export async function createServerApp(options?: {
   // ==========================================
   // 管理控制台与运维接口 (Phase 9 Admin APIs, 需管理员身份)
   // ==========================================
-  fastify.get('/api/admin/monitor', async () => {
+  fastify.get('/api/admin/monitor', { preHandler: [verifyAdmin] }, async () => {
     const allRooms = roomMgr.listRooms();
     const activeSessions = gameSessionMgr.getActiveSessionCount();
     let connectedPlayers = 0;
@@ -567,7 +653,7 @@ export async function createServerApp(options?: {
       attribute: query.attribute,
       cost: query.cost !== undefined ? Number(query.cost) : undefined,
       query: query.query,
-      take: query.take !== undefined ? Number(query.take) : 500,
+      take: clampTake(query.take, 500),
       isActive,
     });
     return { success: true, data: cards.cards, total: cards.total };
@@ -642,7 +728,7 @@ export async function createServerApp(options?: {
   // ==========================================
   fastify.get('/api/history', async (req) => {
     const query = (req.query as any) || {};
-    const limit = query.limit ? Number(query.limit) : 50;
+    const limit = clampTake(query.limit, 50, 200);
     const games = await gameRepo.listGames(limit);
     return {
       success: true,
@@ -692,7 +778,18 @@ export async function createServerApp(options?: {
     },
   });
 
-  setupSocketGateway(io, roomMgr, gameSessionMgr);
+  setupSocketGateway(io, roomMgr, gameSessionMgr, {
+    resolveToken: async (token) => {
+      try {
+        const payload = fastify.jwt.verify<{ userId: string }>(token);
+        const user = payload?.userId ? await userRepo.findById(payload.userId) : null;
+        return user ? { userId: user.id, username: user.nickname || user.username } : null;
+      } catch {
+        return null;
+      }
+    },
+    isRegisteredUserId: async (id) => !!(await userRepo.findById(id)),
+  });
 
   return { fastify, io, roomMgr, gameSessionMgr, userRepo };
 }

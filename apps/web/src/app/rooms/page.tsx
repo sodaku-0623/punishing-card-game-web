@@ -23,7 +23,8 @@ import {
 import { PublicRoomState, RoomStatus } from '@zhanshuang/shared';
 import { useAuth } from '@/lib/auth-context';
 import { apiUrl } from '@/lib/api';
-import { getSocket } from '@/lib/socket';
+import { getSocket, getSocketUserId } from '@/lib/socket';
+import { stashPendingRoomPassword } from '@/lib/room-password';
 import { useGameStore } from '@/stores/game-store';
 
 export default function RoomsLobbyPage() {
@@ -70,11 +71,24 @@ export default function RoomsLobbyPage() {
     useGameStore.getState().reset();
   }, []);
 
+  // 当前浏览器的真实身份 (登录用户 ID 或本机唯一游客 ID)
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  useEffect(() => {
+    setCurrentUserId(user?.id || getSocketUserId());
+  }, [user]);
+
   useEffect(() => {
     fetchRooms();
-    const interval = setInterval(fetchRooms, 3000);
+    // 页面不可见时暂停轮询，回到前台立即刷新
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchRooms();
+    }, 3000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchRooms();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
 
-    const socket = getSocket(user?.id || 'guest_lobby', user?.nickname || '指挥官');
+    const socket = getSocket(user?.id || getSocketUserId(), user?.nickname || undefined);
     const handleRoomDeleted = ({ roomId }: { roomId: string }) => {
       setRooms((prev) => prev.filter((r) => r.roomId !== roomId));
     };
@@ -101,6 +115,7 @@ export default function RoomsLobbyPage() {
 
     return () => {
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
       socket.off('room:deleted', handleRoomDeleted);
       socket.off('room:closed', handleRoomDeleted);
       socket.off('room:state_updated', handleRoomStateUpdated);
@@ -115,25 +130,14 @@ export default function RoomsLobbyPage() {
     setIsCreateOpen(true);
   };
 
-  async function handleCreateRoom(e: React.FormEvent) {
+  function handleCreateRoom(e: React.FormEvent) {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
     const roomId = previewRoomId || generateRandomRoomId();
-    try {
-      await fetch(apiUrl('/api/rooms'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roomId,
-          title: newTitle.trim(),
-          creatorId: user?.id || 'host',
-          creatorName: user?.nickname || '指挥官',
-          password: newPassword.trim() || undefined,
-        }),
-      });
-    } catch {}
-
+    // 房间由房主通过已认证的 Socket 连接首次加入时创建 (确保房主身份与连接身份一致)。
+    // 密码仅暂存于本标签页 sessionStorage，不会出现在 URL 中。
+    stashPendingRoomPassword(roomId, newPassword.trim());
     router.push(`/rooms/${roomId}?title=${encodeURIComponent(newTitle.trim())}`);
   }
 
@@ -195,6 +199,7 @@ export default function RoomsLobbyPage() {
             }}
             className="p-2 rounded-lg border border-terminalBorder bg-surface hover:border-terminalCyan text-neutral-400 hover:text-white transition-colors"
             title="刷新房间列表"
+            aria-label="刷新房间列表"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-terminalCyan' : ''}`} />
           </button>
@@ -260,11 +265,8 @@ export default function RoomsLobbyPage() {
 
         {/* 正在进行中的对局一键重连通报栏 */}
         {(() => {
-          const currentUserId = user?.id || 'guest_lobby';
           const myActiveRoom = rooms.find(
-            (r) =>
-              r.status === RoomStatus.PLAYING &&
-              r.players?.some((p) => p.userId === currentUserId || (user?.id && p.userId === user.id))
+            (r) => r.status === RoomStatus.PLAYING && r.players?.some((p) => p.userId === currentUserId)
           );
           if (!myActiveRoom) return null;
 
@@ -331,11 +333,8 @@ export default function RoomsLobbyPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {rooms.map((room) => {
-                const currentUserId = user?.id || 'guest_lobby';
                 const isPlaying = room.status === RoomStatus.PLAYING;
-                const isMyRoom = room.players?.some(
-                  (p) => p.userId === currentUserId || (user?.id && p.userId === user.id)
-                );
+                const isMyRoom = room.players?.some((p) => p.userId === currentUserId);
 
                 return (
                   <div
@@ -423,7 +422,15 @@ export default function RoomsLobbyPage() {
 
       {/* 创建房间弹窗 */}
       {isCreateOpen && (
-        <div className="fixed inset-0 bg-neutral-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div
+          className="fixed inset-0 bg-neutral-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="创建战术作战房间"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setIsCreateOpen(false);
+          }}
+        >
           <form
             onSubmit={handleCreateRoom}
             className="max-w-md w-full p-6 rounded-2xl border border-terminalBorder bg-surface flex flex-col gap-4 shadow-2xl relative overflow-hidden"
@@ -438,6 +445,7 @@ export default function RoomsLobbyPage() {
                 type="button"
                 onClick={() => setIsCreateOpen(false)}
                 className="text-neutral-500 hover:text-white"
+                aria-label="关闭"
               >
                 ✕
               </button>
@@ -457,6 +465,8 @@ export default function RoomsLobbyPage() {
                 type="text"
                 required
                 value={newTitle}
+                autoFocus
+                maxLength={40}
                 onChange={(e) => setNewTitle(e.target.value)}
                 placeholder="例如：灰鸦小队·战术演练房"
                 className="w-full px-3.5 py-2.5 rounded-lg bg-neutral-950 border border-terminalBorder text-white text-sm focus:border-terminalCyan outline-none"

@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 
-const rawData = JSON.parse(fs.readFileSync('C:/Users/IkemiyaSouta/Desktop/📂 个人资料与文件归档/📁 本地项目与图包/战双帕弥什对战卡牌卡表/card_effects.json', 'utf8'));
+// card_effects.json 路径通过命令行参数传入，默认读取仓库内卡表目录
+const effectsPath = process.argv[2] || new URL('../../战双帕弥什对战卡牌卡表/card_effects.json', import.meta.url);
+const rawData = JSON.parse(fs.readFileSync(effectsPath, 'utf8'));
 
 function parseAscensionConfig(rulesText) {
   if (!rulesText || (!rulesText.includes('升变条件') && !rulesText.includes('【升变】') && !rulesText.includes('【升变对象】') && !rulesText.includes('【升变费用】') && !rulesText.includes('升变代价'))) {

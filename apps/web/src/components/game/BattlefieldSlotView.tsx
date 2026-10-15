@@ -193,7 +193,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
           {/* 升变垫牌层数指示 */}
           {roleCard.underneathCardIds && roleCard.underneathCardIds.length > 0 && (
             <div
-              className="absolute top-1 right-1 bg-black/85 border border-purple-500/70 text-purple-300 text-[9px] px-1 py-0.2 rounded flex items-center gap-0.5 shadow z-20 font-mono"
+              className="absolute top-1 right-1 bg-black/85 border border-purple-500/70 text-purple-300 text-[9px] px-1 py-px rounded flex items-center gap-0.5 shadow z-20 font-mono"
               title={`升变底牌: ${roleCard.underneathCardIds.length} 张`}
             >
               <Layers className="w-2.5 h-2.5" />

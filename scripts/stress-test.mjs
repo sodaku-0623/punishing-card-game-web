@@ -39,9 +39,33 @@ async function isServerAlive() {
   }
 }
 
+// 运维监控接口需要管理员身份 (可通过 ADMIN_USERNAME / ADMIN_PASSWORD 环境变量覆盖)
+let adminToken = null;
+async function getAdminToken() {
+  if (adminToken) return adminToken;
+  try {
+    const res = await fetch(`${SERVER_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: process.env.ADMIN_USERNAME || 'admin',
+        password: process.env.ADMIN_PASSWORD || 'admin888',
+      }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      adminToken = json.token || json.data?.token || null;
+    }
+  } catch {}
+  return adminToken;
+}
+
 async function fetchMetrics() {
   try {
-    const res = await fetch(`${SERVER_URL}/api/admin/monitor`);
+    const token = await getAdminToken();
+    const res = await fetch(`${SERVER_URL}/api/admin/monitor`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     if (res.ok) {
       const json = await res.json();
       return json.data || json;

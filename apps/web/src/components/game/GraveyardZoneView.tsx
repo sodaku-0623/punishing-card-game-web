@@ -4,6 +4,7 @@ import React from 'react';
 import { CardInstance } from '@zhanshuang/shared';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { Archive, Skull } from 'lucide-react';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface GraveyardZoneViewProps {
   cards: CardInstance[];
@@ -56,7 +57,8 @@ export const GraveyardZoneView: React.FC<GraveyardZoneViewProps> = React.memo(({
         {topDef?.imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={topDef.imageUrl}
+            src={getCardThumbnailUrl(topDef.imageUrl, topDef.cardNumber)}
+            onError={(e) => handleThumbnailError(e, topDef.imageUrl)}
             alt={topDef.name}
             className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all"
           />
@@ -68,7 +70,7 @@ export const GraveyardZoneView: React.FC<GraveyardZoneViewProps> = React.memo(({
         )}
 
         {/* 墓地张数胶囊 */}
-        <div className="absolute bottom-1 inset-x-1 py-0.2 rounded bg-black/85 text-[9px] text-center font-bold font-mono text-terminalCyan border border-neutral-800">
+        <div className="absolute bottom-1 inset-x-1 py-px rounded bg-black/85 text-[9px] text-center font-bold font-mono text-terminalCyan border border-neutral-800">
           {count} 张
         </div>
       </div>
