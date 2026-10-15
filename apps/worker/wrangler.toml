@@ -33,4 +33,4 @@ new_sqlite_classes = ["RoomDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "zhanshuang_tcg"
-database_id = "916fc7de-27c9-42a9-aeda-eb6d73c6df55"
+database_id = "136e6810-ce7d-4fe9-8965-c288c9de0755"
