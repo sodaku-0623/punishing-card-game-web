@@ -9,29 +9,79 @@
 | 包 | 路径 | 说明 |
 | --- | --- | --- |
 | `@zhanshuang/shared` | `packages/shared` | 类型、Action/Event 协议、Socket 事件契约、`ErrorCode` |
-| `@zhanshuang/game-rules` | `packages/game-rules` | 规则常量、卡组构筑校验 `validateDeck` (5.1) |
-| `@zhanshuang/game-engine` | `packages/game-engine` | 纯 TypeScript 权威规则引擎 (`GameEngine.dispatchAction`) |
-| `@zhanshuang/database` | `packages/database` | Prisma schema、仓储接口与内存/Prisma 实现、官方卡牌种子数据 |
-| `@zhanshuang/server` | `apps/server` | Fastify REST + Socket.IO 本地权威服务器 (端口 4000) |
-| `@zhanshuang/worker` | `apps/worker` | Cloudflare Workers + Durable Objects 生产权威服务器 (REST API + 原生 WebSocket) |
-| `@zhanshuang/web` | `apps/web` | Next.js 14 App Router 前端 (端口 3000) |
+| `@zhanshuang/game-rules` | `packages/game-rules` | 规则常量、卡组构筑校验 `validateDeck` (5.1)、官方预组权威卡表 |
+| `@zhanshuang/game-engine` | `packages/game-engine` | 纯 TypeScript 权威规则引擎 (`GameEngine.dispatchAction`)、官方卡牌全集 `OFFICIAL_CARDS_DATA` |
+| `@zhanshuang/database` | `packages/database` | Prisma schema、仓储接口与内存/Prisma 实现 (仅 Node 版使用) |
+| `@zhanshuang/server` | `apps/server` | **Node 版后端**：Fastify REST + Socket.IO (端口 4000) |
+| `@zhanshuang/worker` | `apps/worker` | **Cloudflare 版后端**：Workers (Hono REST) + Durable Objects (原生 WebSocket) + D1 |
+| `@zhanshuang/web` | `apps/web` | Next.js 14 App Router 前端 (端口 3000)，两种后端共用 |
 
 规则依据：`docs/rules/rule-specification.md`。引擎与测试中的 `(5.2.1.e)`、`(7.3.1)` 等编号均指向该文档条款，修改规则逻辑时保留并更新这些引用。
+
+### 两种部署方式
+
+| | 自建部署 (Node 版) | Cloudflare 版 |
+| --- | --- | --- |
+| 后端 | `apps/server` | `apps/worker` |
+| 启动 / 发布 | `start.bat`、`npm start`、便携版 (`npm run package:portable`) | `docs/deploy/cloudflare.md` |
+| 前端传输层 | Socket.IO (默认，不设置任何 `NEXT_PUBLIC_*`) | 原生 WebSocket (构建时 `NEXT_PUBLIC_WS_TRANSPORT=native`) |
+| 数据 | 内存存储，重启清空 | D1 持久化 |
+| 卡图 | 本地 `public/cards` | R2 (`NEXT_PUBLIC_CARD_CDN`) |
+
+**目前对外服务的是 sodaku 电脑上的自建部署 (经内网穿透)。任何改动都不能破坏自建部署**，切换到 Cloudflare 前两种方式都必须可用。
 
 ## 常用命令 (均在仓库根目录执行)
 
 ```bash
-npm install          # 安装依赖
+npm ci               # 安装依赖 (严格按 package-lock.json)
 npm run build        # 按依赖顺序编译全部包 (database 的 prebuild 会执行 prisma generate)
 npm test             # 全工作区测试；依赖各包 dist，需先 build
 npm run lint         # 前端 next lint
 npm run typecheck    # 前端与 worker tsc --noEmit
-npm start            # 本地开发：同时启动 server (tsx watch) 与 web (next dev)
+npm start            # 自建部署本地开发：同时启动 server (tsx watch) 与 web (next dev)
 ```
 
-单包操作：`npm run build -w @zhanshuang/server`、`npm test -w @zhanshuang/game-engine`、`npm test -w @zhanshuang/worker`、`npm run deploy -w @zhanshuang/worker`、`cd apps/web && npx vitest run`。
+Cloudflare 版本地运行 (无需 Cloudflare 账号，详见 `docs/deploy/cloudflare.md` 第七节)：
+
+```bash
+cd apps/worker && npx wrangler dev --port 8787        # 需要 apps/worker/.dev.vars 中配置 JWT_SECRET / ADMIN_PASSWORD
+cd apps/web && NEXT_PUBLIC_SERVER_URL=http://127.0.0.1:8787 NEXT_PUBLIC_WS_TRANSPORT=native npm run pages:build
+cd apps/web && npx wrangler pages dev .vercel/output/static --port 3000 --compatibility-flags=nodejs_compat
+```
+
+单包操作：`npm run build -w @zhanshuang/server`、`npm test -w @zhanshuang/game-engine`、`npm test -w @zhanshuang/worker`、`cd apps/web && npx vitest run`。
 
 提交前至少确保：`npm run build && npm run lint && npm test` 全部通过。CI (`.github/workflows/ci.yml`) 执行同样的步骤。
+
+## Git 与协作规范
+
+### 分支
+- 一律从最新的 `main` 拉分支，一个分支只做一件事。命名：`feat/…`、`fix/…`、`docs/…`、`chore/…`、`refactor/…`、`test/…`，例如 `fix/portable-gateway-port`。
+- **禁止直接推送 `main`**，所有改动通过 PR 合并。
+- 禁止对共享分支 (`main` 及他人的分支) 使用 `git push --force` 或改写历史。只有自己独占的分支可以 `--force-with-lease`。
+- PR 合并后删除分支；后续改动从最新 `main` 重新拉分支，不要在已合并的分支上继续提交。
+
+### 提交
+- 提交信息使用简体中文，格式 `类型: 摘要`，类型与分支前缀一致，例如 `fix: 修复便携版网关与后端抢占 4000 端口`。正文说明「为什么改」，而不只是「改了什么」。
+- 不要提交：密钥与本地配置 (`.env`、`.dev.vars`)、构建产物 (`dist/`、`.next/`、`.vercel/`、`.wrangler/`)、大型二进制文件、AI 提示词与草稿文件、含个人本地绝对路径 (如 `C:\Users\…`、`file:///f:/…`) 的内容。
+- `package-lock.json` 只在依赖确实变化时提交。`npx` 或部分构建工具会顺带改写锁文件，提交前用 `git diff package-lock.json` 检查，与本次改动无关的变化用 `git checkout package-lock.json` 还原。
+
+### Pull Request
+- PR 描述写清：改了什么、为什么改、**如何验证** (运行了哪些命令、在什么环境实际打了一局)、已知风险与未完成项。
+- 合并条件：CI 全绿；**至少一名作者以外的人评审通过**；涉及联机流程的改动，评审人或作者须在真实运行时里实际完成过一局 (见下文「验证要求」)。
+- **不要在创建 PR 后几分钟内自行合并**，AI 生成的 PR 尤其如此——必须先有人在本地跑起来确认。
+- 合并方式统一使用 Squash，合并提交标题沿用 PR 标题 (中文、带类型前缀)。
+- 大改动 (如迁移、重写某一层) 拆成可独立评审、可独立回滚的多个 PR，每个 PR 合并后自建部署都必须仍然可用。
+
+### 验证要求
+单元测试与 mock 测试**不足以**证明联机功能可用。以下改动合并前必须在真实运行时里验证：
+
+| 改动范围 | 最低验证 |
+| --- | --- |
+| `apps/server`、Socket.IO 协议、启动脚本 | `npm start` 后用两个独立浏览器会话 (普通窗口 + 无痕窗口) 完成建房 → 加入 → 准备 → 开局 → 对战 |
+| `apps/worker` | `npm test -w @zhanshuang/worker` (含 workerd 端到端测试)，并按上文命令在本地 Cloudflare 版完成一局 |
+| `apps/web` 的连接、房间、对局页面 | 两种部署方式各完成一局 |
+| `scripts/package-portable.mjs` | 至少确认生成的启动器能启动且网关监听 3000 端口 |
 
 ## 关键约定
 
@@ -41,30 +91,48 @@ npm start            # 本地开发：同时启动 server (tsx watch) 与 web (n
 ### 服务端是唯一权威
 - 一切对局状态变更必须经过 `GameEngine.dispatchAction`；前端只发送意图 (`game:action` / `game:choice`)，不做最终裁定。
 - 下发给客户端的对局状态必须经 `sanitizeGameStateForPlayer` 脱敏 (对手手牌、牌库顺序、对手暗费不可泄露)。新增 `GameState` 字段时同步检查脱敏逻辑。
+- 开局卡表以服务端为准：官方预组用 `@zhanshuang/game-rules` 的 `OFFICIAL_STARTER_DECKS`，卡牌定义用引擎的 `OFFICIAL_CARDS_DATA`；**绝不使用引擎的 `BASE_TEST_CARDS` 或任何占位卡组开局**。
+
+### 两套后端必须保持协议一致
+前端同一套代码对接两种后端，因此：
+- WebSocket 事件名与负载以 `packages/shared/src/types/socket.ts` 为准，`apps/server/src/socket/gateway.ts` 与 `apps/worker/src/room-do.ts` 必须同步实现。修改协议时两边一起改，并同时更新两边的测试。
+- Cloudflare 版为节省额度把对局状态合并成一条 `game:bundle` ({ events, state })，由前端 `NativeWebSocketClient` 拆回 `game:events` / `game:sync_state` / `game:choice_required`。除此之外不要引入只有一边才有的事件名。
+- REST 接口统一返回 `{ success, data }` (认证接口另在顶层提供 `token` / `user`)，错误返回 `{ success: false, error }`。
+- 房间由玩家通过 WebSocket 的 `room:join` 首次加入时创建，开局由 `room:start` 触发 (不要在双方准备后自动开局)。
 
 ### Socket 身份
-- 连接身份在握手中间件 (`apps/server/src/socket/gateway.ts` 的 `io.use` 或 Worker WebSocket 升级鉴权) 中一次性确定：携带有效 JWT (`auth.token` 或 `?token=...`) 即为登录用户；否则为游客，游客不得冒用已注册账号的 userId。
-- **事件处理器一律使用握手确定的 `userId`，绝不信任事件负载中的 `userId` / `playerId`。**
-- 对局类事件必须校验发起者属于 `session.playerIds`；引擎层 `dispatchAction` 也会拒绝非本局玩家。
-- 每个 `socket.on` 处理器都要 `try/catch` 并以 `game:error` 回报，未捕获的异步异常会导致进程崩溃。
+- 连接身份在握手时一次性确定：Node 版在 `gateway.ts` 的 `io.use` 中 (JWT 放在 `auth.token`)，Cloudflare 版在 `RoomDO.fetch` 中 (JWT 放在 `?token=`)。携带有效 JWT 即为登录用户；否则为游客，游客不得冒用已注册账号的 userId。
+- **事件处理器一律使用握手确定的 `userId`，绝不信任事件负载中的 `userId` / `playerId` / `roomId`。** Cloudflare 版的房间 ID 由 Worker 路由经 `x-room-id` 请求头传给 Durable Object。
+- 对局类事件必须校验发起者属于本局玩家；引擎层 `dispatchAction` 也会拒绝非本局玩家。
+- 每个消息处理器都要 `try/catch` 并以 `game:error` 回报，未捕获的异步异常会导致进程崩溃。
 - 前端游客 ID 由 `getGuestUserId()` 为每个浏览器生成唯一值，不要再引入 `'guest'` 之类的共享占位 ID。
 
 ### 房间与卡组
-- 房间密码只以摘要形式保存在 `RoomManager.roomPasswords` 与仓储中，绝不放进 `PublicRoomState` 或 URL。新建房间时密码经 `sessionStorage` (`src/lib/room-password.ts`) 从大厅传给等待室。
-- 系统预组 (`userId === 'system'`) 只读：REST 与 Socket 都不得修改或删除。客户端上传的自定义卡组必须通过 `validateDeck`，且只能写入该玩家自己名下。
+- 房间密码只以摘要形式保存在服务端 (Node 版 `RoomManager.roomPasswords`，Cloudflare 版房间 Durable Object 内)，绝不放进 `PublicRoomState`、D1 大厅表或 URL。新建房间时密码经 `sessionStorage` (`src/lib/room-password.ts`) 从大厅传给等待室。
+- 系统预组只读：REST 与 Socket 都不得修改或删除。客户端上传的自定义卡组必须通过 `validateDeck` (校验前用官方卡表补全信号球等字段)，且只能写入该玩家自己名下。
 
 ### 鉴权与密钥
-- 密码使用 `hashPassword` (scrypt + 随机盐) 或 Worker 端 PBKDF2-SHA256 (兼顾 10ms CPU 限制与安全性)，校验使用 `verifyPassword`。
-- `JWT_SECRET`、`ADMIN_PASSWORD` 通过环境变量或 Cloudflare Secrets 配置，绝不在代码中硬编码默认密钥或密码。
-- `/api/admin/*` 一律挂 `verifyAdmin`。
+- Node 版密码使用 scrypt + 随机盐；Cloudflare 版使用 PBKDF2-SHA256 + 随机盐 (受 Workers CPU 限制)。两者都兼容旧版 HMAC 摘要并在登录时自动升级。
+- `JWT_SECRET`、`ADMIN_PASSWORD` 通过环境变量或 Cloudflare Secrets 配置。**代码中不得出现任何默认密钥或默认管理员密码作为兜底**；未配置时应拒绝服务 (Cloudflare 版) 或随机生成 (Node 版)。
+- `/api/admin/*` 一律要求管理员身份。
 
 ### 数据持久化现状
-- **本地/便携 Node 服务 (`apps/server`)**：目前固定使用 `Memory*Repository`，服务重启后账号、卡组、对局记录清空。
-- **云端生产环境 (`apps/worker`)**：已正式接入 Cloudflare D1 关系型数据库，用户账号、自定义卡组、对战记录与房间元数据均**真正持久化保存**；卡图由 Cloudflare R2 对象存储托管并支持 1 年强缓存。详细部署与运维见 `docs/deploy/cloudflare.md`。
+- **Node 版 (`apps/server`)**：固定使用 `Memory*Repository`，服务重启后账号、卡组、对局记录全部清空；`docker-compose.yml` 中的 PostgreSQL 尚未接入。
+- **Cloudflare 版 (`apps/worker`)**：账号、同步到服务器的卡组、对局记录与回放保存在 D1；房间的权威状态在各自的 Durable Object 中，D1 的 `lobby_rooms` 只是大厅展示用的投影。
+
+### Cloudflare 版注意事项
+- 免费额度：Workers 与 Pages Functions 共用每天 10 万次请求；Durable Objects 每天 10 万次请求 (WebSocket 消息计入) 与 10 万行写入。**不要在每条消息上写存储** (例如限流计数放内存)，对局快照不要包含不断增长的事件历史。
+- Durable Object 可能随时休眠或被驱逐，内存中的状态只能当缓存，需要的数据必须能从 DO SQLite 恢复。修改 DO 内表结构时使用新表名 (现为 `_v2` 后缀)，避免与已部署的旧表冲突。
+- 各类 ID 只用 URL 安全字符 (对局 ID 为 `game~<roomId>~<timestamp>`)；前端读取路由参数时先 `decodeURIComponent`。
+- 国内访问必须绑定自定义域名，`*.workers.dev` / `*.pages.dev` 在国内经常无法访问。
+- Cloudflare 版卡表随代码部署，管理后台不支持在线编辑卡牌。
 
 ## 前端约定
 
-- 卡图：小尺寸展示 (≤ 约 250px) 一律用 `getCardThumbnailUrl()` 加载 `public/cards/thumbs/*.jpg` (约 45 KB)，并以 `handleThumbnailError()` 回退原图；原图 PNG 平均约 2 MB，仅用于大图检视。新增卡图须同时生成缩略图 (`scripts/generate-thumbnails.ps1`)。
+- **`NEXT_PUBLIC_*` 在构建时写入前端代码**，运行时修改无效。自建部署不应设置任何 `NEXT_PUBLIC_*` (前端自动连接当前访问地址)；启动脚本 (`scripts/start.mjs`、便携版启动器) 不得把 `.env` 中的 `NEXT_PUBLIC_*` 注入前端进程，否则外网穿透访问的玩家会被指向自己电脑上的 `localhost`。
+- `getSocket()` 默认使用 Socket.IO，只有 `NEXT_PUBLIC_WS_TRANSPORT=native` 时才使用原生 WebSocket。原生客户端按房间建立连接 (每个房间是一个 Durable Object)，`room:join` / `game:reconnect` 会自动切换到对应房间的连接。
+- 动态路由 (`[id]` 目录) 必须带一个声明 `export const runtime = 'edge'` 的 `layout.tsx`，否则 Cloudflare Pages 构建失败。新增动态路由时照此添加。
+- 卡图：小尺寸展示 (≤ 约 250px) 一律用 `getCardThumbnailUrl()` 加载缩略图 (约 45 KB)，并以 `handleThumbnailError()` 回退原图；原图 PNG 平均约 2 MB，仅用于大图检视。卡图地址统一经 `src/lib/card-image.ts` 生成 (会自动加上 `NEXT_PUBLIC_CARD_CDN` 前缀)。新增卡图须同时生成缩略图 (`scripts/generate-thumbnails.ps1`) 并上传 R2 (`scripts/upload-cards-to-r2.mjs`)。
 - 对局页 `src/app/game/[id]/page.tsx` 体量很大，避免在其中新增高频 `setState` (如全局 `mousemove`)，高频状态放进叶子组件内部并用 `requestAnimationFrame` 节流。
 - Hooks 必须在任何提前 `return` 之前调用 (`next lint` 会以 `react-hooks/rules-of-hooks` 报错)。
 - Tailwind v3：入场动画类 (`animate-in`、`fade-in`、`zoom-in-95`、`slide-in-from-*`) 由 `tailwindcss-animate` 插件提供；非默认尺寸 (`w-26`、`h-22`、`rounded-xs`、`shadow-xs`) 已在 `tailwind.config.ts` 扩展。使用其他非默认工具类前先确认其存在，否则会静默失效。
@@ -75,13 +143,13 @@ npm start            # 本地开发：同时启动 server (tsx watch) 与 web (n
 ## 测试
 
 - 引擎规则：`packages/game-engine/test`，新增卡牌效果或规则分支时补充用例。
-- 服务端：`apps/server/test`，使用 `createServerApp()` + `fastify.inject` / `socket.io-client`；安全相关回归见 `security-hardening.test.ts`。
+- Node 版服务端：`apps/server/test`，使用 `createServerApp()` + `fastify.inject` / `socket.io-client`；安全相关回归见 `security-hardening.test.ts`。
+- Cloudflare 版：`apps/worker/test/e2e.workerd.test.ts` 通过 wrangler 的 `unstable_dev` 在本地真实 workerd 运行时 (含 Durable Objects 与本地 D1) 中按前端协议跑完整流程。**新增或修改 Worker 行为时在这里补测试，不要只写 mock 测试。**
 - 前端：`apps/web/test` 使用 `react-dom/server` 的 `renderToString` 做渲染冒烟测试。zustand v5 在服务端渲染时读取 store 的初始状态，需要注入状态时参考 `game-page.test.tsx` 中 `vi.doMock` 的写法。
-- 联机流程手动验证：`npm start` 后用两个独立浏览器会话 (或一个普通窗口 + 一个无痕窗口) 进入同一房间。
 
 ## 仓库注意事项
 
 - `apps/web/public/cards` 约 3 GB 卡图直接存于 Git 中，克隆很慢。CI 使用 blob-less + 稀疏检出跳过卡图。不要再向仓库提交大型二进制文件，新增素材应考虑 Git LFS 或对象存储。
-- `scripts/` 根目录为正式流程脚本 (启动、打包、压测、卡表生成)；`scripts/dev/` 为一次性排查脚本，不参与构建。脚本中不要硬编码个人本地路径，改用命令行参数或环境变量。
-- `push-to-github.bat` 不会强制推送；不要在脚本中加入 `--force`。
+- `scripts/` 根目录为正式流程脚本 (启动、打包、压测、卡表生成、R2 上传)；`scripts/dev/` 为一次性排查脚本，不参与构建。脚本中不要硬编码个人本地路径，改用命令行参数或环境变量。
+- 便携版启动器的网关端口只读 `GATEWAY_PORT` (默认 3000)，不要读 `PORT`——`.env` 里的 `PORT` 是后端端口 4000。
 - 卡牌插画与商标权利归库洛游戏所有，本项目仅限非商业交流用途。
