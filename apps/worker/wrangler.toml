@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2024-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# 前端静态文件 (Next.js 静态导出)，由 scripts/build-cf-static.mjs 生成到 ./static。
+# 与 API / WebSocket 同域：命中静态文件的请求直接返回且不计 Worker 请求额度，其余请求进入 Worker。
+[assets]
+directory = "./static"
+binding = "ASSETS"
+not_found_handling = "404-page"
+
 # 绑定 Durable Object 用于连通性测试 (EchoDO)
 [[durable_objects.bindings]]
 name = "ECHO_DO"
