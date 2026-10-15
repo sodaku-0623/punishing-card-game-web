@@ -4,6 +4,7 @@ import React from 'react';
 import { CardInstance } from '@zhanshuang/shared';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { Zap, Moon, Coins, Eye } from 'lucide-react';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface CostZoneViewProps {
   cards: CardInstance[];
@@ -41,7 +42,7 @@ export const CostZoneView: React.FC<CostZoneViewProps> = React.memo(({
           <span className="text-[11px] font-bold text-neutral-300 group-hover:text-terminalCyan transition-colors">
             {isOpponent ? '对方费用' : '费用'}
           </span>
-          <span className="px-1.5 py-0.2 rounded bg-terminalCyan/10 text-terminalCyan text-[9px] border border-terminalCyan/30 flex items-center gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
+          <span className="px-1.5 py-px rounded bg-terminalCyan/10 text-terminalCyan text-[9px] border border-terminalCyan/30 flex items-center gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
             <Eye className="w-2.5 h-2.5" />
             <span>检视</span>
           </span>
@@ -162,7 +163,8 @@ export const CostZoneView: React.FC<CostZoneViewProps> = React.memo(({
                     {def?.imageUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={def.imageUrl}
+                        src={getCardThumbnailUrl(def.imageUrl, def.cardNumber)}
+                        onError={(e) => handleThumbnailError(e, def.imageUrl)}
                         alt={def.name}
                         className="w-full h-full object-cover"
                       />
@@ -172,7 +174,7 @@ export const CostZoneView: React.FC<CostZoneViewProps> = React.memo(({
                         <span className="text-[6px] text-neutral-400">{c.cardNumber}</span>
                       </div>
                     )}
-                    <div className="absolute bottom-0 inset-x-0 bg-black/80 text-[7px] text-center font-mono text-terminalCyan leading-tight py-0.2">
+                    <div className="absolute bottom-0 inset-x-0 bg-black/80 text-[7px] text-center font-mono text-terminalCyan leading-tight py-px">
                       {c.isReady ? '可用' : '已用'}
                     </div>
                   </>

@@ -10,8 +10,10 @@ import {
   PublicRoomState,
   RoomStatus,
   RoomPlayerDto,
+  ErrorCode,
 } from '@zhanshuang/shared';
 import { apiUrl } from '@/lib/api';
+import { takePendingRoomPassword } from '@/lib/room-password';
 import {
   Swords,
   Shield,
@@ -24,9 +26,11 @@ import {
   AlertCircle,
   Copy,
   Check,
+  Lock,
   User as UserIcon,
 } from 'lucide-react';
 import { OFFICIAL_STARTER_DECKS, findOfficialStarterDeck } from '@/lib/starter-decks';
+import { copyText } from '@/lib/clipboard';
 
 interface DeckOption {
   id: string;
@@ -55,6 +59,12 @@ function RoomWaitingContent() {
   const [copiedId, setCopiedId] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 房间密码输入弹窗 (加入设有密码的房间时)
+  const [passwordPrompt, setPasswordPrompt] = useState<{ open: boolean; error?: string }>({ open: false });
+  const [passwordInput, setPasswordInput] = useState('');
+  const roomPasswordRef = React.useRef<string | undefined>(undefined);
+  const passwordLoadedRef = React.useRef(false);
+  const errorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigatingToGameRef = React.useRef(false);
   const roomRef = React.useRef<PublicRoomState | null>(null);
   roomRef.current = room;
@@ -91,14 +101,18 @@ function RoomWaitingContent() {
     const currentUsername = user?.nickname || user?.username || getSocketUsername();
     const socket = getSocket(currentUserId, currentUsername);
 
+    // 房主新建房间时由大厅暂存的密码，仅读取一次 (ref 可跨越 StrictMode 的二次挂载)
+    if (!passwordLoadedRef.current) {
+      passwordLoadedRef.current = true;
+      roomPasswordRef.current = takePendingRoomPassword(roomId);
+    }
+
     const doJoin = () => {
-      const authUserId = user?.id || getSocketUserId();
-      const authUsername = user?.nickname || user?.username || getSocketUsername();
       socket.emit('room:join', {
         roomId,
         title: titleParam || undefined,
-        userId: authUserId,
-        username: authUsername,
+        password: roomPasswordRef.current,
+        username: user?.nickname || user?.username || getSocketUsername(),
       });
     };
 
@@ -108,38 +122,51 @@ function RoomWaitingContent() {
       socket.connect();
     }
 
-    socket.on('connect', doJoin);
-
-    socket.on('room:state_updated', (updatedRoom: PublicRoomState) => {
+    const handleRoomState = (updatedRoom: PublicRoomState) => {
       setRoom(updatedRoom);
       roomRef.current = updatedRoom;
+      setPasswordPrompt({ open: false });
       // 若房间已开局并存在对局 ID，立即进入对局桌面
       if (updatedRoom.status === RoomStatus.PLAYING && updatedRoom.currentGameId) {
         navigatingToGameRef.current = true;
         router.push(`/game/${updatedRoom.currentGameId}`);
       }
-    });
+    };
 
-    socket.on('room:closed', (payload: any) => {
+    const handleRoomClosed = (payload: any) => {
       if (!payload || payload.roomId === roomId) {
         setErrorMessage(payload?.reason || '房间已自动关闭（玩家已全部离开）');
         setTimeout(() => {
           router.push('/rooms');
         }, 1200);
       }
-    });
+    };
 
-    socket.on('game:sync_state', (gameState) => {
+    const handleSyncState = (gameState: any) => {
       if (gameState?.gameId) {
         navigatingToGameRef.current = true;
         router.push(`/game/${gameState.gameId}`);
       }
-    });
+    };
 
-    socket.on('game:error', (err) => {
-      setErrorMessage(`[${err.code}] ${err.message}`);
-      setTimeout(() => setErrorMessage(null), 4000);
-    });
+    const handleError = (err: { code: string; message: string }) => {
+      if (err.code === ErrorCode.ROOM_PASSWORD_REQUIRED || err.code === ErrorCode.ROOM_PASSWORD_INVALID) {
+        setPasswordPrompt({
+          open: true,
+          error: err.code === ErrorCode.ROOM_PASSWORD_INVALID ? err.message : undefined,
+        });
+        return;
+      }
+      setErrorMessage(err.message);
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = setTimeout(() => setErrorMessage(null), 5000);
+    };
+
+    socket.on('connect', doJoin);
+    socket.on('room:state_updated', handleRoomState);
+    socket.on('room:closed', handleRoomClosed);
+    socket.on('game:sync_state', handleSyncState);
+    socket.on('game:error', handleError);
 
     const handleBeforeUnload = () => {
       if (!navigatingToGameRef.current && roomRef.current?.status !== RoomStatus.PLAYING) {
@@ -164,23 +191,40 @@ function RoomWaitingContent() {
       if (!navigatingToGameRef.current && roomRef.current?.status !== RoomStatus.PLAYING) {
         socket.emit('room:leave', { roomId });
       }
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
       socket.off('connect', doJoin);
-      socket.off('room:state_updated');
-      socket.off('room:closed');
-      socket.off('game:sync_state');
-      socket.off('game:error');
+      socket.off('room:state_updated', handleRoomState);
+      socket.off('room:closed', handleRoomClosed);
+      socket.off('game:sync_state', handleSyncState);
+      socket.off('game:error', handleError);
     };
   }, [roomId, titleParam, router]);
 
-  function handleCopyRoomId() {
-    navigator.clipboard.writeText(roomId);
+  function handleSubmitPassword(e: React.FormEvent) {
+    e.preventDefault();
+    const pw = passwordInput.trim();
+    if (!pw) {
+      setPasswordPrompt({ open: true, error: '请输入房间密码' });
+      return;
+    }
+    roomPasswordRef.current = pw;
+    getSocket(myUserId, myNickname).emit('room:join', {
+      roomId,
+      title: titleParam || undefined,
+      password: pw,
+      username: myNickname,
+    });
+  }
+
+  async function handleCopyRoomId() {
+    if (!(await copyText(roomId))) return;
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
   }
 
-  function handleCopyCode() {
+  async function handleCopyCode() {
     if (!room?.roomCode) return;
-    navigator.clipboard.writeText(room.roomCode);
+    if (!(await copyText(room.roomCode))) return;
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   }
@@ -263,9 +307,60 @@ function RoomWaitingContent() {
     <div className="min-h-screen bg-background text-foreground p-6 md:p-12 relative flex flex-col items-center">
       {/* 错误提示浮条 */}
       {errorMessage && (
-        <div className="w-full max-w-5xl mb-6 p-4 rounded-xl border border-erosionRed/50 bg-erosionRed/10 text-erosionRed text-xs font-mono flex items-center gap-3 shadow-lg">
+        <div
+          role="alert"
+          className="w-full max-w-5xl mb-6 p-4 rounded-xl border border-erosionRed/50 bg-erosionRed/10 text-erosionRed text-xs font-mono flex items-center gap-3 shadow-lg"
+        >
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
           <span>{errorMessage}</span>
+        </div>
+      )}
+
+      {/* 房间密码输入弹窗 */}
+      {passwordPrompt.open && (
+        <div
+          className="fixed inset-0 bg-neutral-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="room-password-title"
+        >
+          <form
+            onSubmit={handleSubmitPassword}
+            className="max-w-sm w-full p-6 rounded-2xl border border-terminalBorder bg-surface flex flex-col gap-4 shadow-2xl"
+          >
+            <h2 id="room-password-title" className="text-base font-bold text-white flex items-center gap-2">
+              <Lock className="w-5 h-5 text-terminalGold" /> 该房间已设置密码
+            </h2>
+            <input
+              type="password"
+              autoFocus
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              placeholder="请输入房主提供的房间密码"
+              aria-label="房间密码"
+              className="w-full px-3.5 py-2.5 rounded-lg bg-neutral-950 border border-terminalBorder text-white text-sm focus:border-terminalCyan outline-none"
+            />
+            {passwordPrompt.error && (
+              <p role="alert" className="text-xs text-erosionRed font-mono">
+                {passwordPrompt.error}
+              </p>
+            )}
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => router.push('/rooms')}
+                className="px-4 py-2 rounded-lg border border-terminalBorder text-neutral-400 hover:text-white text-xs font-mono"
+              >
+                返回大厅
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 rounded-lg bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold text-xs font-mono"
+              >
+                进入房间
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { ALL_OFFICIAL_CARDS } from '@/lib/cards-data';
 import { OFFICIAL_STARTER_DECKS, StarterDeck } from '@/lib/starter-decks';
+import { copyText } from '@/lib/clipboard';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 export type SavedDeck = StarterDeck;
 
@@ -97,9 +99,9 @@ export default function DecksPage() {
     }
   }
 
-  function handleCopyExport() {
+  async function handleCopyExport() {
     if (!exportModalDeck) return;
-    navigator.clipboard.writeText(JSON.stringify(exportModalDeck, null, 2));
+    if (!(await copyText(JSON.stringify(exportModalDeck, null, 2)))) return;
     setCopySuccess(true);
     setTimeout(() => setCopySuccess(false), 2000);
   }
@@ -169,7 +171,9 @@ export default function DecksPage() {
                   <div className="relative h-44 bg-neutral-950 overflow-hidden flex items-center justify-center">
                     {deck.coverImage && (
                       <img
-                        src={deck.coverImage}
+                        src={getCardThumbnailUrl(deck.coverImage)}
+                        onError={(e) => handleThumbnailError(e, deck.coverImage)}
+                        loading="lazy"
                         alt={deck.name}
                         className="w-full h-full object-cover opacity-75 group-hover:scale-105 transition-transform duration-300"
                       />

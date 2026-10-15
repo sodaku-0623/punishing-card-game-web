@@ -273,3 +273,5 @@ export const MulliganModal: React.FC<MulliganModalProps> = React.memo(({
     </div>
   );
 });
+
+MulliganModal.displayName = 'MulliganModal';

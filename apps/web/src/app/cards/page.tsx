@@ -908,7 +908,7 @@ export default function CardsBrowserPage() {
                     <td className="py-2 px-4">
                       <div className="flex flex-wrap gap-1 max-w-[150px]">
                         {card.traits.map((t) => (
-                          <span key={t} className="px-1 py-0.2 rounded bg-neutral-800 text-[10px] text-neutral-400">
+                          <span key={t} className="px-1 py-px rounded bg-neutral-800 text-[10px] text-neutral-400">
                             {t}
                           </span>
                         ))}

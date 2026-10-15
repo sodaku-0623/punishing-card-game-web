@@ -69,7 +69,7 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
           </div>
 
           <span
-            className={`font-black text-xs px-1.5 py-0.2 rounded ${
+            className={`font-black text-xs px-1.5 py-px rounded ${
               isDanger
                 ? 'bg-erosionRed text-white font-bold animate-pulse'
                 : 'bg-neutral-900 text-terminalCyan border border-terminalCyan/40'

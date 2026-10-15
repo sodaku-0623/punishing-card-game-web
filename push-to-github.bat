@@ -26,7 +26,7 @@ git remote add origin %REPO_URL%
 
 echo.
 echo [2/2] 正在推送至 main 分支 (如首次推送，请在弹出的浏览器窗口中授权 GitHub 登录)...
-git push -u origin main --force
+git push -u origin main
 
 if %errorlevel% equ 0 (
     echo.
@@ -36,6 +36,7 @@ if %errorlevel% equ 0 (
 ) else (
     echo.
     echo [提示] 推送未完成，请检查网络连接或 GitHub 账号权限。
+echo        若远程仓库已有提交历史，请先执行 git pull --rebase origin main 合并后再推送（本脚本不会强制覆盖远程历史）。
 )
 
 echo.

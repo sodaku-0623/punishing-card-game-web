@@ -8,6 +8,7 @@ import { PublicGameState, PendingChoice } from './game.js';
 import { PublicRoomState } from './room.js';
 
 export interface ClientToServerEvents {
+  /** userId 字段已废弃：服务端仅以握手阶段认证的身份为准 */
   'room:join': (payload: { roomId: string; title?: string; password?: string; userId?: string; username?: string }) => void;
   'room:leave': (payload?: { roomId?: string }) => void;
   'room:ready': (payload: { isReady: boolean; deckId: string; roomId?: string; customDeck?: any }) => void;
@@ -15,6 +16,7 @@ export interface ClientToServerEvents {
   'room:start': (payload?: { roomId?: string }) => void;
   'game:action': (payload: { gameId: string; action: GameAction }) => void;
   'game:choice': (payload: { gameId: string; pendingChoiceId: string; selectedIds: string[] }) => void;
+  /** userId 字段已废弃：服务端仅以握手阶段认证的身份为准 */
   'game:reconnect': (payload: { gameId: string; userId?: string }) => void;
   'game:leave': (payload: { gameId: string; isSurrender?: boolean }) => void;
 }

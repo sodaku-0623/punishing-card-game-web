@@ -2,7 +2,12 @@ import http from 'node:http';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 
-const originalPath = 'C:\\Users\\IkemiyaSouta\\Desktop\\758754174f6448f1b99e2f7cd4f7a05120260704.webp';
+// 场地纸原图路径通过命令行参数或 MAT_IMAGE_PATH 环境变量传入
+const originalPath = process.argv[2] || process.env.MAT_IMAGE_PATH;
+if (!originalPath) {
+  console.error('用法: node scripts/dev/inspect-slots-detail.mjs <场地纸原图路径>');
+  process.exit(1);
+}
 const arenaPath = 'apps/web/public/field-arena.png';
 
 const origBase64 = fs.readFileSync(originalPath).toString('base64');

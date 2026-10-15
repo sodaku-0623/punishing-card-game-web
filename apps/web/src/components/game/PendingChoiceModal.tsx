@@ -15,6 +15,7 @@ import {
   Info,
 } from 'lucide-react';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
+import { getCardThumbnailUrl } from '@/lib/card-image';
 
 interface PendingChoiceModalProps {
   choice: PendingChoice;
@@ -123,7 +124,7 @@ function RevealedCardItem({
       >
         <span className="flex items-center gap-0.5 truncate max-w-[80%]">
           {slotIndex !== undefined && (
-            <span className="px-1 py-0.2 rounded bg-neutral-950 text-neutral-300 border border-neutral-700 text-[8px] mr-0.5">
+            <span className="px-1 py-px rounded bg-neutral-950 text-neutral-300 border border-neutral-700 text-[8px] mr-0.5">
               位{slotIndex + 1}
             </span>
           )}
@@ -151,9 +152,17 @@ function RevealedCardItem({
       <div className="relative flex-1 w-full bg-neutral-950 overflow-hidden flex flex-col justify-between p-1 min-h-0">
         {imgSrc && !imageError ? (
           <img
-            src={imgSrc}
+            src={getCardThumbnailUrl(imgSrc)}
             alt={name}
-            onError={() => setImageError(true)}
+            onError={(e) => {
+              // 先回退到原图，原图也失败时再显示文字占位
+              if (!e.currentTarget.dataset.fallbackTried) {
+                e.currentTarget.dataset.fallbackTried = 'true';
+                e.currentTarget.src = imgSrc;
+              } else {
+                setImageError(true);
+              }
+            }}
             className="absolute inset-0 w-full h-full object-contain group-hover:scale-105 transition-transform duration-300"
             loading="lazy"
           />
@@ -178,7 +187,7 @@ function RevealedCardItem({
           <div className="flex items-center gap-0.5">
             {!isCompact && getAttributeBadge(attribute)}
             {cardType && !isCompact && (
-              <div className="px-1 py-0.2 rounded bg-neutral-950/85 border border-neutral-700 text-neutral-300 font-mono text-[8px] shadow backdrop-blur-sm">
+              <div className="px-1 py-px rounded bg-neutral-950/85 border border-neutral-700 text-neutral-300 font-mono text-[8px] shadow backdrop-blur-sm">
                 {formatCardType(cardType)}
               </div>
             )}

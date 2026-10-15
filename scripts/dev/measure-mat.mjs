@@ -2,7 +2,12 @@ import http from 'node:http';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 
-const inputPath = 'C:\\Users\\IkemiyaSouta\\Desktop\\758754174f6448f1b99e2f7cd4f7a05120260704.webp';
+// 场地纸原图路径通过命令行参数或 MAT_IMAGE_PATH 环境变量传入
+const inputPath = process.argv[2] || process.env.MAT_IMAGE_PATH;
+if (!inputPath) {
+  console.error('用法: node scripts/dev/measure-mat.mjs <场地纸原图路径>');
+  process.exit(1);
+}
 const base64 = fs.readFileSync(inputPath).toString('base64');
 
 const html = `<!DOCTYPE html>
