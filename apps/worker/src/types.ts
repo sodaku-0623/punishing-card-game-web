@@ -1,9 +1,30 @@
-/**
- * Cloudflare Worker 环境变量与绑定契约
- */
 export interface Env {
   ECHO_DO: DurableObjectNamespace;
+  ROOM_DO: DurableObjectNamespace;
+  DB: D1Database;
+  JWT_SECRET?: string;
+  ADMIN_PASSWORD?: string;
+  NEXT_PUBLIC_CARD_CDN?: string;
   NODE_ENV?: string;
+}
+
+/**
+ * 原生 WebSocket 消息包裹契约 (兼容 shared/types/socket.ts)
+ */
+export interface WsMessage<T = unknown> {
+  event: string;
+  payload: T;
+}
+
+/**
+ * 依附于 WebSocket 连接的玩家身份附件 (经 serializeAttachment 持久化)
+ */
+export interface WsClientAttachment {
+  userId: string;
+  username: string;
+  nickname: string;
+  isGuest: boolean;
+  connectedAt: number;
 }
 
 /**
