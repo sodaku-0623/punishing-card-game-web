@@ -75,8 +75,8 @@ zhanshuang-tcg/
 
 ### 1. 克隆代码仓库
 ```bash
-git clone https://github.com/<your-username>/zhanshuang-tcg.git
-cd zhanshuang-tcg
+git clone https://github.com/sodaku-0623/zhanshuang-pamishi-official-card-game-web-platform.git
+cd zhanshuang-pamishi-official-card-game-web-platform
 ```
 
 ### 2. 安装依赖
