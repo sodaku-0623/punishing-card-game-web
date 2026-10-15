@@ -61,6 +61,18 @@ fs.copyFileSync(
 // 复制前端 Standalone
 fs.cpSync(path.join(ROOT_DIR, 'apps/web/.next/standalone'), path.join(TARGET_DIR, 'web'), { recursive: true });
 
+// 复制环境配置文件
+const rootEnvPath = path.join(ROOT_DIR, '.env');
+const rootEnvExamplePath = path.join(ROOT_DIR, '.env.example');
+if (fs.existsSync(rootEnvPath)) {
+  fs.copyFileSync(rootEnvPath, path.join(TARGET_DIR, '.env'));
+} else if (fs.existsSync(rootEnvExamplePath)) {
+  fs.copyFileSync(rootEnvExamplePath, path.join(TARGET_DIR, '.env'));
+}
+if (fs.existsSync(rootEnvExamplePath)) {
+  fs.copyFileSync(rootEnvExamplePath, path.join(TARGET_DIR, '.env.example'));
+}
+
 // 拷贝 Node.js 便携式主执行文件 (保证解压机无需安装 Node 环境)
 const systemNodePath = 'C:\\Program Files\\nodejs\\node.exe';
 if (fs.existsSync(systemNodePath)) {
@@ -81,6 +93,51 @@ const path = require('path');
 const readline = require('readline');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
+
+// 读取并注入 .env 环境变量，保证 JWT_SECRET 等关键配置稳定持久生效
+const envFile = path.join(__dirname, '.env');
+const envExampleFile = path.join(__dirname, '.env.example');
+if (!fs.existsSync(envFile) && fs.existsSync(envExampleFile)) {
+  try { fs.copyFileSync(envExampleFile, envFile); } catch (e) {}
+}
+if (fs.existsSync(envFile)) {
+  try {
+    const envLines = fs.readFileSync(envFile, 'utf8').split(/\\r?\\n/);
+    for (const line of envLines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const match = trimmed.match(/^([^=]+)=(.*)$/);
+      if (match) {
+        const key = match[1].trim();
+        let val = match[2].trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (!process.env[key]) {
+          process.env[key] = val;
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+// 确保 JWT_SECRET 存在且有效，若未配置则自动生成随机密钥并持久化保存
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '') {
+  const generatedSecret = crypto.randomBytes(32).toString('hex');
+  process.env.JWT_SECRET = generatedSecret;
+  if (fs.existsSync(envFile)) {
+    try {
+      let content = fs.readFileSync(envFile, 'utf8');
+      if (/^JWT_SECRET=.*$/m.test(content)) {
+        content = content.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET="' + generatedSecret + '"');
+      } else {
+        content += '\\nJWT_SECRET="' + generatedSecret + '"\\n';
+      }
+      fs.writeFileSync(envFile, content, 'utf8');
+    } catch (e) {}
+  }
+}
 
 // 统一对外网关端口 (默认 3000，所有外网穿透、局域网、本机访问均连接此单一端口)
 const GATEWAY_PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -260,6 +317,8 @@ function startGateway() {
 // 1. 启动权威服务器 (端口: 4000)
 console.log('\\x1b[34m%s\\x1b[0m', '[1/3] 正在启动后端权威对战服务器 (端口: ' + SERVER_PORT + ')...');
 serverProc = spawn(nodeBin, [path.join(__dirname, 'server', 'server.bundle.cjs')], {
+  cwd: __dirname,
+  env: Object.assign({}, process.env),
   stdio: ['inherit', 'pipe', 'pipe'],
 });
 

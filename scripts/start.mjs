@@ -1,6 +1,60 @@
 import { spawn, exec, execSync } from 'node:child_process';
 import http from 'node:http';
 import readline from 'node:readline';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootDir = path.resolve(__dirname, '..');
+const envPath = path.join(rootDir, '.env');
+const envExamplePath = path.join(rootDir, '.env.example');
+
+// 自动检测并初始化 .env 配置文件
+if (!fs.existsSync(envPath) && fs.existsSync(envExamplePath)) {
+  fs.copyFileSync(envExamplePath, envPath);
+  console.log('\x1b[33m%s\x1b[0m', '>>> [配置检测] 未检测到 .env 配置文件，已自动根据 .env.example 生成 .env');
+}
+
+// 解析 .env 注入 process.env，确保子进程完整继承环境变量
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8');
+  for (const line of envContent.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const match = trimmed.match(/^([^=]+)=(.*)$/);
+    if (match) {
+      const key = match[1].trim();
+      let val = match[2].trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (!process.env[key]) {
+        process.env[key] = val;
+      }
+    }
+  }
+}
+
+// 严格遵循 AGENTS.md 规范：若 JWT_SECRET 未配置或为空，自动生成高强度安全随机密钥并持久化保存
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '') {
+  const generatedSecret = crypto.randomBytes(32).toString('hex');
+  process.env.JWT_SECRET = generatedSecret;
+  if (fs.existsSync(envPath)) {
+    try {
+      let content = fs.readFileSync(envPath, 'utf8');
+      if (/^JWT_SECRET=.*$/m.test(content)) {
+        content = content.replace(/^JWT_SECRET=.*$/m, `JWT_SECRET="${generatedSecret}"`);
+      } else {
+        content += `\nJWT_SECRET="${generatedSecret}"\n`;
+      }
+      fs.writeFileSync(envPath, content, 'utf8');
+      console.log('\x1b[32m%s\x1b[0m', '>>> [安全配置] 已自动生成高强度随机 JWT_SECRET 并持久化保存至 .env 配置文件');
+    } catch {}
+  }
+}
 
 const SERVER_PORT = 4000;
 const WEB_PORT = 3000;
@@ -90,6 +144,7 @@ console.log('\x1b[34m%s\x1b[0m', `[1/3] 正在启动后端权威服务器 (端�
 serverProc = spawn(npmCmd, ['run', 'dev:server'], {
   stdio: ['inherit', 'pipe', 'pipe'],
   shell: isWin,
+  env: { ...process.env },
 });
 
 const rlServer = readline.createInterface({ input: serverProc.stdout });
@@ -107,6 +162,7 @@ console.log('\x1b[34m%s\x1b[0m', `[2/3] 正在启动前端 Next.js 平台 (端�
 webProc = spawn(npmCmd, ['run', 'dev:web'], {
   stdio: ['inherit', 'pipe', 'pipe'],
   shell: isWin,
+  env: { ...process.env },
 });
 
 const rlWeb = readline.createInterface({ input: webProc.stdout });

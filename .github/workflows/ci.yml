@@ -31,7 +31,7 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Build (shared → game-rules → game-engine → database → server → web)
+      - name: Build (shared → game-rules → game-engine → database → server → worker → web)
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
