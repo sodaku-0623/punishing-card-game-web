@@ -149,9 +149,8 @@ export const MulliganModal: React.FC<MulliganModalProps> = React.memo(({
             {handCards.map((card) => {
               const isSelected = selectedIds.has(card.instanceId);
               const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
-              const rawImg = card.imageUrl || cardDef?.imageUrl || `/cards/${card.cardNumber}.png`;
-              const thumbImg = getCardThumbnailUrl(rawImg, card.cardNumber);
-              const fullImg = getCardFullImageUrl(rawImg, card.cardNumber);
+              const fullImg = getCardFullImageUrl(card.imageUrl || cardDef?.imageUrl, card.cardNumber);
+              const thumbImg = getCardThumbnailUrl(card.imageUrl || cardDef?.imageUrl, card.cardNumber);
 
               return (
                 <div
