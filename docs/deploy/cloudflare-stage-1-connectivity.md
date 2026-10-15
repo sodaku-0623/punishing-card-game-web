@@ -68,7 +68,7 @@ npm run deploy -w @zhanshuang/worker
 - **手机蜂窝移动网络（4G / 5G）**：移动、联通或电信数据流量
 
 ### 2. 玩家测试步骤
-1. 用手机或电脑浏览器打开测试链接（如 `https://cf-test.yourdomain.com`）；
+1. 用手机或电脑浏览器打开测试链接（如 `https://cf-test.yourdomain.com/__connectivity`；部署前端后根路径是游戏首页）；
 2. 页面会自动建立 WebSocket 连接至 Durable Object，并开始按 1000ms 频率发包探测；
 3. 在「测试人员网络环境备注」输入框中输入自己所在省市和运营商（如：`广东广州电信 1000M`）；
 4. 保持页面运行 **至少 1~2 分钟（发包采样达到 60~120 次以上）**；

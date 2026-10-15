@@ -23,8 +23,9 @@
 | | 自建部署 (Node 版) | Cloudflare 版 |
 | --- | --- | --- |
 | 后端 | `apps/server` | `apps/worker` |
-| 启动 / 发布 | `start.bat`、`npm start`、便携版 (`npm run package:portable`) | `docs/deploy/cloudflare.md` |
-| 前端传输层 | Socket.IO (默认，不设置任何 `NEXT_PUBLIC_*`) | 原生 WebSocket (构建时 `NEXT_PUBLIC_WS_TRANSPORT=native`) |
+| 启动 / 发布 | `start.bat`、`npm start`、便携版 (`npm run package:portable`) | `npm run build:cf-static` + `npm run deploy -w @zhanshuang/worker` (详见 `docs/deploy/cloudflare.md`) |
+| 前端托管 | Next.js 服务 (`next start` / `next dev`) | Next.js 静态导出，作为同一个 Worker 的静态资源 (前端、API、WebSocket 同域) |
+| 前端传输层 | Socket.IO (默认，不设置任何 `NEXT_PUBLIC_*`) | 原生 WebSocket (`build:cf-static` 自动设置 `NEXT_PUBLIC_WS_TRANSPORT=native`) |
 | 数据 | 内存存储，重启清空 | D1 持久化 |
 | 卡图 | 本地 `public/cards` | R2 (`NEXT_PUBLIC_CARD_CDN`) |
 
@@ -41,12 +42,12 @@ npm run typecheck    # 前端与 worker tsc --noEmit
 npm start            # 自建部署本地开发：同时启动 server (tsx watch) 与 web (next dev)
 ```
 
-Cloudflare 版本地运行 (无需 Cloudflare 账号，详见 `docs/deploy/cloudflare.md` 第七节)：
+Cloudflare 版本地运行 (无需 Cloudflare 账号，与线上一致，详见 `docs/deploy/cloudflare.md` 第七节)：
 
 ```bash
-cd apps/worker && npx wrangler dev --port 8787        # 需要 apps/worker/.dev.vars 中配置 JWT_SECRET / ADMIN_PASSWORD
-cd apps/web && NEXT_PUBLIC_SERVER_URL=http://127.0.0.1:8787 NEXT_PUBLIC_WS_TRANSPORT=native npm run pages:build
-cd apps/web && npx wrangler pages dev .vercel/output/static --port 3000 --compatibility-flags=nodejs_compat
+npm run build:cf-static                                # 静态导出前端到 apps/worker/static
+cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev.vars 中配置 JWT_SECRET / ADMIN_PASSWORD
+# 浏览器打开 http://127.0.0.1:8787/rooms
 ```
 
 单包操作：`npm run build -w @zhanshuang/server`、`npm test -w @zhanshuang/game-engine`、`npm test -w @zhanshuang/worker`、`cd apps/web && npx vitest run`。
@@ -79,7 +80,7 @@ cd apps/web && npx wrangler pages dev .vercel/output/static --port 3000 --compat
 | 改动范围 | 最低验证 |
 | --- | --- |
 | `apps/server`、Socket.IO 协议、启动脚本 | `npm start` 后用两个独立浏览器会话 (普通窗口 + 无痕窗口) 完成建房 → 加入 → 准备 → 开局 → 对战 |
-| `apps/worker` | `npm test -w @zhanshuang/worker` (含 workerd 端到端测试)，并按上文命令在本地 Cloudflare 版完成一局 |
+| `apps/worker`、`scripts/build-cf-static.mjs` | `npm test -w @zhanshuang/worker` (含 workerd 端到端测试)，并按上文命令在本地 Cloudflare 版完成一局 (含对局中刷新页面) |
 | `apps/web` 的连接、房间、对局页面 | 两种部署方式各完成一局 |
 | `scripts/package-portable.mjs` | 至少确认生成的启动器能启动且网关监听 3000 端口 |
 
@@ -121,17 +122,17 @@ cd apps/web && npx wrangler pages dev .vercel/output/static --port 3000 --compat
 - **Cloudflare 版 (`apps/worker`)**：账号、同步到服务器的卡组、对局记录与回放保存在 D1；房间的权威状态在各自的 Durable Object 中，D1 的 `lobby_rooms` 只是大厅展示用的投影。
 
 ### Cloudflare 版注意事项
-- 免费额度：Workers 与 Pages Functions 共用每天 10 万次请求；Durable Objects 每天 10 万次请求 (WebSocket 消息计入) 与 10 万行写入。**不要在每条消息上写存储** (例如限流计数放内存)，对局快照不要包含不断增长的事件历史。
+- 免费额度：Workers 每天 10 万次请求 (命中静态资源的请求不计入，动态路由页面与 API 计入)；Durable Objects 每天 10 万次请求 (WebSocket 消息计入) 与 10 万行写入。**不要在每条消息上写存储** (例如限流计数放内存)，对局快照不要包含不断增长的事件历史。
 - Durable Object 可能随时休眠或被驱逐，内存中的状态只能当缓存，需要的数据必须能从 DO SQLite 恢复。修改 DO 内表结构时使用新表名 (现为 `_v2` 后缀)，避免与已部署的旧表冲突。
-- 各类 ID 只用 URL 安全字符 (对局 ID 为 `game~<roomId>~<timestamp>`)；前端读取路由参数时先 `decodeURIComponent`。
-- 国内访问必须绑定自定义域名，`*.workers.dev` / `*.pages.dev` 在国内经常无法访问。
+- 各类 ID 只用 URL 安全字符 (对局 ID 为 `game~<roomId>~<timestamp>`)。
+- 国内访问必须绑定自定义域名，`*.workers.dev` 在国内经常无法访问。
 - Cloudflare 版卡表随代码部署，管理后台不支持在线编辑卡牌。
 
 ## 前端约定
 
 - **`NEXT_PUBLIC_*` 在构建时写入前端代码**，运行时修改无效。自建部署不应设置任何 `NEXT_PUBLIC_*` (前端自动连接当前访问地址)；启动脚本 (`scripts/start.mjs`、便携版启动器) 不得把 `.env` 中的 `NEXT_PUBLIC_*` 注入前端进程，否则外网穿透访问的玩家会被指向自己电脑上的 `localhost`。
 - `getSocket()` 默认使用 Socket.IO，只有 `NEXT_PUBLIC_WS_TRANSPORT=native` 时才使用原生 WebSocket。原生客户端按房间建立连接 (每个房间是一个 Durable Object)，`room:join` / `game:reconnect` 会自动切换到对应房间的连接。
-- 动态路由 (`[id]` 目录) 必须带一个声明 `export const runtime = 'edge'` 的 `layout.tsx`，否则 Cloudflare Pages 构建失败。新增动态路由时照此添加。
+- **动态路由 (`[id]` 目录) 不要用 `useParams()` 读 ID**。Cloudflare 版静态导出时每个动态路由只生成一个占位页面 (由 `generateStaticParams` 返回的 `lobby`、`room` 等)，Worker 把其余 ID 改写到占位页面，此时 `useParams()` 拿到的是占位 ID。页面一律用 `src/lib/route-id.tsx` 的 `useRouteId()` 读取 (已解码)，并在 `page.tsx` 中用 `RouteIdProvider` 包裹客户端组件。新增或修改动态路由时，同步更新 `apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`。
 - 卡图：小尺寸展示 (≤ 约 250px) 一律用 `getCardThumbnailUrl()` 加载缩略图 (约 45 KB)，并以 `handleThumbnailError()` 回退原图；原图 PNG 平均约 2 MB，仅用于大图检视。卡图地址统一经 `src/lib/card-image.ts` 生成 (会自动加上 `NEXT_PUBLIC_CARD_CDN` 前缀)。新增卡图须同时生成缩略图 (`scripts/generate-thumbnails.ps1`) 并上传 R2 (`scripts/upload-cards-to-r2.mjs`)。
 - 对局页 `src/app/game/[id]/page.tsx` 体量很大，避免在其中新增高频 `setState` (如全局 `mousemove`)，高频状态放进叶子组件内部并用 `requestAnimationFrame` 节流。
 - Hooks 必须在任何提前 `return` 之前调用 (`next lint` 会以 `react-hooks/rules-of-hooks` 报错)。
@@ -149,6 +150,7 @@ cd apps/web && npx wrangler pages dev .vercel/output/static --port 3000 --compat
 
 ## 仓库注意事项
 
+- `apps/worker/static/` 是 `build:cf-static` 生成的前端产物，不要提交 (只保留 `.gitkeep` 与 `.assetsignore`)。卡图在 `cards/` 目录下与 `/cards/[id]` 的占位页面混在一起，排除卡图时只能删图片文件，不能删整个目录。
 - `apps/web/public/cards` 约 3 GB 卡图直接存于 Git 中，克隆很慢。CI 使用 blob-less + 稀疏检出跳过卡图。不要再向仓库提交大型二进制文件，新增素材应考虑 Git LFS 或对象存储。
 - `scripts/` 根目录为正式流程脚本 (启动、打包、压测、卡表生成、R2 上传)；`scripts/dev/` 为一次性排查脚本，不参与构建。脚本中不要硬编码个人本地路径，改用命令行参数或环境变量。
 - 便携版启动器的网关端口只读 `GATEWAY_PORT` (默认 3000)，不要读 `PORT`——`.env` 里的 `PORT` 是后端端口 4000。
