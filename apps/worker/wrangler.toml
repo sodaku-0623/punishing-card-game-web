@@ -16,10 +16,14 @@ class_name = "RoomDO"
 # SQLite 存储后端声明（Cloudflare Workers Free 免费套餐兼容）
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["EchoDO", "RoomDO"]
+new_sqlite_classes = ["EchoDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RoomDO"]
 
 # 绑定 Cloudflare D1 关系型数据库（持久化用户、卡组、卡牌及战绩）
 [[d1_databases]]
 binding = "DB"
 database_name = "zhanshuang_tcg"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "916fc7de-27c9-42a9-aeda-eb6d73c6df55"
