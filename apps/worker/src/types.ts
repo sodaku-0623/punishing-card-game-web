@@ -24,6 +24,8 @@ export interface WsClientAttachment {
   username: string;
   nickname: string;
   isGuest: boolean;
+  /** Worker 路由层确定的房间 ID (来自 URL 路径，不信任消息负载中的 roomId) */
+  roomIdHint?: string;
   connectedAt: number;
 }
 

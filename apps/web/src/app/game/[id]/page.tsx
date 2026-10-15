@@ -66,7 +66,15 @@ import {
 export default function GameTabletopPage() {
   const params = useParams();
   const router = useRouter();
-  const gameId = params.id as string;
+  // 路由参数可能是 URL 编码后的值，统一解码后再作为对局 ID 使用 (格式异常时保留原值，避免页面崩溃)
+  const rawGameId = params.id as string;
+  const gameId = useMemo(() => {
+    try {
+      return decodeURIComponent(rawGameId);
+    } catch {
+      return rawGameId;
+    }
+  }, [rawGameId]);
   const { user } = useAuth();
 
   const {
