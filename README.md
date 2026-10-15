@@ -38,6 +38,12 @@
   - 全对局 Action/Event 完整事件流持久化。
   - 支持单步前进、倒退与倍速播放，便于战术复盘与赛事裁判。
 
+- ☁️ **Cloudflare 云原生无服务器生产架构（Serverless & Edge）**
+  - 后端由 Cloudflare Workers + Durable Objects 承载，原生 WebSocket 状态机权威仲裁，支持对局恢复与连接休眠。
+  - 数据由 Cloudflare D1 关系型数据库持久化存储（用户账号、构筑卡组、完整对战记录）。
+  - 3GB 官方全量卡图与缩略图托管于 Cloudflare R2 对象存储，配合全球边缘 CDN 与 1 年强缓存，零带宽成本。
+  - 详细生产部署步骤请查阅 [Cloudflare 部署手册](docs/deploy/cloudflare.md)。
+
 - 📦 **免安装绿色便携发布（Portable Release）**
   - 内置 Node.js 便携运行时与统一流量网关，打包一键压缩为绿色发布包。
   - 解压后双击即可启动，无需安装外部运行环境或配置数据库。
@@ -52,14 +58,15 @@
 zhanshuang-tcg/
 ├── apps/
 │   ├── web/              # 前端对战界面 (Next.js 14 App Router, TailwindCSS, Lucide Icons)
-│   └── server/           # 权威对战服务器 (Fastify, Socket.IO, JWT 身份认证)
+│   ├── worker/           # Cloudflare Workers + Durable Objects 生产权威服务器
+│   └── server/           # 本地权威对战服务器 (Fastify, Socket.IO, JWT 身份认证)
 ├── packages/
 │   ├── game-engine/      # 核心规则仲裁引擎、阶段状态机与卡牌效果解析机
 │   ├── game-rules/       # 卡组构筑合法性验证规则与常量定义
 │   ├── database/         # Prisma ORM 数据库层、卡牌全量种子数据与对局归档
 │   └── shared/           # 全局类型定义、Action/Event 协议与 DTO 模型
-├── docs/                 # 官方规则规格书、架构图解与协议说明文档
-├── scripts/              # 启动网关、高清卡图导入、数据校验与便携打包脚本
+├── docs/                 # 官方规则规格书、架构图解、Cloudflare 部署手册与协议说明
+├── scripts/              # 启动网关、高清卡图导入、R2 资产同步与便携打包脚本
 │   └── dev/              # 开发期一次性排查脚本（不参与构建与启动）
 ├── start.bat             # Windows 一键启动脚本
 └── .env.example          # 环境变量配置模板

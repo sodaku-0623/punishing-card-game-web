@@ -223,15 +223,36 @@ async function checkExistsViaS3Api(objectKey) {
 }
 
 // ==================== Wrangler CLI 降级实现 ====================
+const WRANGLER_SCRIPT = path.resolve(ROOT_DIR, 'node_modules/wrangler/bin/wrangler.js');
+
 function uploadViaWranglerCli({ filePath, objectKey, contentType, cacheControl }) {
   return new Promise((resolve, reject) => {
-    const isWin = process.platform === 'win32';
-    const wranglerBin = isWin ? 'npx.cmd' : 'npx';
     const destination = `${bucketName}/${objectKey}`;
+    const hasLocalWrangler = fs.existsSync(WRANGLER_SCRIPT);
+    const isWin = process.platform === 'win32';
 
-    const child = spawn(
-      wranglerBin,
-      [
+    let execFile = process.execPath;
+    let execArgs = [];
+
+    if (hasLocalWrangler) {
+      execFile = process.execPath;
+      execArgs = [
+        WRANGLER_SCRIPT,
+        'r2',
+        'object',
+        'put',
+        destination,
+        '--file',
+        filePath,
+        '--content-type',
+        contentType,
+        '--cache-control',
+        cacheControl,
+        '--remote',
+      ];
+    } else {
+      execFile = isWin ? 'npx.cmd' : 'npx';
+      execArgs = [
         'wrangler',
         'r2',
         'object',
@@ -243,9 +264,14 @@ function uploadViaWranglerCli({ filePath, objectKey, contentType, cacheControl }
         contentType,
         '--cache-control',
         cacheControl,
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    );
+        '--remote',
+      ];
+    }
+
+    const child = spawn(execFile, execArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: !hasLocalWrangler && isWin,
+    });
 
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d.toString()));
