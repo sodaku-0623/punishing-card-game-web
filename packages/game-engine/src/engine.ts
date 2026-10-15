@@ -367,15 +367,98 @@ export class GameEngine {
     return true;
   }
 
+
   /**
-   * 8.6 行动与处理：打出手牌卡牌
+   * 8.6.2.c 计算卡牌使用的实际费用 (包含动态修改器与卡牌固有静态减费能力)
+   */
+  public calculateCardCost(
+    playerId: string,
+    cardInstanceId: string,
+    isAscension?: boolean
+  ): { costToPay: number; appliedModifiers: CostModifier[] } {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return { costToPay: 0, appliedModifiers: [] };
+    const cardDef = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+    if (!cardDef) return { costToPay: 0, appliedModifiers: [] };
+
+    const player = this.state.players[playerId];
+    const isAscensionPlay = !!(isAscension && cardDef.ascensionConfig);
+    const baseCost = isAscensionPlay
+      ? cardDef.ascensionConfig!.ascensionCost
+      : cardDef.cost;
+
+    let discount = 0;
+    const appliedModifiers: CostModifier[] = [];
+
+    // 1. 玩家当前挂载的动态费用修改器 (如卡牌【起】动能力减费)
+    if (player?.costModifiers && player.costModifiers.length > 0) {
+      for (const mod of player.costModifiers) {
+        if (mod.excludeAscension && isAscensionPlay) continue;
+        if (mod.cardType && mod.cardType !== cardDef.cardType) continue;
+        if (mod.targetTrait) {
+          const matchTrait = cardDef.traits?.some((t) => t.includes(mod.targetTrait!));
+          const matchName = cardDef.name.includes(mod.targetTrait);
+          if (!matchTrait && !matchName) continue;
+        }
+        if (mod.targetName && !cardDef.name.includes(mod.targetName)) continue;
+
+        discount += mod.amount;
+        appliedModifiers.push(mod);
+      }
+    }
+
+    // 2. 卡牌自身静态能力减费 (8.6.2.c)
+    // 2.1 ST03-011 (三头犬出击): 【永】：我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1。
+    if (
+      cardDef.cardNumber === 'ST03-011' ||
+      cardDef.rulesText.includes('我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1')
+    ) {
+      const myBattlefieldSlots = this.state.battlefields[playerId] || [];
+      const cerberusRoleCount = myBattlefieldSlots.filter((s) => {
+        if (!s.roleCardId) return false;
+        const roleCard = this.state.cards[s.roleCardId];
+        if (!roleCard) return false;
+        const rDef = this.cardDb.getCard(roleCard.cardNumber) || (roleCard.cardId ? this.cardDb.getCard(roleCard.cardId) : undefined);
+        if (!rDef || rDef.cardType !== CardType.ROLE) return false;
+        return (
+          rDef.traits?.some((t) => t.includes('三头犬小队')) ||
+          rDef.name.includes('三头犬小队')
+        );
+      }).length;
+      discount += cerberusRoleCount;
+    }
+
+    // 2.2 BP01-016: 我方战场存在《露西亚》角色或《阿尔法》角色时，手牌和墓地的该牌的费用-3
+    if (
+      cardDef.cardNumber === 'BP01-016' ||
+      cardDef.rulesText.includes('我方战场存在《露西亚》角色或《阿尔法》角色时，手牌和墓地的该牌的费用-3')
+    ) {
+      const myBattlefieldSlots = this.state.battlefields[playerId] || [];
+      const hasLuciaOrAlpha = myBattlefieldSlots.some((s) => {
+        if (!s.roleCardId) return false;
+        const roleCard = this.state.cards[s.roleCardId];
+        if (!roleCard) return false;
+        const rDef = this.cardDb.getCard(roleCard.cardNumber) || (roleCard.cardId ? this.cardDb.getCard(roleCard.cardId) : undefined);
+        return rDef && (rDef.name.includes('露西亚') || rDef.name.includes('阿尔法') || rDef.traits?.some((t) => t.includes('露西亚') || t.includes('阿尔法')));
+      });
+      if (hasLuciaOrAlpha) {
+        discount += 3;
+      }
+    }
+
+    const costToPay = Math.max(0, baseCost - discount);
+    return { costToPay, appliedModifiers };
+  }
+
+  /**
+   * 8.6.2 打出卡牌 (PLAY_CARD)
    */
   private handlePlayCard(action: Extract<GameAction, { type: 'PLAY_CARD' }>): {
     success: boolean;
     error?: string;
   } {
     if (this.state.phase !== 'MAIN_PHASE') {
-      return { success: false, error: '只能在主要阶段使用手牌 (6.4.1.b)' };
+      return { success: false, error: '只能在主要阶段使用手牌 (8.6.2)' };
     }
     if (this.state.activePlayerId !== action.playerId) {
       return { success: false, error: '只能在自己回合的主要阶段使用手牌' };
@@ -452,32 +535,12 @@ export class GameEngine {
       }
     }
 
-    // 8.6.2.c 支付费用 (计算动态费用减免)
-    const isAscensionPlay = !!(action.isAscension && cardDef.ascensionConfig);
-    const baseCost = isAscensionPlay
-      ? cardDef.ascensionConfig!.ascensionCost
-      : cardDef.cost;
-
-    let discount = 0;
-    const appliedModifiers: CostModifier[] = [];
-
-    if (player.costModifiers && player.costModifiers.length > 0) {
-      for (const mod of player.costModifiers) {
-        if (mod.excludeAscension && isAscensionPlay) continue;
-        if (mod.cardType && mod.cardType !== cardDef.cardType) continue;
-        if (mod.targetTrait) {
-          const matchTrait = cardDef.traits?.some((t) => t.includes(mod.targetTrait!));
-          const matchName = cardDef.name.includes(mod.targetTrait);
-          if (!matchTrait && !matchName) continue;
-        }
-        if (mod.targetName && !cardDef.name.includes(mod.targetName)) continue;
-
-        discount += mod.amount;
-        appliedModifiers.push(mod);
-      }
-    }
-
-    const costToPay = Math.max(0, baseCost - discount);
+    // 8.6.2.c 支付费用 (计算动态费用减免与固有静态减费)
+    const { costToPay, appliedModifiers } = this.calculateCardCost(
+      action.playerId,
+      action.cardInstanceId,
+      action.isAscension
+    );
 
     if (!this.payCost(action.playerId, costToPay)) {
       const avail = player.availableOpenCostCount + player.hiddenCostCount;

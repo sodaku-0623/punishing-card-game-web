@@ -31,6 +31,7 @@ interface CardContextMenuProps {
   isMyTurn: boolean;
   phase: GamePhase;
   myAvailableCost: number;
+  effectiveCost?: number;
   isFriendlyRole: boolean;
   isOpponentRole: boolean;
   isHandCard: boolean;
@@ -57,6 +58,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   isMyTurn,
   phase,
   myAvailableCost,
+  effectiveCost,
   isFriendlyRole,
   isOpponentRole,
   isHandCard,
@@ -77,6 +79,12 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
+
+  const currentCost = effectiveCost !== undefined ? effectiveCost : (cardDef?.cost ?? 0);
+  const costLabel =
+    cardDef && effectiveCost !== undefined && effectiveCost < cardDef.cost
+      ? `费用 ${effectiveCost} (原${cardDef.cost})`
+      : `费用 ${currentCost}`;
 
   // 点击菜单外部或按下 Esc 自动关闭
   useEffect(() => {
@@ -109,10 +117,10 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       actions.push({
         id: 'play_role',
         label: '召唤登场 (出牌)',
-        subLabel: `费用 ${cardDef.cost}`,
+        subLabel: costLabel,
         icon: <Play className="w-3.5 h-3.5" />,
         variant: 'primary',
-        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || !hasEmptySlot || myAvailableCost < cardDef.cost,
+        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || !hasEmptySlot || myAvailableCost < currentCost,
         onClick: () => {
           onPlayCard?.(card);
           onClose();
@@ -142,10 +150,10 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       actions.push({
         id: 'play_tactics',
         label: card.cardNumber?.startsWith('ORB-') ? '放置信号球' : '发动战术卡',
-        subLabel: `费用 ${cardDef.cost}`,
+        subLabel: costLabel,
         icon: <Zap className="w-3.5 h-3.5" />,
         variant: 'primary',
-        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < cardDef.cost,
+        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < currentCost,
         onClick: () => {
           onPlayCard?.(card);
           onClose();
@@ -155,10 +163,10 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       actions.push({
         id: 'play_equip',
         label: '使用装备卡',
-        subLabel: `费用 ${cardDef.cost}`,
+        subLabel: costLabel,
         icon: <Shield className="w-3.5 h-3.5" />,
         variant: 'primary',
-        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < cardDef.cost,
+        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < currentCost,
         onClick: () => {
           onPlayCard?.(card);
           onClose();

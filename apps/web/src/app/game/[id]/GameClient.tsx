@@ -892,6 +892,49 @@ export default function GameTabletopPage() {
     setPendingChoice(null);
   };
 
+  // 计算手牌卡牌的实际使用费用 (含动态费用修改器与 ST03-011 等静态减费)
+  const getCardEffectiveCost = (card: CardInstance): number => {
+    const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+    if (!def) return 0;
+    const baseCost = def.cost ?? 0;
+    let discount = 0;
+
+    // 1. 动态费用修改器
+    if (myPlayerState.costModifiers && myPlayerState.costModifiers.length > 0) {
+      for (const mod of myPlayerState.costModifiers) {
+        if (mod.cardType && mod.cardType !== def.cardType) continue;
+        if (mod.targetTrait) {
+          const matchTrait = def.traits?.some((t) => t.includes(mod.targetTrait!));
+          const matchName = def.name.includes(mod.targetTrait);
+          if (!matchTrait && !matchName) continue;
+        }
+        if (mod.targetName && !def.name.includes(mod.targetName)) continue;
+        discount += mod.amount;
+      }
+    }
+
+    // 2. 静态减费能力 (ST03-011 三头犬出击: 我方战场每有1张<三头犬小队>角色，手牌的该牌费用-1)
+    if (
+      def.cardNumber === 'ST03-011' ||
+      def.rulesText?.includes('我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1')
+    ) {
+      const cerberusCount = mySlots.filter((s) => {
+        if (!s.roleCardId) return false;
+        const rCard = gameState.publicCards[s.roleCardId];
+        if (!rCard) return false;
+        const rDef = findCardByNumberOrId(rCard.cardNumber || rCard.cardId);
+        if (!rDef || rDef.cardType !== CardType.ROLE) return false;
+        return (
+          rDef.traits?.some((t) => t.includes('三头犬小队')) ||
+          rDef.name.includes('三头犬小队')
+        );
+      }).length;
+      discount += cerberusCount;
+    }
+
+    return Math.max(0, baseCost - discount);
+  };
+
   const selectedHandCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
   const selectedHandCardDef = selectedHandCard
     ? findCardByNumberOrId(selectedHandCard.cardNumber || selectedHandCard.cardId)
@@ -1217,7 +1260,11 @@ export default function GameTabletopPage() {
                 <Info className="w-3.5 h-3.5 text-terminalCyan" />
                 <span className="text-neutral-300 text-[11px]">
                   选中: <strong className="text-white">【{selectedHandCardDef?.name || selectedHandCard.cardNumber}】</strong>
-                  {selectedHandCardDef && ` (${formatCardType(selectedHandCardDef.cardType, selectedHandCardDef.isInstant)} • 费用: ${selectedHandCardDef.cost})`}
+                  {selectedHandCardDef && (() => {
+                    const effCost = getCardEffectiveCost(selectedHandCard);
+                    const costText = effCost < selectedHandCardDef.cost ? `${effCost} (原${selectedHandCardDef.cost})` : `${effCost}`;
+                    return ` (${formatCardType(selectedHandCardDef.cardType, selectedHandCardDef.isInstant)} • 费用: ${costText})`;
+                  })()}
                 </span>
               </div>
 
@@ -1580,6 +1627,7 @@ export default function GameTabletopPage() {
           isMyTurn={isMyTurn}
           phase={gameState.phase}
           myAvailableCost={myPlayerState.availableOpenCostCount}
+          effectiveCost={contextMenu.card.zone === 'HAND' ? getCardEffectiveCost(contextMenu.card) : undefined}
           isFriendlyRole={
             contextMenu.card.controllerPlayerId === resolvedMyUserId &&
             contextMenu.card.zone === 'BATTLEFIELD'
