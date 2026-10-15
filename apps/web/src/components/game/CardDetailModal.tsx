@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
 import { CardData, findCardByNumberOrId, getCardVariants, getCardSeries, CardVariant } from '@/lib/cards-data';
+import { getCardFullImageUrl } from '@/lib/card-image';
 import { X, Sparkles, Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Star } from 'lucide-react';
 
 interface CardDetailModalProps {
@@ -120,12 +121,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
   const elementInfo = getElementInfo(resolvedCard.attribute, resolvedCard.attributeName);
   const variants = resolvedCard?.cardNumber ? getCardVariants(resolvedCard.cardNumber) : [];
-  const cardImgSrc =
+  const cardImgSrc = getCardFullImageUrl(
     activeVariantImg ||
     selectedImageUrl ||
     card.imageUrl ||
-    resolvedCard.imageUrl ||
-    (resolvedCard.cardNumber ? `/cards/${resolvedCard.cardNumber}.png` : '');
+    resolvedCard.imageUrl,
+    resolvedCard.cardNumber
+  );
 
   return (
     <div

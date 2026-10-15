@@ -15,7 +15,7 @@ import {
   getAttributeDisplay,
 } from '@/lib/cards-data';
 import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
-import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
+import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
 import { copyText } from '@/lib/clipboard';
 import {
   ChevronLeft,
@@ -91,7 +91,10 @@ export default function CardDetailPage() {
     );
   }
 
-  const activeImage = variants[selectedVariantIndex]?.imageUrl || card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const activeImage = getCardFullImageUrl(
+    variants[selectedVariantIndex]?.imageUrl || card.imageUrl,
+    card.cardNumber
+  );
   const packageName = card.packageName || card.flavorText || getCardSeries(card.cardNumber);
 
   const copyCardCode = async () => {
