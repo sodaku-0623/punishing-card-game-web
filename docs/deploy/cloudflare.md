@@ -198,8 +198,20 @@ npx wrangler secret put ADMIN_PASSWORD --name zhanshuang-worker
 
 前端以静态导出的方式打包进 Worker 的静态资源目录 `apps/worker/static`，与后端一起发布。
 
-### 1. 构建与发布
-在项目根目录运行：
+### 1. 一键部署 (推荐)
+首次部署与日常更新都只需在项目根目录运行 (Windows / macOS / Linux 通用，可重复执行)：
+```bash
+npx wrangler login                                          # 首次使用前登录一次
+npm ci
+npm run deploy:cf -- --card-cdn https://cards.example.com   # 卡图所在的 R2 公开域名
+```
+`scripts/deploy-cf.mjs` 会依次：检查登录 → 确保 D1 数据库存在并与 `wrangler.toml` 一致 → 建表 (幂等) → 构建 → 缺失时随机生成并写入 `JWT_SECRET` / `ADMIN_PASSWORD` (管理员密码只在终端显示一次，请立即保存) → 发布 → 健康检查。
+- 先用 `--dry-run` 试一遍：只构建并检查打包结果，不修改 Cloudflare 上的任何资源。
+- 绑定自定义域名后可加 `--domain game.example.com`，用域名做健康检查。
+- 若脚本更新了 `wrangler.toml` 中的 `database_id`，请把这处改动提交到仓库。
+
+### 2. 手动构建与发布
+如需逐步执行 (D1 与密钥需先按第三、五节手动配置)，在项目根目录运行：
 ```bash
 npm ci && npm run build
 
@@ -215,7 +227,7 @@ npm run deploy -w @zhanshuang/worker
 - `NEXT_PUBLIC_*` 在构建时写入前端代码，修改后必须重新执行 `build:cf-static` 并发布。
 - 动态路由只生成一个占位页面 (`/rooms/lobby`、`/game/room`、`/cards/BP01-001`、`/decks/default`、`/replay/demo`)，其余 ID 由 Worker 改写到占位页面 (`apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`)，页面再从地址栏读取真实 ID (`apps/web/src/lib/route-id.tsx`)。修改占位 ID 时两边必须同步。
 
-### 2. 绑定自定义域名（国内访问的关键步骤）
+### 3. 绑定自定义域名（国内访问的关键步骤）
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
 2. **设置 (Settings)** ➔ **域与路由 (Domains & Routes)** ➔ **添加 (Add)** ➔ **自定义域 (Custom Domain)**。
 3. 输入 `game.example.com` 并添加，Cloudflare 会自动配置 DNS 与 TLS 证书。

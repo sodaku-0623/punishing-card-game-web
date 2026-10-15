@@ -23,7 +23,7 @@
 | | 自建部署 (Node 版) | Cloudflare 版 |
 | --- | --- | --- |
 | 后端 | `apps/server` | `apps/worker` |
-| 启动 / 发布 | `start.bat`、`npm start`、便携版 (`npm run package:portable`) | `npm run build:cf-static` + `npm run deploy -w @zhanshuang/worker` (详见 `docs/deploy/cloudflare.md`) |
+| 启动 / 发布 | `start.bat`、`npm start`、便携版 (`npm run package:portable`) | `npm run deploy:cf -- --card-cdn <R2 域名>` (一键部署，可重复执行；详见 `docs/deploy/cloudflare.md`) |
 | 前端托管 | Next.js 服务 (`next start` / `next dev`) | Next.js 静态导出，作为同一个 Worker 的静态资源 (前端、API、WebSocket 同域) |
 | 前端传输层 | Socket.IO (默认，不设置任何 `NEXT_PUBLIC_*`) | 原生 WebSocket (`build:cf-static` 自动设置 `NEXT_PUBLIC_WS_TRANSPORT=native`) |
 | 数据 | 内存存储，重启清空 | D1 持久化 |
