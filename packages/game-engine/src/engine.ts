@@ -31,19 +31,25 @@ export interface GameEngineOptions {
   skipMulligan?: boolean;
 }
 
-export class GameEngine {
+export interface GameEngineSnapshot {
   state: GameState;
-  private rng: SeedRng;
-  readonly cardDb: ICardDatabase;
+  rngState: number;
+  events?: GameEvent[];
+}
+
+export class GameEngine {
+  state!: GameState;
+  rng!: SeedRng;
+  cardDb!: ICardDatabase;
   events: GameEvent[] = [];
 
-  readonly zoneMgr: ZoneManager;
-  readonly fieldMgr: BattlefieldManager;
-  readonly sbaEngine: SbaEngine;
-  readonly checkTimingMgr: CheckTimingManager;
-  readonly combatMgr: CombatManager;
-  readonly phaseMachine: PhaseMachine;
-  readonly effectEngine: CardEffectEngine;
+  zoneMgr!: ZoneManager;
+  fieldMgr!: BattlefieldManager;
+  sbaEngine!: SbaEngine;
+  checkTimingMgr!: CheckTimingManager;
+  combatMgr!: CombatManager;
+  phaseMachine!: PhaseMachine;
+  effectEngine!: CardEffectEngine;
 
   constructor(
     gameId: string,
@@ -61,6 +67,15 @@ export class GameEngine {
     this.state = init.state;
     this.events.push(...init.events);
 
+    this.initManagers();
+
+    if (skipMulligan) {
+      // 5.2.1.g 跳过调度直接开局，执行第一回合竖直阶段与抽牌填充阶段
+      this.phaseMachine.startStandPhase();
+    }
+  }
+
+  private initManagers(): void {
     this.zoneMgr = new ZoneManager(this.state, this.rng, this.cardDb, this.events);
     this.fieldMgr = new BattlefieldManager(this.state, this.zoneMgr, this.cardDb, this.events);
     this.sbaEngine = new SbaEngine(this.state, this.zoneMgr, this.fieldMgr, this.events);
@@ -94,11 +109,30 @@ export class GameEngine {
     this.zoneMgr.setChargeAutoHandler((playerId, cardInstanceId, cardDef) => {
       this.effectEngine.handleChargeAutoEffect(playerId, cardInstanceId, cardDef);
     });
+  }
 
-    if (skipMulligan) {
-      // 5.2.1.g 跳过调度直接开局，执行第一回合竖直阶段与抽牌填充阶段
-      this.phaseMachine.startStandPhase();
-    }
+  /**
+   * 导出当前引擎的完整快照，包含游戏状态与伪随机数生成器的内部状态 (满足 Durable Object 状态恢复要求)
+   */
+  toSnapshot(): GameEngineSnapshot {
+    return {
+      state: JSON.parse(JSON.stringify(this.state)),
+      rngState: this.rng.getSeed(),
+      events: [...this.events],
+    };
+  }
+
+  /**
+   * 从快照完整恢复对局引擎 (O(1) 恢复进行中的对战会话)
+   */
+  static fromSnapshot(snapshot: GameEngineSnapshot, cardDb?: ICardDatabase): GameEngine {
+    const engine = Object.create(GameEngine.prototype) as GameEngine;
+    engine.state = JSON.parse(JSON.stringify(snapshot.state));
+    engine.rng = new SeedRng(snapshot.rngState);
+    engine.cardDb = cardDb ?? new MemoryCardDatabase(BASE_TEST_CARDS);
+    engine.events = snapshot.events ? [...snapshot.events] : [];
+    engine.initManagers();
+    return engine;
   }
 
   getState(): GameState {

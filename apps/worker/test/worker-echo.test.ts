@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { EchoDO } from '../src/index.js';
 import { Env } from '../src/types.js';
+import { createMockD1Database } from './mock-d1.js';
 
 function createMockWebSocket() {
   const sent: (string | ArrayBuffer)[] = [];
@@ -61,6 +62,13 @@ describe('Cloudflare Worker & EchoDO 连通性测试服务', () => {
           fetch: async (_req: Request) => Response.json({ ok: true, source: 'EchoDO_Stub' }),
         }) as unknown as DurableObjectStub,
       } as unknown as DurableObjectNamespace,
+      ROOM_DO: {
+        idFromName: (_name: string) => ({ toString: () => 'room-id' }) as DurableObjectId,
+        get: (_id: DurableObjectId) => ({
+          fetch: async (_req: Request) => Response.json({ ok: true, source: 'RoomDO_Stub' }),
+        }) as unknown as DurableObjectStub,
+      } as unknown as DurableObjectNamespace,
+      DB: createMockD1Database(),
     };
 
     it('OPTIONS 预检请求应返回跨域允许响应头', async () => {

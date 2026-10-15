@@ -1,6 +1,7 @@
 {
   "name": "@zhanshuang/worker",
   "version": "1.0.0",
+  "type": "module",
   "description": "Cloudflare Worker and Durable Objects for Zhanshuang TCG online platform",
   "main": "src/index.ts",
   "scripts": {
@@ -11,12 +12,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@zhanshuang/shared": "*"
+    "@zhanshuang/shared": "*",
+    "@zhanshuang/game-rules": "*",
+    "@zhanshuang/game-engine": "*",
+    "@zhanshuang/database": "*",
+    "hono": "^4.13.13"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241022.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
-    "wrangler": "^3.80.0"
+    "wrangler": "^4.151.0"
   }
 }
