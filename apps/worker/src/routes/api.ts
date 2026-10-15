@@ -42,10 +42,10 @@ export function createApiApp() {
 
   // 数据库自动预置守卫中间件
   app.use('*', async (c, next) => {
-    if (c.env?.DB && typeof c.env.DB.exec === 'function') {
+    if (c.env?.DB && typeof c.env.DB.prepare === 'function') {
       try {
         await initializeDatabase(c.env.DB, c.env.ADMIN_PASSWORD);
-      } catch (err) {
+      } catch (err: any) {
         console.error('D1 initialization error:', err);
       }
     }
