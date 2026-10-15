@@ -1,0 +1,27 @@
+{
+  "name": "zhanshuang-tcg-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "《战双帕弥什 卡牌对战》在线对战平台",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "dev": "node scripts/start.mjs",
+    "start": "node scripts/start.mjs",
+    "dev:server": "npm run dev --workspace=@zhanshuang/server",
+    "dev:web": "npm run dev --workspace=@zhanshuang/web",
+    "db:generate": "npm run generate --workspace=@zhanshuang/database",
+    "db:push": "npm run push --workspace=@zhanshuang/database",
+    "package:portable": "node scripts/package-portable.mjs",
+    "test:stress": "node scripts/stress-test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "rimraf": "^6.0.1"
+  }
+}

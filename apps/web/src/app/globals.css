@@ -1,0 +1,323 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #090c10;
+  --foreground: #e6edf3;
+  --terminal-cyan: #00f0ff;
+  --terminal-gold: #ffc800;
+  --erosion-red: #ff2a5f;
+  --hud-panel-bg: rgba(13, 17, 23, 0.92);
+}
+
+html, body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+  overflow-y: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: manipulation;
+}
+
+/* 战双末世科幻高光与全息光效 Design Tokens */
+.terminal-glow-cyan {
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
+}
+
+.terminal-glow-gold {
+  box-shadow: 0 0 16px rgba(255, 200, 0, 0.45);
+}
+
+.terminal-glow-red {
+  box-shadow: 0 0 16px rgba(255, 42, 95, 0.5);
+}
+
+.terminal-glow-purple {
+  box-shadow: 0 0 16px rgba(168, 85, 247, 0.45);
+}
+
+.terminal-border-cyan {
+  border: 1px solid rgba(0, 240, 255, 0.4);
+}
+
+.hud-panel {
+  background: var(--hud-panel-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+}
+
+/* 卡牌交互与 GPU 渲染加速及移动端触控优化 */
+.card-interactive {
+  will-change: transform;
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.16s ease-out, border-color 0.16s ease-out;
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+/* 手牌托盘支持顺畅横向左右滑动，绝不触发上下弹性下拉 */
+.touch-pan-x {
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 卡牌横置 90 度旋转状态 (7.2.1.b 攻击横置 / 7.3.1.c 阻挡横置) */
+.card-rested {
+  transform: rotate(90deg) scale(0.72) !important;
+  transform-origin: center center !important;
+  opacity: 0.9 !important;
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.75) !important;
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease-out !important;
+}
+
+/* 拖拽释放悬停高亮提示 */
+.drag-valid-slot {
+  background: rgba(0, 240, 255, 0.15) !important;
+  border-color: rgba(0, 240, 255, 0.9) !important;
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.6) !important;
+  transform: scale(1.03);
+}
+
+.drag-target-attack {
+  background: rgba(255, 42, 95, 0.2) !important;
+  border-color: rgba(255, 42, 95, 0.9) !important;
+  box-shadow: 0 0 22px rgba(255, 42, 95, 0.7) !important;
+  transform: scale(1.04);
+}
+
+/* 科技角标绘制 */
+.corner-tl {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+}
+.corner-tr {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+}
+.corner-bl {
+  position: absolute;
+  bottom: 2px;
+  left: 3px;
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+}
+.corner-br {
+  position: absolute;
+  bottom: 2px;
+  right: 3px;
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+}
+
+/* 极简科幻滚动条 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.6);
+}
+
+/* ================= YGOPro 2 风格 阶段切换全屏横幅 ================= */
+.phase-banner {
+  position: fixed;
+  top: 50%;
+  left: -100%;
+  transform: translateY(-50%);
+  font-size: 3.5rem;
+  font-weight: 900;
+  text-shadow: 0 0 25px var(--terminal-cyan), 0 0 50px rgba(0, 240, 255, 0.6);
+  animation: phase-slide-in 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+}
+
+.phase-banner-red {
+  text-shadow: 0 0 25px var(--erosion-red), 0 0 55px rgba(255, 42, 95, 0.7);
+}
+
+.phase-banner-gold {
+  text-shadow: 0 0 25px var(--terminal-gold), 0 0 55px rgba(255, 200, 0, 0.7);
+}
+
+@keyframes phase-slide-in {
+  0% {
+    left: -100%;
+    opacity: 0;
+  }
+  30% {
+    left: 50%;
+    opacity: 1;
+    transform: translateX(-50%) translateY(-50%);
+  }
+  70% {
+    left: 50%;
+    opacity: 1;
+    transform: translateX(-50%) translateY(-50%);
+  }
+  100% {
+    left: 120%;
+    opacity: 0;
+    transform: translateX(0) translateY(-50%);
+  }
+}
+
+/* ================= 攻击动画: 冲锋 + 碰撞闪光 ================= */
+/* 己方向上冲锋冲撞目标 (向对手卡位或对手玩家) */
+@keyframes attack-charge-up {
+  0% {
+    transform: translateY(0) scale(1);
+    z-index: 45;
+  }
+  40% {
+    transform: translateY(-60px) scale(1.1);
+    filter: brightness(1.5) drop-shadow(0 0 15px rgba(255, 42, 95, 0.8));
+    z-index: 45;
+  }
+  60% {
+    transform: translateY(-80px) scale(1.15);
+    filter: brightness(1.7) drop-shadow(0 0 22px rgba(255, 42, 95, 1));
+    z-index: 45;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+    z-index: auto;
+  }
+}
+
+/* 对手向下冲锋冲撞我方目标 */
+@keyframes attack-charge-down {
+  0% {
+    transform: translateY(0) scale(1);
+    z-index: 45;
+  }
+  40% {
+    transform: translateY(60px) scale(1.1);
+    filter: brightness(1.5) drop-shadow(0 0 15px rgba(255, 42, 95, 0.8));
+    z-index: 45;
+  }
+  60% {
+    transform: translateY(80px) scale(1.15);
+    filter: brightness(1.7) drop-shadow(0 0 22px rgba(255, 42, 95, 1));
+    z-index: 45;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+    z-index: auto;
+  }
+}
+
+.animate-attack-up {
+  animation: attack-charge-up 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards !important;
+}
+
+.animate-attack-down {
+  animation: attack-charge-down 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards !important;
+}
+
+/* 受击卡牌震颤晃动与闪红 */
+@keyframes target-hit-shake {
+  0% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(-10px, 8px) scale(0.96);
+    filter: brightness(1.8) drop-shadow(0 0 16px rgba(255, 42, 95, 0.9));
+  }
+  40% {
+    transform: translate(10px, -8px) scale(1.02);
+  }
+  60% {
+    transform: translate(-6px, 5px);
+  }
+  80% {
+    transform: translate(4px, -3px);
+  }
+  100% {
+    transform: translate(0, 0);
+    filter: brightness(1);
+  }
+}
+
+.animate-target-hit {
+  animation: target-hit-shake 0.5s ease-out forwards !important;
+}
+
+/* 碰撞光暴与刀光冲击特效 */
+@keyframes clash-flash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2) rotate(0deg);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.5) rotate(15deg);
+    filter: brightness(2.2);
+  }
+  70% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.2) rotate(30deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.2) rotate(45deg);
+  }
+}
+
+.clash-flash-effect {
+  animation: clash-flash 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+/* ================= 战双官方竞技场战场纹理底图容器 ================= */
+.ygo-battlefield-mat {
+  background-image: url('/official-arena-hd.jpg');
+  background-size: 100% 100%;
+  background-position: center;
+  background-repeat: no-repeat;
+  box-shadow: 0 0 35px rgba(0, 240, 255, 0.15), inset 0 0 50px rgba(0, 0, 0, 0.3);
+}
+
+/* ================= 战术全息交战指示流光 ================= */
+@keyframes arrow-dash-flow {
+  0% {
+    stroke-dashoffset: 30;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.targeting-arrow-pulse {
+  animation: arrow-dash-flow 0.85s linear infinite;
+}
+

@@ -1,0 +1,159 @@
+import { spawn, exec, execSync } from 'node:child_process';
+import http from 'node:http';
+import readline from 'node:readline';
+
+const SERVER_PORT = 4000;
+const WEB_PORT = 3000;
+const HEALTH_URL = `http://127.0.0.1:${SERVER_PORT}/health`;
+const WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
+
+console.log('\x1b[36m%s\x1b[0m', '======================================================================');
+console.log('\x1b[36m%s\x1b[0m', '   《战双帕弥什 卡牌对战》 权威在线对战平台 - 一键启动器');
+console.log('\x1b[36m%s\x1b[0m', '======================================================================');
+
+const isWin = process.platform === 'win32';
+const npmCmd = isWin ? 'npm.cmd' : 'npm';
+
+let serverProc = null;
+let webProc = null;
+let isShuttingDown = false;
+let browserOpened = false;
+
+function killProcess(proc) {
+  if (!proc || !proc.pid) return;
+  try {
+    if (isWin) {
+      execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+    } else {
+      process.kill(-proc.pid, 'SIGTERM');
+    }
+  } catch (err) {
+    // Process already exited or cannot be killed
+  }
+}
+
+function cleanup() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log('\n\x1b[33m%s\x1b[0m', '>>> 正在安全停止所有服务，释放端口...');
+  killProcess(serverProc);
+  killProcess(webProc);
+  console.log('\x1b[32m%s\x1b[0m', '>>> 服务已全部安全关闭。再见，指挥官！');
+  process.exit(0);
+}
+
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
+process.on('exit', () => {
+  killProcess(serverProc);
+  killProcess(webProc);
+});
+
+// 检查 HTTP 服务是否可用
+function checkHttpReady(url) {
+  return new Promise((resolve) => {
+    const req = http.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 200 && res.statusCode < 400) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+// 自动打开浏览器
+function openBrowser(url) {
+  if (browserOpened) return;
+  browserOpened = true;
+  console.log('\x1b[32m%s\x1b[0m', `>>> [自动打开浏览器] 正在为您打开对战平台: ${url}`);
+  try {
+    if (isWin) {
+      exec(`start ${url}`);
+    } else if (process.platform === 'darwin') {
+      exec(`open ${url}`);
+    } else {
+      exec(`xdg-open ${url}`);
+    }
+  } catch (err) {
+    console.warn('打开浏览器失败，请手动在浏览器输入访问:', url);
+  }
+}
+
+// 1. 启动后端权威服务器
+console.log('\x1b[34m%s\x1b[0m', `[1/3] 正在启动后端权威服务器 (端口: ${SERVER_PORT})...`);
+serverProc = spawn(npmCmd, ['run', 'dev:server'], {
+  stdio: ['inherit', 'pipe', 'pipe'],
+  shell: isWin,
+});
+
+const rlServer = readline.createInterface({ input: serverProc.stdout });
+rlServer.on('line', (line) => {
+  console.log('\x1b[35m[后端]\x1b[0m', line);
+});
+
+const rlServerErr = readline.createInterface({ input: serverProc.stderr });
+rlServerErr.on('line', (line) => {
+  console.error('\x1b[31m[后端错误]\x1b[0m', line);
+});
+
+// 2. 启动前端 Next.js 平台
+console.log('\x1b[34m%s\x1b[0m', `[2/3] 正在启动前端 Next.js 平台 (端口: ${WEB_PORT})...`);
+webProc = spawn(npmCmd, ['run', 'dev:web'], {
+  stdio: ['inherit', 'pipe', 'pipe'],
+  shell: isWin,
+});
+
+const rlWeb = readline.createInterface({ input: webProc.stdout });
+rlWeb.on('line', (line) => {
+  console.log('\x1b[36m[前端]\x1b[0m', line);
+});
+
+const rlWebErr = readline.createInterface({ input: webProc.stderr });
+rlWebErr.on('line', (line) => {
+  console.error('\x1b[33m[前端提示]\x1b[0m', line);
+});
+
+// 3. 轮询健康检测并在就绪后打开页面
+console.log('\x1b[34m%s\x1b[0m', `[3/3] 正在等待服务端与前端页面编译就绪...`);
+
+let attempts = 0;
+const maxAttempts = 60; // 最多轮询 60 秒
+let serverReady = false;
+let webReady = false;
+
+const timer = setInterval(async () => {
+  attempts++;
+  if (!serverReady) {
+    serverReady = await checkHttpReady(HEALTH_URL);
+    if (serverReady) {
+      console.log('\x1b[32m%s\x1b[0m', `>>> [就绪] 权威对战服务器运行正常 (http://localhost:${SERVER_PORT})`);
+    }
+  }
+
+  if (!webReady) {
+    webReady = await checkHttpReady(WEB_URL);
+    if (webReady) {
+      console.log('\x1b[32m%s\x1b[0m', `>>> [就绪] Next.js 前端平台已就绪 (http://localhost:${WEB_PORT})`);
+    }
+  }
+
+  if (serverReady && webReady) {
+    clearInterval(timer);
+    console.log('\n\x1b[32m%s\x1b[0m', '======================================================================');
+    console.log('\x1b[32m%s\x1b[0m', '   🎉 《战双帕弥什 卡牌对战》全平台已成功启动！');
+    console.log('\x1b[32m%s\x1b[0m', `   🌐 前端对战地址: http://localhost:${WEB_PORT}`);
+    console.log('\x1b[32m%s\x1b[0m', `   ⚡ 权威后端地址: http://localhost:${SERVER_PORT}`);
+    console.log('\x1b[32m%s\x1b[0m', '   💡 按 Ctrl+C 即可一键安全停止所有服务并释放端口');
+    console.log('\x1b[32m%s\x1b[0m', '======================================================================\n');
+    openBrowser(`http://localhost:${WEB_PORT}`);
+  } else if (attempts >= maxAttempts) {
+    clearInterval(timer);
+    console.warn('\x1b[33m%s\x1b[0m', '服务启动检测超时，请检查控制台上方输出是否有报错。');
+  }
+}, 1000);
