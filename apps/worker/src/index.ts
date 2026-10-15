@@ -7,6 +7,37 @@ import { Env } from './types.js';
 export { EchoDO, RoomDO };
 
 const apiApp = createApiApp();
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_\-]{1,64}$/;
+
+/**
+ * 解析 WebSocket 路径对应的房间 ID：
+ * - /ws/game/game~<roomId>~<timestamp> → <roomId>
+ * - /ws/rooms/<6 位房间代码> → 通过大厅投影查回真实房间 ID (与 Node 版一致，支持用房间代码加入)
+ */
+async function resolveRoomId(pathname: string, env: Env): Promise<string | null> {
+  const isGame = pathname.startsWith('/ws/game/');
+  const raw = decodeURIComponent(pathname.slice(isGame ? '/ws/game/'.length : '/ws/rooms/'.length).split('/')[0] ?? '');
+  let roomId = raw;
+  if (isGame) {
+    const parts = raw.split('~');
+    roomId = parts.length >= 3 ? parts.slice(1, -1).join('~') : '';
+  }
+  if (!ROOM_ID_PATTERN.test(roomId)) return null;
+
+  if (!isGame && env.DB) {
+    try {
+      const byCode = await env.DB.prepare(
+        'SELECT room_id FROM lobby_rooms WHERE room_code = ? AND room_id != ? AND player_count > 0'
+      )
+        .bind(roomId.toUpperCase(), roomId)
+        .first<{ room_id: string }>();
+      if (byCode?.room_id) return byCode.room_id;
+    } catch {
+      // 大厅表尚未初始化时按房间 ID 处理
+    }
+  }
+  return roomId;
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
@@ -23,29 +54,20 @@ export default {
       });
     }
 
-    // 2. 实时对战与房间 WebSocket 升级路由 (/ws/rooms/:roomId 与 /ws/game/:gameId)
+    // 2. 实时对战与房间 WebSocket 路由：/ws/rooms/:roomIdOrCode 与 /ws/game/:gameId
     if (url.pathname.startsWith('/ws/rooms/') || url.pathname.startsWith('/ws/game/')) {
       if (!env.ROOM_DO) {
         return new Response('Durable Object ROOM_DO is not bound', { status: 500 });
       }
-
-      let roomId = '';
-      if (url.pathname.startsWith('/ws/rooms/')) {
-        roomId = url.pathname.replace('/ws/rooms/', '').split('/')[0]!;
-      } else {
-        // 从 game:<roomId>:<timestamp> 中反向解析 roomId
-        const gameId = url.pathname.replace('/ws/game/', '').split('/')[0]!;
-        const parts = gameId.split(':');
-        roomId = parts.length >= 2 ? parts[1]! : gameId;
-      }
-
+      const roomId = await resolveRoomId(url.pathname, env);
       if (!roomId) {
         return new Response('Room ID is required', { status: 400 });
       }
-
-      const id = env.ROOM_DO.idFromName(roomId);
-      const stub = env.ROOM_DO.get(id);
-      return stub.fetch(request);
+      // 通过请求头把路由确定的房间 ID 传给 Durable Object，房间不以消息负载中的 roomId 为准
+      const headers = new Headers(request.headers);
+      headers.set('x-room-id', roomId);
+      const stub = env.ROOM_DO.get(env.ROOM_DO.idFromName(roomId));
+      return stub.fetch(new Request(request, { headers }));
     }
 
     // 3. 基础连通性探测 WebSocket 路由 (/ws 或 /ws/echo)

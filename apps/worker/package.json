@@ -15,7 +15,6 @@
     "@zhanshuang/shared": "*",
     "@zhanshuang/game-rules": "*",
     "@zhanshuang/game-engine": "*",
-    "@zhanshuang/database": "*",
     "hono": "^4.13.13"
   },
   "devDependencies": {

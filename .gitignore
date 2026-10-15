@@ -57,3 +57,6 @@ temp_*
 *.njsproj
 *.sln
 *.sw?
+
+# Cloudflare Pages 构建产物 (@cloudflare/next-on-pages)
+.vercel/
