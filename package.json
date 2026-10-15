@@ -9,6 +9,7 @@
     "packages/game-engine",
     "packages/database",
     "apps/server",
+    "apps/worker",
     "apps/web"
   ],
   "scripts": {
