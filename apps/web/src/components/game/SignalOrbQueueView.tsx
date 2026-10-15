@@ -417,7 +417,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 </span>
 
                 {!isOpponent && orb.index < ORB_HOTKEYS.length && (
-                  <span className="absolute -bottom-1 -left-1 px-1 py-0.2 rounded bg-black/85 border border-cyan-500/50 text-[8px] text-cyan-300 font-mono font-bold leading-tight pointer-events-none shadow">
+                  <span className="absolute -bottom-1 -left-1 px-1 py-px rounded bg-black/85 border border-cyan-500/50 text-[8px] text-cyan-300 font-mono font-bold leading-tight pointer-events-none shadow">
                     {ORB_HOTKEYS[orb.index]}
                   </span>
                 )}

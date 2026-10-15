@@ -14,7 +14,8 @@
 html, body {
   color: var(--foreground);
   background: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
   overflow-x: hidden;
   overflow-y: auto;
   user-select: none;
@@ -22,6 +23,33 @@ html, body {
   overscroll-behavior-y: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: manipulation;
+}
+
+/* 全局禁用文本选择会导致 iOS Safari 输入框无法聚焦/选中，表单控件需单独放开 */
+input,
+textarea,
+select,
+[contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 键盘导航可见焦点 (仅键盘操作时显示，不影响鼠标点击观感) */
+:focus-visible {
+  outline: 2px solid var(--terminal-cyan);
+  outline-offset: 2px;
+}
+
+/* 尊重系统“减少动态效果”偏好：关闭持续闪烁/弹跳等装饰动画 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* 战双末世科幻高光与全息光效 Design Tokens */

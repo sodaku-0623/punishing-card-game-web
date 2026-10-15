@@ -28,7 +28,10 @@ services:
     environment:
       DATABASE_URL: "postgresql://postgres:postgres_password@postgres:5432/zhanshuang_tcg?schema=public"
       PORT: 4000
-      JWT_SECRET: "zhanshuang_jwt_super_secret_key_change_in_production_2026"
+      NODE_ENV: production
+      # 请在 .env 或部署环境中设置强随机值；未设置时服务端每次启动随机生成
+      JWT_SECRET: "${JWT_SECRET:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       CORS_ORIGIN: "http://localhost:3000"
     ports:
       - "4000:4000"
@@ -40,6 +43,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        # 容器内 /api 反向代理需指向 server 服务，而不是 web 容器自身的 127.0.0.1
+        API_PROXY_TARGET: "http://server:4000"
     container_name: zhanshuang-web
     restart: always
     environment:

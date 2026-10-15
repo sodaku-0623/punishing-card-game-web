@@ -4,8 +4,12 @@
   "private": true,
   "description": "《战双帕弥什 卡牌对战》在线对战平台",
   "workspaces": [
-    "packages/*",
-    "apps/*"
+    "packages/shared",
+    "packages/game-rules",
+    "packages/game-engine",
+    "packages/database",
+    "apps/server",
+    "apps/web"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -18,7 +22,8 @@
     "db:generate": "npm run generate --workspace=@zhanshuang/database",
     "db:push": "npm run push --workspace=@zhanshuang/database",
     "package:portable": "node scripts/package-portable.mjs",
-    "test:stress": "node scripts/stress-test.mjs"
+    "test:stress": "node scripts/stress-test.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

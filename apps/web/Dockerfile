@@ -6,6 +6,9 @@ COPY package*.json ./
 COPY packages ./packages
 COPY apps/web ./apps/web
 
+ARG API_PROXY_TARGET=http://127.0.0.1:4000
+ENV API_PROXY_TARGET=$API_PROXY_TARGET
+
 RUN npm install
 RUN npm run build --workspace=@zhanshuang/shared
 RUN npm run build --workspace=@zhanshuang/game-rules

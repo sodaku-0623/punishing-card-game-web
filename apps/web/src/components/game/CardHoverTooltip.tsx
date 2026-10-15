@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 import {
   Flame,
   Zap,
@@ -17,14 +18,84 @@ import {
 
 interface CardHoverTooltipProps {
   card: CardInstance | null;
-  position?: { x: number; y: number } | null;
 }
 
-export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, position }) => {
+type Point = { x: number; y: number };
+
+/**
+ * 仅在有卡牌悬停时监听鼠标位置，并以 requestAnimationFrame 节流。
+ * (位置状态收敛在浮窗组件内部，避免整张对局桌面随鼠标移动反复重渲染)
+ */
+function useCursorPosition(active: boolean): Point | null {
+  const [position, setPosition] = useState<Point | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    let frame = 0;
+    let latest: Point | null = null;
+    const handleMouseMove = (e: MouseEvent) => {
+      latest = { x: e.clientX, y: e.clientY };
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          setPosition(latest);
+        });
+      }
+    };
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [active]);
+
+  return position;
+}
+
+function computeTooltipStyle(position: Point | null): React.CSSProperties {
+  if (!position) {
+    // 默认停靠在左下侧偏中
+    return {
+      left: '16px',
+      bottom: '80px',
+    };
+  }
+
+  const { x, y } = position;
+  const tooltipWidth = 320;
+  const tooltipHeight = 440;
+  const winWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+  const winHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
+
+  let posX = x + 18;
+  let posY = y - 120;
+
+  // 水平越界修正：若右侧空间不足，则显示在鼠标左侧
+  if (posX + tooltipWidth > winWidth - 16) {
+    posX = Math.max(16, x - tooltipWidth - 18);
+  }
+
+  // 垂直越界修正
+  if (posY + tooltipHeight > winHeight - 16) {
+    posY = Math.max(16, winHeight - tooltipHeight - 16);
+  }
+  if (posY < 16) {
+    posY = 16;
+  }
+
+  return {
+    left: `${posX}px`,
+    top: `${posY}px`,
+  };
+}
+
+export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
+  const position = useCursorPosition(!!card);
   if (!card) return null;
 
   const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
-  const cardImgSrc = card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const fullImgSrc = card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const cardImgSrc = getCardThumbnailUrl(card.imageUrl, card.cardNumber);
 
   const totalPP = cardDef ? (cardDef.basePP ?? 0) + (card.tempPPBonus ?? 0) : 0;
   const totalDP = cardDef ? (cardDef.baseDP ?? 0) + (card.tempDPBonus ?? 0) : 0;
@@ -91,7 +162,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
             {part.split('【出】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-0.2 rounded bg-terminalCyan/20 text-terminalCyan font-bold border border-terminalCyan/40 text-[10px] mr-1">
+                  <span className="px-1 py-px rounded bg-terminalCyan/20 text-terminalCyan font-bold border border-terminalCyan/40 text-[10px] mr-1">
                     【出】
                   </span>
                 )}
@@ -106,7 +177,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
             {part.split('【起】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-0.2 rounded bg-terminalGold/20 text-terminalGold font-bold border border-terminalGold/40 text-[10px] mr-1">
+                  <span className="px-1 py-px rounded bg-terminalGold/20 text-terminalGold font-bold border border-terminalGold/40 text-[10px] mr-1">
                     【起】
                   </span>
                 )}
@@ -122,7 +193,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
             {part.split(tag).map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40 text-[10px] mr-1">
+                  <span className="px-1 py-px rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40 text-[10px] mr-1">
                     {tag}
                   </span>
                 )}
@@ -137,7 +208,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
             {part.split('【永】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40 text-[10px] mr-1">
+                  <span className="px-1 py-px rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40 text-[10px] mr-1">
                     【永】
                   </span>
                 )}
@@ -152,43 +223,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
     });
   };
 
-  // 智能悬浮窗口坐标计算 (避免超出屏幕视口)
-  const tooltipStyle = useMemo(() => {
-    if (!position) {
-      // 默认停靠在左下侧偏中
-      return {
-        left: '16px',
-        bottom: '80px',
-      };
-    }
-
-    const { x, y } = position;
-    const tooltipWidth = 320;
-    const tooltipHeight = 440;
-    const winWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
-    const winHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
-
-    let posX = x + 18;
-    let posY = y - 120;
-
-    // 水平越界修正：若右侧空间不足，则显示在鼠标左侧
-    if (posX + tooltipWidth > winWidth - 16) {
-      posX = Math.max(16, x - tooltipWidth - 18);
-    }
-
-    // 垂直越界修正
-    if (posY + tooltipHeight > winHeight - 16) {
-      posY = Math.max(16, winHeight - tooltipHeight - 16);
-    }
-    if (posY < 16) {
-      posY = 16;
-    }
-
-    return {
-      left: `${posX}px`,
-      top: `${posY}px`,
-    };
-  }, [position]);
+  const tooltipStyle = computeTooltipStyle(position);
 
   return (
     <div
@@ -223,9 +258,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
             src={cardImgSrc}
             alt={cardDef?.name || card.cardNumber}
             className="w-full h-full object-cover"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).src = '/cards/ST01-001.png';
-            }}
+            onError={(e) => handleThumbnailError(e, fullImgSrc)}
           />
         </div>
 
@@ -256,7 +289,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card, positi
               {cardDef.traits.map((trait, i) => (
                 <span
                   key={i}
-                  className="px-1.5 py-0.2 rounded bg-neutral-800/90 text-neutral-300 text-[9px] border border-neutral-700"
+                  className="px-1.5 py-px rounded bg-neutral-800/90 text-neutral-300 text-[9px] border border-neutral-700"
                 >
                   &lt;{trait}&gt;
                 </span>

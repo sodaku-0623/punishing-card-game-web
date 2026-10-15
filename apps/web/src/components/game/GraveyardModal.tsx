@@ -4,6 +4,7 @@ import React from 'react';
 import { CardInstance } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { X, Archive, Eye } from 'lucide-react';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface GraveyardModalProps {
   isOpen: boolean;
@@ -69,7 +70,9 @@ export function GraveyardModal({
                       {def?.imageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={def.imageUrl}
+                          src={getCardThumbnailUrl(def.imageUrl, def.cardNumber)}
+                          onError={(e) => handleThumbnailError(e, def.imageUrl)}
+                          loading="lazy"
                           alt={def.name}
                           className="w-full h-full object-cover transition-transform group-hover:scale-105"
                         />

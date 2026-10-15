@@ -102,15 +102,15 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
                     <div className="flex items-center justify-between w-full text-[10px] px-1 font-mono">
                       <span className="text-neutral-500">#{idx + 1}</span>
                       {isHidden ? (
-                        <span className="px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-600/60 font-bold flex items-center gap-0.5">
+                        <span className="px-1.5 py-px rounded bg-purple-950 text-purple-300 border border-purple-600/60 font-bold flex items-center gap-0.5">
                           <Moon className="w-2.5 h-2.5" /> 暗费
                         </span>
                       ) : isReady ? (
-                        <span className="px-1.5 py-0.2 rounded bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 font-bold flex items-center gap-0.5">
+                        <span className="px-1.5 py-px rounded bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 font-bold flex items-center gap-0.5">
                           <CheckCircle2 className="w-2.5 h-2.5" /> 可用明费
                         </span>
                       ) : (
-                        <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 border border-neutral-700 font-bold">
+                        <span className="px-1.5 py-px rounded bg-neutral-800 text-neutral-400 border border-neutral-700 font-bold">
                           已横置消耗
                         </span>
                       )}
