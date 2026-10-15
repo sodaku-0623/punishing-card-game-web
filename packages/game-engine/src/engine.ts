@@ -128,6 +128,16 @@ export class GameEngine {
       };
     }
 
+    // 仅本局玩家可提交行动 (防止旁观者或伪造身份发起投降等操作)
+    if (!action?.playerId || !this.state.players[action.playerId]) {
+      return {
+        success: false,
+        error: '非本局玩家，无法执行该行动',
+        events: [],
+        state: this.state,
+      };
+    }
+
     let success = false;
     let error: string | undefined;
 

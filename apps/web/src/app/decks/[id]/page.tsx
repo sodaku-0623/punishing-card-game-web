@@ -538,7 +538,7 @@ function DeckEntryListItem({
             <span className="font-bold text-neutral-300">{entry.cardNumber || card.cardNumber}</span>
             <span>•</span>
             <span
-              className={`px-1 py-0.2 rounded border text-[9px] font-mono ${
+              className={`px-1 py-px rounded border text-[9px] font-mono ${
                 isFoil
                   ? 'border-amber-400/60 bg-amber-400/10 text-amber-300'
                   : 'border-neutral-700 bg-neutral-900 text-neutral-300'

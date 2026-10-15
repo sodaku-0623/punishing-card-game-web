@@ -20,7 +20,7 @@ import {
   CheckCircle2,
   Sliders,
 } from 'lucide-react';
-import { apiUrl } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
 export interface SystemMetrics {
   timestamp: number;
@@ -53,6 +53,8 @@ export interface SystemMetrics {
 }
 
 export default function AdminMonitorPage() {
+  const { isAdmin, isLoading: authLoading, authFetch } = useAuth();
+  const [accessDenied, setAccessDenied] = useState(false);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -62,7 +64,12 @@ export default function AdminMonitorPage() {
   const fetchMetrics = async () => {
     try {
       setLoading(true);
-      const res = await fetch(apiUrl('/api/admin/monitor'));
+      const res = await authFetch('/api/admin/monitor');
+      if (res.status === 401 || res.status === 403) {
+        setAccessDenied(true);
+        setAutoRefresh(false);
+        return;
+      }
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.data) {
@@ -80,11 +87,34 @@ export default function AdminMonitorPage() {
   };
 
   useEffect(() => {
+    if (authLoading) return;
     fetchMetrics();
     if (!autoRefresh) return;
-    const interval = setInterval(fetchMetrics, 1500);
+    // 页面不可见时跳过轮询，避免后台标签页持续请求
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchMetrics();
+    }, 1500);
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, authLoading, authFetch]);
+
+  if (!authLoading && (!isAdmin || accessDenied)) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-foreground font-mono p-6 flex flex-col items-center justify-center gap-4 text-center">
+        <AlertTriangle className="w-8 h-8 text-terminalGold" />
+        <p className="text-sm text-white font-bold">运维监控仅对系统管理员开放</p>
+        <p className="text-xs text-neutral-400">请使用管理员账号登录后再访问此页面。</p>
+        <div className="flex gap-3">
+          <Link href="/login" className="px-4 py-2 rounded-lg bg-terminalCyan text-neutral-950 text-xs font-bold">
+            前往登录
+          </Link>
+          <Link href="/admin" className="px-4 py-2 rounded-lg border border-terminalBorder text-neutral-300 text-xs">
+            返回控制台
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const formatUptime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);

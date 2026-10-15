@@ -1,3 +1,6 @@
+// /api/* 反向代理目标：本地默认 4000 端口，容器部署时通过 API_PROXY_TARGET 指向后端服务
+const apiProxyTarget = (process.env.API_PROXY_TARGET || 'http://127.0.0.1:4000').replace(/\/$/, '');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -22,7 +25,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://127.0.0.1:4000/api/:path*',
+        destination: `${apiProxyTarget}/api/:path*`,
       },
     ];
   },

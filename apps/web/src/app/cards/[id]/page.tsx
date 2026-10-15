@@ -16,6 +16,7 @@ import {
 } from '@/lib/cards-data';
 import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
 import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
+import { copyText } from '@/lib/clipboard';
 import {
   ChevronLeft,
   ChevronRight,
@@ -93,8 +94,8 @@ export default function CardDetailPage() {
   const activeImage = variants[selectedVariantIndex]?.imageUrl || card.imageUrl || `/cards/${card.cardNumber}.png`;
   const packageName = card.packageName || card.flavorText || getCardSeries(card.cardNumber);
 
-  const copyCardCode = () => {
-    navigator.clipboard.writeText(`${card.cardNumber} ${card.name}`);
+  const copyCardCode = async () => {
+    if (!(await copyText(`${card.cardNumber} ${card.name}`))) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

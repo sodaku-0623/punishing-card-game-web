@@ -91,8 +91,6 @@ export default function GameTabletopPage() {
     setGameOverResult,
   } = useGameStore();
 
-  console.log('In GameTabletopPage render, gameState is:', gameState ? gameState.gameId : 'NULL');
-
   const [socketConnected, setSocketConnected] = useState(false);
   // 当前鼠标悬停的卡牌
   const [hoveredCard, setHoveredCard] = useState<CardInstance | null>(null);
@@ -118,16 +116,6 @@ export default function GameTabletopPage() {
     y: number;
     card: CardInstance;
   } | null>(null);
-  // 鼠标全局坐标跟踪 (用于 CardHoverTooltip 智能贴靠光标，移开即隐)
-  const [hoverMousePos, setHoverMousePos] = useState<{ x: number; y: number } | null>(null);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      setHoverMousePos({ x: e.clientX, y: e.clientY });
-    };
-    window.addEventListener('mousemove', handleMouseMove, { passive: true });
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
   // 右侧战术终端 HUD 折叠状态 (桌面端自适应展开，移动端默认折叠为抽屉)
   const [isHudOpen, setIsHudOpen] = useState(false);
   // 双方费用区卡牌全息检视弹窗控制 (明费公开透明，暗费保密)
@@ -227,10 +215,14 @@ export default function GameTabletopPage() {
 
     setMyUserId(authId);
 
-    socket.on('connect', () => {
+    let errorTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleConnect = () => {
       setSocketConnected(true);
-      socket.emit('game:reconnect', { gameId, userId: authId });
-    });
+      socket.emit('game:reconnect', { gameId });
+    };
+    const handleDisconnect = () => setSocketConnected(false);
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
 
     socket.on('game:sync_state', (state) => {
       updateGameState(state);
@@ -259,9 +251,10 @@ export default function GameTabletopPage() {
     });
 
     socket.on('game:error', (err) => {
-      setLastError(`[${err.code}] ${err.message}`);
+      setLastError(err.message || err.code);
       sfx.playClick();
-      setTimeout(() => setLastError(null), 4000);
+      if (errorTimer) clearTimeout(errorTimer);
+      errorTimer = setTimeout(() => setLastError(null), 4000);
     });
 
     socket.on('game:ended', (result) => {
@@ -274,12 +267,14 @@ export default function GameTabletopPage() {
     });
 
     if (socket.connected) {
-      setSocketConnected(true);
-      socket.emit('game:reconnect', { gameId, userId: authId });
+      handleConnect();
     }
 
     return () => {
       useGameStore.getState().reset();
+      if (errorTimer) clearTimeout(errorTimer);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
       socket.off('game:sync_state');
       socket.off('game:choice_required');
       socket.off('game:events');
@@ -944,9 +939,23 @@ export default function GameTabletopPage() {
       )}
       {/* 顶部全局错误通知 */}
       {lastError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-erosionRed/95 text-white font-mono text-xs flex items-center gap-2 shadow-2xl animate-bounce border border-white/20">
+        <div
+          role="alert"
+          className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-erosionRed/95 text-white font-mono text-xs flex items-center gap-2 shadow-2xl border border-white/20 animate-in fade-in slide-in-from-top-2 duration-200"
+        >
           <AlertCircle className="w-4 h-4" />
           <span>{lastError}</span>
+        </div>
+      )}
+
+      {/* 本机网络断开提示 (socket.io 会自动重连，重连成功后自动重新同步对局) */}
+      {!socketConnected && (
+        <div
+          role="status"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-xl bg-neutral-950/95 border border-erosionRed/70 text-erosionRed shadow-2xl flex items-center gap-2 font-mono text-xs"
+        >
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          <span>与服务器的连接已断开，正在自动重连…</span>
         </div>
       )}
 
@@ -964,7 +973,7 @@ export default function GameTabletopPage() {
       )}
 
       {/* 鼠标悬停卡牌实时全息小窗浮窗 (随鼠标智能停靠，移开即自动隐去) */}
-      <CardHoverTooltip card={hoveredCard} position={hoverMousePos} />
+      <CardHoverTooltip card={hoveredCard} />
 
       {/* 2. 主对战桌面区域 (100vh 零滚动布局，彻底对齐 YGOPro 竞技桌面) */}
       <div className="flex-1 flex flex-col justify-between p-2 lg:p-3 overflow-hidden h-screen relative">
@@ -978,7 +987,7 @@ export default function GameTabletopPage() {
                     '您正在对战中：\n【确定】投降认输并结束推演对决\n【取消】留在战场继续对战\n\n提示：若因网络异常断开或临时离开，房间将持续为您保留，随时可重新接入。'
                   );
                   if (choice) {
-                    sendAction({ type: 'SURRENDER', playerId: resolvedMyUserId });
+                    // 服务端在 game:leave(isSurrender) 中统一结算投降，无需重复提交 SURRENDER
                     handleExitGame(true);
                   }
                 } else {
@@ -987,6 +996,7 @@ export default function GameTabletopPage() {
               }}
               className="p-1 rounded bg-neutral-900/80 hover:bg-neutral-800 text-neutral-400 hover:text-erosionRed transition-colors border border-terminalBorder/50 flex items-center gap-1 px-2"
               title="投降或返回大厅"
+              aria-label="投降或返回大厅"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">退出/投降</span>
@@ -1039,6 +1049,8 @@ export default function GameTabletopPage() {
                   : 'border-terminalCyan/40 text-terminalCyan bg-terminalCyan/10'
               }`}
               title={isMuted ? '取消静音 (快捷键: M)' : '静音 (快捷键: M)'}
+              aria-label={isMuted ? '取消静音' : '静音'}
+              aria-pressed={isMuted}
             >
               {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
@@ -1047,6 +1059,7 @@ export default function GameTabletopPage() {
               onClick={() => setIsShortcutsModalOpen(true)}
               className="p-1.5 rounded border border-neutral-700 hover:border-terminalCyan/60 text-neutral-300 hover:text-white bg-neutral-900/80 transition-colors"
               title="查看桌面快捷键指南 (快捷键: ?)"
+              aria-label="查看桌面快捷键指南"
             >
               <KeyboardIcon className="w-3.5 h-3.5" />
             </button>
@@ -1064,6 +1077,8 @@ export default function GameTabletopPage() {
               onClick={() => setIsHudOpen((prev) => !prev)}
               className="p-1.5 rounded border border-neutral-700 hover:border-terminalCyan/60 text-neutral-300 hover:text-white bg-neutral-900/80 transition-colors flex items-center gap-1 text-[11px]"
               title="折叠 / 展开右侧战术终端 HUD"
+              aria-label={isHudOpen ? '折叠战术终端' : '展开战术终端'}
+              aria-expanded={isHudOpen}
             >
               {isHudOpen ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
               <span className="hidden lg:inline">{isHudOpen ? '折叠终端' : '战术终端'}</span>
@@ -1346,7 +1361,7 @@ export default function GameTabletopPage() {
                     }}
                   >
                     {/* 数字键序号提示角标 */}
-                    <div className="absolute -top-2 left-1.5 z-20 px-1 py-0.2 rounded bg-neutral-900/90 border border-terminalBorder text-[9px] font-mono text-neutral-400 group-hover:text-terminalCyan group-hover:border-terminalCyan/60 transition-colors">
+                    <div className="absolute -top-2 left-1.5 z-20 px-1 py-px rounded bg-neutral-900/90 border border-terminalBorder text-[9px] font-mono text-neutral-400 group-hover:text-terminalCyan group-hover:border-terminalCyan/60 transition-colors">
                       {idx + 1}
                     </div>
 
@@ -1409,7 +1424,7 @@ export default function GameTabletopPage() {
                 <div className="text-sm font-bold text-white flex items-center gap-2">
                   回合 {gameState.turnNumber}
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                    className={`text-[10px] px-1.5 py-px rounded font-mono ${
                       isMyTurn
                         ? 'bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 animate-pulse'
                         : 'bg-neutral-800 text-neutral-400'

@@ -33,6 +33,7 @@ import {
   Cpu,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface CardVersionItem {
   id: string;
@@ -477,7 +478,8 @@ export default function AdminCardsPage() {
                   <td className="py-2.5 px-4">
                     <div className="w-10 h-14 rounded overflow-hidden border border-terminalBorder bg-black">
                       <img
-                        src={card.imageUrl || `/cards/${card.cardNumber}.png`}
+                        src={getCardThumbnailUrl(card.imageUrl, card.cardNumber)}
+                        onError={(e) => handleThumbnailError(e, card.imageUrl || `/cards/${card.cardNumber}.png`)}
                         alt={card.name}
                         className="w-full h-full object-cover"
                         loading="lazy"
@@ -517,7 +519,7 @@ export default function AdminCardsPage() {
                   <td className="py-2.5 px-4">
                     <div className="flex flex-wrap gap-1 max-w-[140px]">
                       {card.traits.map((t) => (
-                        <span key={t} className="px-1 py-0.2 rounded bg-neutral-900 text-[10px] text-neutral-400">
+                        <span key={t} className="px-1 py-px rounded bg-neutral-900 text-[10px] text-neutral-400">
                           {t}
                         </span>
                       ))}

@@ -4,6 +4,7 @@ import React from 'react';
 import { CardInstance, PublicGameState } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { Sparkles, Layers, ArrowRight, Zap, CheckCircle2 } from 'lucide-react';
+import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface ProcessingZoneViewProps {
   gameState: PublicGameState;
@@ -66,7 +67,8 @@ export function ProcessingZoneView({
               {activeDef?.imageUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={activeDef.imageUrl}
+                  src={getCardThumbnailUrl(activeDef.imageUrl, activeDef.cardNumber)}
+                  onError={(e) => handleThumbnailError(e, activeDef.imageUrl)}
                   alt={activeDef.name}
                   className="w-full h-full object-cover"
                 />
@@ -135,7 +137,8 @@ export function ProcessingZoneView({
             {activeDef?.imageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={activeDef.imageUrl}
+                src={getCardThumbnailUrl(activeDef.imageUrl, activeDef.cardNumber)}
+                  onError={(e) => handleThumbnailError(e, activeDef.imageUrl)}
                 alt={activeDef.name}
                 className="w-full h-full object-cover"
               />
@@ -155,7 +158,7 @@ export function ProcessingZoneView({
               <span className="text-xs font-bold text-white tracking-wide truncate">
                 {activeDef?.name || activeCard.cardNumber}
               </span>
-              <span className="text-[9px] px-1 py-0.2 rounded bg-terminalCyan/20 text-terminalCyan font-mono">
+              <span className="text-[9px] px-1 py-px rounded bg-terminalCyan/20 text-terminalCyan font-mono">
                 {formatCardType(activeDef?.cardType, activeDef?.isInstant)}
               </span>
             </div>
