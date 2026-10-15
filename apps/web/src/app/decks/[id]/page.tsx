@@ -499,7 +499,7 @@ function DeckEntryListItem({
     onClick: onSelect,
   });
 
-  const currentImg = entry.imageUrl || card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const currentImg = getCardFullImageUrl(entry.imageUrl || card.imageUrl, card.cardNumber);
   const badge = entry.variantBadge || (card as any).variantBadge || `${card.rarity || ''} 原画`;
   const isFoil = (entry.variantStar ?? (card as any).variantStar ?? 0) > 0;
 

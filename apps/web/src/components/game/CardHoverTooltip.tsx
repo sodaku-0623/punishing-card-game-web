@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
-import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
+import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
 import {
   Flame,
   Zap,
@@ -94,7 +94,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
   if (!card) return null;
 
   const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
-  const fullImgSrc = card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const fullImgSrc = getCardFullImageUrl(card.imageUrl, card.cardNumber);
   const cardImgSrc = getCardThumbnailUrl(card.imageUrl, card.cardNumber);
 
   const totalPP = cardDef ? (cardDef.basePP ?? 0) + (card.tempPPBonus ?? 0) : 0;

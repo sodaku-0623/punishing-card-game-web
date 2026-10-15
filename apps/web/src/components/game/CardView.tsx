@@ -6,7 +6,7 @@ import { useLongPress } from '@/hooks/useLongPress';
 import { Flame, Zap, Moon, Snowflake, Shield, Sparkles } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { sfx } from '@/lib/audio';
-import { getCardThumbnailUrl } from '@/lib/card-image';
+import { getCardThumbnailUrl, getCardFullImageUrl } from '@/lib/card-image';
 
 interface CardViewProps {
   card?: CardInstance;
@@ -105,7 +105,7 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
     );
   }
 
-  const fullImgSrc = card.imageUrl || `/cards/${card.cardNumber}.png`;
+  const fullImgSrc = getCardFullImageUrl(card.imageUrl, card.cardNumber);
   const cardImgSrc = getCardThumbnailUrl(card.imageUrl, card.cardNumber);
 
   const handleDragStart = (e: React.DragEvent) => {

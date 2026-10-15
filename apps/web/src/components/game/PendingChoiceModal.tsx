@@ -15,7 +15,7 @@ import {
   Info,
 } from 'lucide-react';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
-import { getCardThumbnailUrl } from '@/lib/card-image';
+import { getCardThumbnailUrl, getCardFullImageUrl } from '@/lib/card-image';
 
 interface PendingChoiceModalProps {
   choice: PendingChoice;
@@ -81,6 +81,7 @@ function RevealedCardItem({
   const fallbackDef = findCardByNumberOrId(payload.cardNumber || option.id);
 
   const isEligible = payload.eligible !== false;
+  const ineligibleReason = payload.ineligibleReason || '不可选';
   const cardNumber = payload.cardNumber || fallbackDef?.cardNumber || '';
   const name = payload.name || fallbackDef?.name || option.label;
   const cost = payload.cost ?? fallbackDef?.cost;
@@ -89,8 +90,7 @@ function RevealedCardItem({
   const attribute = payload.attribute || fallbackDef?.attribute;
   const traits = payload.traits || fallbackDef?.traits || [];
   const slotIndex = payload.slotIndex;
-  const ineligibleReason = payload.ineligibleReason || '不符合条件';
-  const imgSrc = payload.imageUrl || (fallbackDef as any)?.imageUrl || (cardNumber ? `/cards/${cardNumber}.png` : '');
+  const imgSrc = getCardFullImageUrl(payload.imageUrl || (fallbackDef as any)?.imageUrl, cardNumber);
 
   const isCompact = cardWidth < 135;
 

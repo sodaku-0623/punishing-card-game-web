@@ -4,7 +4,7 @@ import React from 'react';
 import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
 import { CardData, findCardByNumberOrId, getCardVariants, CardVariant, formatCardType } from '@/lib/cards-data';
 import { Sparkles, Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Info, Layers, Star } from 'lucide-react';
-import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
+import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
 
 interface CardDetailPanelProps {
   card: CardData | any | null;
@@ -106,12 +106,13 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
 
   const elem = getElementBadge(resolvedCard.attribute, resolvedCard.attributeName);
   const variants = resolvedCard?.cardNumber ? getCardVariants(resolvedCard.cardNumber) : [];
-  const cardImgSrc =
+  const cardImgSrc = getCardFullImageUrl(
     internalVariantImg ||
     selectedImageUrl ||
     card.imageUrl ||
-    resolvedCard.imageUrl ||
-    (resolvedCard.cardNumber ? `/cards/${resolvedCard.cardNumber}.png` : '');
+    resolvedCard.imageUrl,
+    resolvedCard.cardNumber
+  );
 
   return (
     <div
