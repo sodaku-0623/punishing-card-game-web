@@ -574,4 +574,83 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     // 决策完成，无待处理决策
     expect(engine.getState().currentPendingChoice).toBeUndefined();
   });
+
+  it('9. ST03-011 (三头犬出击) 固有静态减费：我方战场有5张<三头犬小队>角色时，手牌中该牌由8费降为3费发动', () => {
+    const engine = new GameEngine(
+      'game-st03-011-cost-reduction',
+      { playerId: 'p1', deckCardNumbers: createST03Deck() },
+      { playerId: 'p2', deckCardNumbers: createST03Deck() },
+      88888
+    );
+
+    const activeId = engine.getState().activePlayerId;
+    const oppId = engine.getState().nonActivePlayerId;
+    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: activeId });
+    expect(engine.getState().phase).toBe('MAIN_PHASE');
+
+    const player = engine.getState().players[activeId]!;
+
+    // 1. 在己方战场的 5 个卡位分别放置 5 张<三头犬小队>角色 (ST03-001 ~ ST03-005)
+    const cerberusCardNums = ['ST03-001', 'ST03-002', 'ST03-003', 'ST03-004', 'ST03-005'];
+    for (let slot = 0; slot < 5; slot++) {
+      const card = Object.values(engine.getState().cards).find(
+        (c) => c.controllerPlayerId === activeId && c.cardNumber === cerberusCardNums[slot] && c.zone === 'DECK'
+      )!;
+      engine.fieldMgr.playRoleCard(activeId, card.instanceId, slot);
+      card.isReady = true;
+    }
+
+    // 2. 在对方战场放置 1 张角色卡 (供 ST03-011 破坏效果作为目标)
+    const oppRole = Object.values(engine.getState().cards).find(
+      (c) => c.controllerPlayerId === oppId && c.zone === 'DECK' && engine.cardDb.getCard(c.cardNumber)?.cardType === CardType.ROLE
+    )!;
+    engine.fieldMgr.playRoleCard(oppId, oppRole.instanceId, 0);
+
+    // 3. 将 ST03-011 放入 activeId 手牌
+    const tacticsCard = Object.values(engine.getState().cards).find(
+      (c) => c.controllerPlayerId === activeId && c.cardNumber === 'ST03-011'
+    )!;
+    engine.zoneMgr.moveCard(tacticsCard.instanceId, 'HAND', { isFaceUp: true });
+
+    // 4. 配置费用区：包含 PHYSICAL 属性明费 (满足 8.6.2.a.1 属性条件)，可用费用恰好为 3 费
+    // 清空现有费用区卡牌
+    const existingCosts = engine.zoneMgr.getCardsInZone(activeId, 'COST');
+    for (const c of existingCosts) {
+      engine.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD');
+    }
+    // 从牌组中挑出 3 张 PHYSICAL 属性卡放入费用区 (如 ST03-004 / ST03-005 / ST03-009)
+    const physDeckCards = engine.zoneMgr.getCardsInZone(activeId, 'DECK').filter(
+      (c) => engine.cardDb.getCard(c.cardNumber)?.attribute === ElementAttribute.PHYSICAL
+    );
+    for (let i = 0; i < 3; i++) {
+      engine.zoneMgr.moveCard(physDeckCards[i].instanceId, 'COST', { isFaceUp: true, isReady: true });
+    }
+    player.availableOpenCostCount = 3;
+    player.openCostCount = 3;
+    player.exhaustedOpenCostCount = 0;
+    player.hiddenCostCount = 0;
+    player.totalCostCount = 3;
+
+    // 5. 验证静态减费计算：基础 8 费 - 5 张三头犬角色 = 3 费
+    const { costToPay } = engine.calculateCardCost(activeId, tacticsCard.instanceId);
+    expect(costToPay).toBe(3);
+
+    // 6. 执行打出 ST03-011：只需 3 费即可成功发动！
+    const playRes = engine.applyAction({
+      type: 'PLAY_CARD',
+      playerId: activeId,
+      cardInstanceId: tacticsCard.instanceId,
+    });
+    expect(playRes.success).toBe(true);
+
+    // 7. 费用已正确扣减 3 点 (可用费用变为 0)
+    expect(player.availableOpenCostCount).toBe(0);
+    expect(player.exhaustedOpenCostCount).toBe(3);
+
+    // 8. 战术卡进入结算并弹出破坏对方角色的决策窗口
+    const pendingChoice = engine.getState().currentPendingChoice;
+    expect(pendingChoice).toBeDefined();
+    expect(pendingChoice?.effectType).toBe('DESTROY_ROLE');
+    expect(pendingChoice?.options.some((o) => o.id === oppRole.instanceId)).toBe(true);
+  });
 });
