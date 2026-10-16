@@ -367,7 +367,7 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     expect(p2Player.hiddenCostCount).toBe(1);
   });
 
-  it('7. 信号球颜色准确性与同色三消：ST01-013(红莲-波动斩)为蓝球，ST01-014(红莲-闪击)为黄球，ST01-012(红莲-起手式)为红球', () => {
+  it('7. 信号球颜色与三消规则 (相邻即可、不要求同色)：ST01-013(红莲-波动斩)为蓝球，ST01-014(红莲-闪击)为黄球，ST01-012(红莲-起手式)为红球', () => {
     function createMixedDeck(): string[] {
       return [
         'ST01-012', 'ST01-012', 'ST01-012', 'ST01-012',
@@ -406,43 +406,41 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
       (c) => c.controllerPlayerId === p1 && c.cardNumber === 'ST01-014'
     );
 
-    // 将 3 张 ST01-013 (蓝球，带红莲字样) 移入信号球区，但它们物理位置不相邻 (中间夹着红球与黄球)
+    // 4.16.2 消除信号球只要求在信号球区中相邻，不要求同色：
+    // 区内顺序 (从下到上)：蓝0、红0、蓝1、黄0、蓝2
     engine.zoneMgr.moveCard(blueCards[0]!.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
     engine.zoneMgr.moveCard(redCards[0]!.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
     engine.zoneMgr.moveCard(blueCards[1]!.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
     engine.zoneMgr.moveCard(yellowCards[0]!.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
     engine.zoneMgr.moveCard(blueCards[2]!.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
 
-    // 尝试消除 3 张蓝球 (虽然物理不相邻，但同色三消应当成功！)
+    const zoneOf = (id: string) => engine.getState().cards[id]!.zone;
+
+    // 3 张蓝球同色但不相邻：不能消除
+    const sameColorRes = engine.dispatchAction({
+      type: 'ELIMINATE_3_ORBS',
+      playerId: p1,
+      orbCardInstanceIds: [blueCards[0]!.instanceId, blueCards[1]!.instanceId, blueCards[2]!.instanceId],
+    });
+    expect(sameColorRes.success).toBe(false);
+    expect(zoneOf(blueCards[0]!.instanceId)).toBe('SIGNAL_ORB');
+
+    // 红0、蓝1、黄0 颜色各不相同但相邻：可以消除并抽 1 张牌 (乱序传入也可以)
     const handBefore = engine.zoneMgr.getCardsInZone(p1, 'HAND').length;
     const eliminateRes = engine.dispatchAction({
       type: 'ELIMINATE_3_ORBS',
       playerId: p1,
-      orbCardInstanceIds: [
-        blueCards[0]!.instanceId,
-        blueCards[1]!.instanceId,
-        blueCards[2]!.instanceId,
-      ],
+      orbCardInstanceIds: [yellowCards[0]!.instanceId, redCards[0]!.instanceId, blueCards[1]!.instanceId],
     });
-
     expect(eliminateRes.success).toBe(true);
-    // 3 张蓝球应进入墓地，并抽 1 张牌
-    expect(blueCards[0]!.zone).toBe('GRAVEYARD');
-    expect(blueCards[1]!.zone).toBe('GRAVEYARD');
-    expect(blueCards[2]!.zone).toBe('GRAVEYARD');
+    expect(zoneOf(redCards[0]!.instanceId)).toBe('GRAVEYARD');
+    expect(zoneOf(blueCards[1]!.instanceId)).toBe('GRAVEYARD');
+    expect(zoneOf(yellowCards[0]!.instanceId)).toBe('GRAVEYARD');
     expect(engine.zoneMgr.getCardsInZone(p1, 'HAND').length).toBe(handBefore + 1);
 
-    // 验证如果不满足同色也不满足相邻，三消应失败 (例如 1红 1黄 1蓝 且不相邻)
-    const failRes = engine.dispatchAction({
-      type: 'ELIMINATE_3_ORBS',
-      playerId: p1,
-      orbCardInstanceIds: [
-        redCards[0]!.instanceId,
-        yellowCards[0]!.instanceId,
-        redCards[1]!.instanceId,
-      ],
-    });
-    expect(failRes.success).toBe(false);
+    // 4.16.2.b 剩余信号球顺序不变：蓝0 在下、蓝2 在上，两者现在相邻
+    const remaining = engine.zoneMgr.getCardsInZone(p1, 'SIGNAL_ORB').map((c) => c.instanceId);
+    expect(remaining).toEqual([blueCards[0]!.instanceId, blueCards[2]!.instanceId]);
   });
 
   it('8. ST01-001 (露西亚·红莲) 升变费用正确解析为2费，并能成功升变重叠在己方<露西亚>上方出场', () => {

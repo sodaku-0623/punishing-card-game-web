@@ -22,6 +22,34 @@ export class BattlefieldManager {
   }
 
   /**
+   * 是否为该玩家战场卡位上的角色 (不含升变垫在下方的牌、装备中的装备牌)
+   */
+  isSlotRole(playerId: string, cardInstanceId: string | undefined): boolean {
+    if (!cardInstanceId) return false;
+    return this.getSlots(playerId).some((s) => s.roleCardId === cardInstanceId);
+  }
+
+  /**
+   * 是否为该玩家战场上单独占用卡位、未被装备的装备牌
+   */
+  isStandaloneEquipment(playerId: string, cardInstanceId: string): boolean {
+    return this.getSlots(playerId).some((s) => s.standaloneEquipmentId === cardInstanceId);
+  }
+
+  /**
+   * 是否为该玩家战场卡位上的卡牌本体 (角色、辅助机、单独占位的装备)；
+   * 角色下方的卡牌与装备中的装备牌不视为战场中的独立卡牌 (3.2.6、4.18.6)
+   */
+  isTopLevelFieldCard(playerId: string, cardInstanceId: string): boolean {
+    return this.getSlots(playerId).some(
+      (s) =>
+        s.roleCardId === cardInstanceId ||
+        s.assistCardId === cardInstanceId ||
+        s.standaloneEquipmentId === cardInstanceId
+    );
+  }
+
+  /**
    * 查找首个可用空卡位 (8.6.2.b)
    */
   findFirstEmptySlot(playerId: string): number | undefined {
@@ -56,6 +84,24 @@ export class BattlefieldManager {
       cardInstanceId,
       slotIndex,
       isAscension: false,
+    });
+    return true;
+  }
+
+  /**
+   * 8.6.2.e.2 装备牌以正面竖直状态单独放置到空余卡位 (占用该卡位，4.18.5)
+   */
+  playStandaloneEquipment(playerId: string, cardInstanceId: string, slotIndex: number): boolean {
+    const slot = this.getSlots(playerId)[slotIndex];
+    if (!slot || slot.roleCardId || slot.standaloneEquipmentId || slot.assistCardId) {
+      return false;
+    }
+
+    slot.standaloneEquipmentId = cardInstanceId;
+    this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
+      slotIndex,
+      isFaceUp: true,
+      isReady: true,
     });
     return true;
   }
@@ -140,7 +186,8 @@ export class BattlefieldManager {
     const equipCard = this.state.cards[equipmentCardId];
     const roleCard = this.state.cards[roleCardId];
     if (!equipCard || !roleCard) return false;
-    if (roleCard.controllerPlayerId !== playerId || roleCard.zone !== 'BATTLEFIELD') return false;
+    if (equipCard.controllerPlayerId !== playerId) return false;
+    if (!this.isSlotRole(playerId, roleCardId)) return false;
 
     // 4.18.3 每张角色只能装备最多1张装备牌
     if (roleCard.attachedEquipmentId) return false;
@@ -176,6 +223,8 @@ export class BattlefieldManager {
     const slots = this.getSlots(playerId);
     const targetSlot = slots[slotIndex];
     if (!targetSlot) return false;
+    // 8.6.2.e.3 只能放置到空余卡位，或替换原有辅助机所占的卡位
+    if (targetSlot.roleCardId || targetSlot.standaloneEquipmentId) return false;
 
     // 8.6.2.e.3 若已有辅助机，可将其置入墓地替换
     for (const slot of slots) {

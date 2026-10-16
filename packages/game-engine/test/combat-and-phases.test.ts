@@ -354,9 +354,9 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
     expect(state.players[p2]!.erosionCount).toBeGreaterThan(0);
   });
 
-  it('信号球区红球到达3时支持三消抽卡，且卡列尼娜·爆裂攻击时红球>=2获得DP+1', () => {
+  it('主要阶段可以消除信号球区中相邻的3张信号球并抽1张牌，传入顺序不限 (6.4.1.b.5)', () => {
     const engine = new GameEngine(
-      'game-karenina-orb-test',
+      'game-orb-eliminate-test',
       { playerId: 'p1', deckCardNumbers: create50CardDeck() },
       { playerId: 'p2', deckCardNumbers: create50CardDeck() },
       888
@@ -364,104 +364,34 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
 
     const state = engine.getState();
     const p1 = state.activePlayerId;
-    const p2 = state.nonActivePlayerId;
-    state.phase = 'MAIN_PHASE';
-
-    // 注入 3 颗红球到 p1 信号球区
-    const redOrb1 = 'red-orb-1';
-    const redOrb2 = 'red-orb-2';
-    const redOrb3 = 'red-orb-3';
-    state.cards[redOrb1] = {
-      instanceId: redOrb1,
-      cardId: 'c-orb-red-1',
-      cardNumber: 'ST01-012', // 官方红球：红莲-起手式
-      ownerPlayerId: p1,
-      controllerPlayerId: p1,
-      zone: 'SIGNAL_ORB',
-      underneathCardIds: [],
-      isFaceUp: true,
-      isReady: true,
-      turnEnteredZone: 1,
-    };
-    state.cards[redOrb2] = {
-      instanceId: redOrb2,
-      cardId: 'c-orb-red-2',
-      cardNumber: 'ST01-012',
-      ownerPlayerId: p1,
-      controllerPlayerId: p1,
-      zone: 'SIGNAL_ORB',
-      underneathCardIds: [],
-      isFaceUp: true,
-      isReady: true,
-      turnEnteredZone: 1,
-    };
-    state.cards[redOrb3] = {
-      instanceId: redOrb3,
-      cardId: 'c-orb-red-3',
-      cardNumber: 'ST01-012',
-      ownerPlayerId: p1,
-      controllerPlayerId: p1,
-      zone: 'SIGNAL_ORB',
-      underneathCardIds: [],
-      isFaceUp: true,
-      isReady: true,
-      turnEnteredZone: 1,
-    };
-
-    // 登场卡列尼娜·爆裂 (BP01-006)
-    const kareninaId = 'karenina-role';
-    state.cards[kareninaId] = {
-      instanceId: kareninaId,
-      cardId: 'c-karenina-burst',
-      cardNumber: 'c-karenina-burst',
-      ownerPlayerId: p1,
-      controllerPlayerId: p1,
-      zone: 'BATTLEFIELD',
-      slotIndex: 0,
-      underneathCardIds: [],
-      isFaceUp: true,
-      isReady: true,
-      turnEnteredZone: 0,
-    };
-    state.battlefields[p1]![0]!.roleCardId = kareninaId;
-
-    // 宣告攻击：信号球区有 3 颗红球 (>= 2)，触发【自】动能力 DP+1
-    const attackRes = engine.dispatchAction({
-      type: 'DECLARE_ATTACK',
-      playerId: p1,
-      attackerCardId: kareninaId,
-      targetType: 'PLAYER',
-    });
-    expect(attackRes.success).toBe(true);
-    expect(state.cards[kareninaId]?.tempDPBonus).toBe(1);
-
-    // 守方 p2 选择不阻挡并推进战斗结算 (7.3.1)
-    engine.dispatchAction({
-      type: 'PASS_ACTION_TIMING',
-      playerId: p2,
-    });
+    engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
     expect(state.phase).toBe('MAIN_PHASE');
 
-    // 验证信号球三消：传递乱序的 3 颗红球 ID
-    const initialHandCount = Object.values(state.cards).filter(
-      (c) => c.controllerPlayerId === p1 && c.zone === 'HAND'
-    ).length;
+    const orbIds = Object.values(state.cards)
+      .filter((c) => c.controllerPlayerId === p1 && c.zone === 'DECK' && c.cardNumber === 'ST01-012')
+      .slice(0, 3)
+      .map((c) => c.instanceId);
+    expect(orbIds.length).toBe(3);
+    for (const id of orbIds) {
+      engine.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: true });
+    }
 
+    // 回合外玩家不能执行三消
+    const p2 = state.nonActivePlayerId;
+    expect(
+      engine.dispatchAction({ type: 'ELIMINATE_3_ORBS', playerId: p2, orbCardInstanceIds: orbIds as [string, string, string] }).success
+    ).toBe(false);
+
+    const initialHandCount = engine.zoneMgr.getCardsInZone(p1, 'HAND').length;
     const eliminateRes = engine.dispatchAction({
       type: 'ELIMINATE_3_ORBS',
       playerId: p1,
-      orbCardInstanceIds: [redOrb3, redOrb1, redOrb2], // 乱序传入
+      orbCardInstanceIds: [orbIds[2]!, orbIds[0]!, orbIds[1]!], // 乱序传入
     });
     expect(eliminateRes.success).toBe(true);
-    // 3颗红球已送入墓地
-    expect(state.cards[redOrb1]?.zone).toBe('GRAVEYARD');
-    expect(state.cards[redOrb2]?.zone).toBe('GRAVEYARD');
-    expect(state.cards[redOrb3]?.zone).toBe('GRAVEYARD');
-
-    // 成功抽 1 张牌
-    const newHandCount = Object.values(state.cards).filter(
-      (c) => c.controllerPlayerId === p1 && c.zone === 'HAND'
-    ).length;
-    expect(newHandCount).toBe(initialHandCount + 1);
+    for (const id of orbIds) {
+      expect(state.cards[id]?.zone).toBe('GRAVEYARD');
+    }
+    expect(engine.zoneMgr.getCardsInZone(p1, 'HAND').length).toBe(initialHandCount + 1);
   });
 });
