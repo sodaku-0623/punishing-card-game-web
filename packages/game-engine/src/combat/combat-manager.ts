@@ -7,6 +7,13 @@ import { CheckTimingManager } from '../priority/check-timing.js';
 import { parseInherentChargeCount, parseInherentKeywords } from '../rules/keywords.js';
 import { enqueuePendingChoice } from '../state/pending-choice.js';
 
+/**
+ * 角色攻击流程 (第 7 章)。
+ *
+ * 攻击流程以步骤机推进：每个步骤执行完毕后进入下一步；需要玩家行动 (轮流使用瞬时、选择阻挡)
+ * 或处理玩家决策 (如充能时自动能力的选择) 时暂停，待玩家行动后由引擎调用 advance() 从原位置继续。
+ * 当前步骤与进度保存在 state.currentCombat 中，可随快照恢复。
+ */
 export class CombatManager {
   constructor(
     private state: GameState,
@@ -113,6 +120,7 @@ export class CombatManager {
     attacker.isReady = false;
 
     this.state.currentCombat = {
+      step: 'FREE_TIMING',
       attackerCardId,
       targetType,
       targetCardId: targetType === 'CHARACTER' ? targetCardId : undefined,
@@ -126,26 +134,28 @@ export class CombatManager {
       targetCardId: targetType === 'CHARACTER' ? targetCardId : undefined,
     });
 
-    // 7.2.1.d 进入检查时机，随后进入自由时点步骤 (7.3)
+    // 7.2.1.d 进入检查时机，随后进入自由时点步骤：7.3.1.b 由回合外玩家开始轮流使用瞬时
     this.checkTimingMgr.resolveCheckTiming();
     this.state.phase = 'COMBAT_FREE_TIMING';
-    this.state.priorityPlayerId = opponentPlayerId; // 7.3.1.b 由回合外玩家开始
+    this.state.timingWindow = { kind: 'FREE_TIMING', priorityPlayerId: opponentPlayerId, consecutivePasses: 0 };
+    this.state.priorityPlayerId = opponentPlayerId;
 
     return { success: true };
   }
 
   /**
-   * 7.3.1.c 阻挡宣言 (Block Declaration)
+   * 7.3.1.c 阻挡宣言：所有玩家都不再使用瞬时之后，由被攻击的玩家选择是否阻挡
    */
   declareBlock(defenderPlayerId: string, blockerCardId?: string): { success: boolean; error?: string } {
-    if (this.state.phase !== 'COMBAT_FREE_TIMING') {
+    const combat = this.state.currentCombat;
+    if (this.state.phase !== 'COMBAT_FREE_TIMING' || !combat) {
       return { success: false, error: '当前不在自由时点步骤' };
     }
     if (this.state.nonActivePlayerId !== defenderPlayerId) {
       return { success: false, error: '只有被攻击的玩家可以宣告阻挡' };
     }
-    if (!this.state.currentCombat) {
-      return { success: false, error: '当前没有进行中的战斗' };
+    if (combat.step !== 'BLOCK' || this.state.timingWindow) {
+      return { success: false, error: '双方都选择不再使用【瞬时】后才能宣告阻挡 (7.3.1.b)' };
     }
 
     if (blockerCardId) {
@@ -160,25 +170,32 @@ export class CombatManager {
       }
 
       blocker.isReady = false;
-      this.state.currentCombat.blockerCardId = blockerCardId;
-
-      this.events.push({
-        type: 'BLOCK_DECLARED',
-        blockerCardId,
-        isBlocked: true,
-      });
+      combat.blockerCardId = blockerCardId;
+      this.events.push({ type: 'BLOCK_DECLARED', blockerCardId, isBlocked: true });
     } else {
-      this.events.push({
-        type: 'BLOCK_DECLARED',
-        isBlocked: false,
-      });
+      this.events.push({ type: 'BLOCK_DECLARED', isBlocked: false });
     }
 
-    // 7.3.1.d 检查时机，进入充能步骤 (7.4)
+    // 7.3.1.d 检查时机，随后进入充能步骤 (由 advance() 推进)
     this.checkTimingMgr.resolveCheckTiming();
-    this.advanceToChargeStep();
-
+    this.enterChargeStep();
     return { success: true };
+  }
+
+  /**
+   * 7.3.1.b 自由时点的瞬时轮流结束：进入阻挡宣言。被攻击玩家没有可以阻挡的角色时直接视为不阻挡。
+   */
+  onFreeTimingWindowClosed(): void {
+    const combat = this.state.currentCombat;
+    if (!combat) return;
+    combat.step = 'BLOCK';
+    this.state.priorityPlayerId = this.state.nonActivePlayerId;
+    const canBlock = this.fieldMgr
+      .getSlots(this.state.nonActivePlayerId)
+      .some((s) => s.roleCardId && this.state.cards[s.roleCardId]?.isReady);
+    if (!canBlock) {
+      this.declareBlock(this.state.nonActivePlayerId, undefined);
+    }
   }
 
   /**
@@ -191,59 +208,120 @@ export class CombatManager {
     return inherent ?? 1;
   }
 
-  /**
-   * 推进至 7.4 充能步骤并自动执行结算
-   */
-  private advanceToChargeStep(): void {
+  private enterChargeStep(): void {
     const combat = this.state.currentCombat;
     if (!combat) return;
-
     this.state.phase = 'COMBAT_CHARGE';
+    combat.step = 'CHARGE';
+    combat.chargeIndex = 0;
     // 7.4.1.b 充能次数在此时决定，之后攻击角色离场也照常执行 (Q&A 第6期)
-    const chargeCount = this.calculateRoleChargeCount(combat.attackerCardId);
-    if (chargeCount > 0) {
-      this.zoneMgr.performAttackCharge(combat.attackerCardId, chargeCount);
-    }
+    combat.chargesRemaining = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId)
+      ? this.calculateRoleChargeCount(combat.attackerCardId)
+      : 0;
+  }
 
-    this.checkTimingMgr.resolveCheckTiming();
+  /**
+   * 推进攻击流程，直到攻击结束或需要玩家行动/决策。返回是否有进展。
+   */
+  advance(): boolean {
+    const combat = this.state.currentCombat;
+    if (!combat || this.state.status === 'FINISHED') return false;
+    if (this.state.currentPendingChoice || this.state.timingWindow) return false;
 
-    // 7.4.1.c 对象为对方玩家且未被阻挡 → 伤害步骤；否则 → 角色战斗步骤
-    if (combat.targetType === 'PLAYER' && !combat.blockerCardId) {
-      this.resolveDamageStep();
-    } else {
-      this.resolveCharacterBattleStep();
+    switch (combat.step) {
+      case 'FREE_TIMING':
+        // 瞬时轮流窗口已关闭
+        this.onFreeTimingWindowClosed();
+        return true;
+      case 'BLOCK':
+        return false; // 等待被攻击玩家宣告阻挡
+      case 'CHARGE':
+        return this.advanceChargeStep();
+      case 'DAMAGE':
+        return this.advanceDamageStep();
+      case 'BATTLE':
+        this.resolveCharacterBattleStep();
+        return true;
+      case 'END':
+      default:
+        this.endCombat();
+        return true;
     }
   }
 
   /**
-   * 7.5 伤害步骤 (Damage Step)
+   * 7.4.1.b 依次执行攻击充能；每张翻开的牌在其能力处理完毕 (含玩家选择) 后才放置
    */
-  private resolveDamageStep(): void {
-    const combat = this.state.currentCombat;
-    if (!combat) return;
-
-    this.state.phase = 'COMBAT_DAMAGE';
-
-    // 7.5.1.b 攻击角色仍在战场时，按其此时的 DP 造成伤害 (7.5.1.b.3 伤害量在此锁定)
-    if (this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId)) {
-      const dp = this.fieldMgr.calculateRoleEffectiveDP(combat.attackerCardId);
-      if (dp > 0) {
-        this.zoneMgr.applyDamageToPlayer(this.state.nonActivePlayerId, dp);
-      }
+  private advanceChargeStep(): boolean {
+    const combat = this.state.currentCombat!;
+    if (combat.pendingChargeCardId) {
+      this.zoneMgr.completeAttackCharge(combat.attackerCardId, combat.pendingChargeCardId, combat.chargeIndex ?? 1);
+      combat.pendingChargeCardId = undefined;
+      return true;
     }
 
+    if ((combat.chargesRemaining ?? 0) > 0) {
+      combat.chargesRemaining = (combat.chargesRemaining ?? 0) - 1;
+      combat.chargeIndex = (combat.chargeIndex ?? 0) + 1;
+      const cardId = this.zoneMgr.revealTopForCharge(this.state.activePlayerId);
+      if (cardId) {
+        combat.pendingChargeCardId = cardId;
+      } else {
+        combat.chargesRemaining = 0;
+      }
+      return true;
+    }
+
+    // 7.4.1.c 检查时机后：对象为对方玩家且未被阻挡 → 伤害步骤；否则 → 角色战斗步骤
     this.checkTimingMgr.resolveCheckTiming();
-    this.endCombat();
+    if (combat.targetType === 'PLAYER' && !combat.blockerCardId) {
+      this.state.phase = 'COMBAT_DAMAGE';
+      combat.step = 'DAMAGE';
+      // 7.5.1.b 攻击角色仍在战场时，以此时的 DP 决定伤害量 (7.5.1.b.3 之后不再变化)
+      const attackerOnField = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId);
+      combat.damageRemaining = attackerOnField
+        ? Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(combat.attackerCardId))
+        : 0;
+    } else {
+      this.state.phase = 'COMBAT_BATTLE';
+      combat.step = 'BATTLE';
+    }
+    return true;
+  }
+
+  /**
+   * 7.5 伤害步骤：依次执行伤害充能，每次完毕侵蚀计数 +1 并进入检查时机 (4.12.3.b)
+   */
+  private advanceDamageStep(): boolean {
+    const combat = this.state.currentCombat!;
+    const defenderId = this.state.nonActivePlayerId;
+
+    if (combat.pendingDamageCardId !== undefined) {
+      const cardId = combat.pendingDamageCardId || undefined;
+      combat.pendingDamageCardId = undefined;
+      this.zoneMgr.completeDamageCharge(defenderId, cardId);
+      this.checkTimingMgr.resolveCheckTiming();
+      return true;
+    }
+
+    if ((combat.damageRemaining ?? 0) > 0) {
+      combat.damageRemaining = (combat.damageRemaining ?? 0) - 1;
+      // 翻不出牌 (牌组与墓地都为空，已败北) 时也记录空字符串，以便执行侵蚀 +1
+      combat.pendingDamageCardId = this.zoneMgr.revealTopForCharge(defenderId) ?? '';
+      return true;
+    }
+
+    // 7.5.1.c 检查时机后进入「攻击结束时」
+    this.checkTimingMgr.resolveCheckTiming();
+    combat.step = 'END';
+    return true;
   }
 
   /**
    * 7.6 角色战斗步骤 (Character Battle Step)
    */
   private resolveCharacterBattleStep(): void {
-    const combat = this.state.currentCombat;
-    if (!combat) return;
-
-    this.state.phase = 'COMBAT_BATTLE';
+    const combat = this.state.currentCombat!;
     const defenderCardId = combat.blockerCardId ?? combat.targetCardId;
     const attackerOnField = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId);
     const defenderOnField = !!defenderCardId && this.fieldMgr.isSlotRole(this.state.nonActivePlayerId, defenderCardId);
@@ -258,11 +336,7 @@ export class CombatManager {
       if (attackerPP >= defenderPP) {
         destroyedDefenderCardId = defenderCardId;
         this.zoneMgr.moveCard(defenderCardId, 'GRAVEYARD', { isFaceUp: true });
-        this.events.push({
-          type: 'CARD_DESTROYED',
-          cardInstanceId: defenderCardId,
-          reason: 'BATTLE',
-        });
+        this.events.push({ type: 'CARD_DESTROYED', cardInstanceId: defenderCardId, reason: 'BATTLE' });
 
         // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
         if (this.hasKeyword(combat.attackerCardId, '贯通')) {
@@ -280,8 +354,9 @@ export class CombatManager {
       });
     }
 
+    // 7.6.1.d 检查时机
     this.checkTimingMgr.resolveCheckTiming();
-    this.endCombat();
+    combat.step = 'END';
   }
 
   /**
@@ -319,5 +394,8 @@ export class CombatManager {
         maxSelections: 1,
       });
     }
+
+    // 7.5.1.d / 7.6.1.f「攻击结束时」的检查时机
+    this.checkTimingMgr.resolveCheckTiming();
   }
 }

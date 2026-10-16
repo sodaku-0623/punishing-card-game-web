@@ -13,6 +13,7 @@ import {
 } from '@zhanshuang/shared';
 import { SeedRng } from './rng/seed-rng.js';
 import { ICardDatabase, BASE_TEST_CARDS, MemoryCardDatabase } from './database/card-registry.js';
+import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { createInitialGameState, PlayerInitConfig } from './state/create-game.js';
 import { sanitizeGameStateForPlayer } from './state/sanitize-state.js';
 import { ZoneManager } from './zone/zone-manager.js';
@@ -330,34 +331,25 @@ export class GameEngine {
       }
 
       case 'PASS_ACTION_TIMING': {
-        if (this.state.phase === 'MULLIGAN_PHASE') {
-          // 5.2.1.e 在调度阶段 Pass 等同于保留全部手牌
-          const res = this.handleResolveMulligan({
-            type: 'RESOLVE_MULLIGAN',
+        const res = this.handlePass(action.playerId);
+        success = res.success;
+        error = res.error;
+        break;
+      }
+
+      case 'USE_INSTANT': {
+        if (action.pass || !action.cardInstanceId) {
+          const res = this.handlePass(action.playerId);
+          success = res.success;
+          error = res.error;
+        } else {
+          const res = this.handlePlayCard({
+            type: 'PLAY_CARD',
             playerId: action.playerId,
-            cardInstanceIdsToBottom: [],
+            cardInstanceId: action.cardInstanceId,
           });
           success = res.success;
           error = res.error;
-        } else if (this.state.phase === 'MAIN_PHASE') {
-          // 6.4.1.c 回合玩家选择不再执行行动，进入结束阶段
-          this.phaseMachine.startEndPhase();
-          success = true;
-        } else if (this.state.phase === 'COMBAT_FREE_TIMING') {
-          // 7.3.1 自由时点必须由被攻击玩家选择是否阻挡，回合方玩家不得单方面跳过结算
-          if (action.playerId !== this.state.nonActivePlayerId) {
-            error = '当前处于战斗阻挡确认时点，必须等待被攻击玩家选择是否阻挡';
-            success = false;
-          } else {
-            // 被攻击玩家选择不进行阻挡，正常推进后续战斗充能与伤害/战斗结算 (7.3.1.d)
-            const res = this.combatMgr.declareBlock(this.state.nonActivePlayerId, undefined);
-            success = res.success;
-            error = res.error;
-          }
-        } else if (this.state.phase === 'DRAW_CHARGE_PHASE') {
-          // 放弃放置明费，进入主要阶段
-          this.phaseMachine.chargeCostFromHand(this.state.activePlayerId, undefined);
-          success = true;
         }
         break;
       }
@@ -367,7 +359,11 @@ export class GameEngine {
         success = false;
     }
 
-    // 执行规则处理确认
+    // 推进无需玩家行动的流程，再执行规则处理确认
+    if (success) {
+      this.continueFlow();
+      this.sweepResolvedTactics();
+    }
     this.checkTimingMgr.resolveCheckTiming();
 
     // 卡牌效果可能直接改变费用区卡牌的竖直/横置状态，统一从实际卡牌重新统计费用
@@ -503,13 +499,6 @@ export class GameEngine {
     success: boolean;
     error?: string;
   } {
-    if (this.state.phase !== 'MAIN_PHASE') {
-      return { success: false, error: '只能在主要阶段使用手牌 (8.6.2)' };
-    }
-    if (this.state.activePlayerId !== action.playerId) {
-      return { success: false, error: '只能在自己回合的主要阶段使用手牌' };
-    }
-
     const card = this.state.cards[action.cardInstanceId];
     if (!card || card.controllerPlayerId !== action.playerId || card.zone !== 'HAND') {
       return { success: false, error: '手牌中不存在该卡牌' };
@@ -518,6 +507,31 @@ export class GameEngine {
     const cardDef = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
     if (!cardDef) {
       return { success: false, error: `未找到卡牌规则定义 (卡号: ${card.cardNumber || card.cardId})` };
+    }
+
+    // 10.8 【瞬时】只能在轮流使用瞬时的时机 (自由时点步骤 / 结束阶段) 使用，由持有优先权的玩家使用；
+    // 其他卡牌只能由回合玩家在主要阶段的行动时机使用 (6.4.1.b)
+    const timingWindow = this.state.timingWindow;
+    const isInstant = isInstantTactics(cardDef);
+    if (timingWindow) {
+      if (timingWindow.priorityPlayerId !== action.playerId) {
+        return { success: false, error: '现在不是你使用【瞬时】的时机' };
+      }
+      if (!isInstant) {
+        return { success: false, error: '此时只能使用【瞬时】卡牌 (10.8)' };
+      }
+      const timingError = this.checkInstantTiming(action.playerId, cardDef);
+      if (timingError) return { success: false, error: timingError };
+    } else {
+      const turnError = this.checkMainPhaseAction(action.playerId);
+      if (turnError) return { success: false, error: turnError };
+      if (isInstant && !cardDef.rulesText.includes('主要阶段也可以发动')) {
+        return { success: false, error: '【瞬时】只能在自由时点步骤或结束阶段使用 (10.8)' };
+      }
+      if (isInstant) {
+        const timingError = this.checkInstantTiming(action.playerId, cardDef);
+        if (timingError) return { success: false, error: timingError };
+      }
     }
 
     const player = this.state.players[action.playerId]!;
@@ -641,6 +655,13 @@ export class GameEngine {
       // 战术牌打出：自动执行其效果处理 (8.6.2.e.4)
       const res = this.effectEngine.handlePlayTactics(action.playerId, action.cardInstanceId, cardDef);
       if (!res.success) return res;
+    }
+
+    // 7.3.1.b / 6.5.1.a 轮流使用：使用【瞬时】后轮到另一位玩家，连续放弃计数重新开始
+    if (timingWindow && this.state.timingWindow) {
+      this.state.timingWindow.consecutivePasses = 0;
+      this.state.timingWindow.priorityPlayerId = this.getOpponentId(action.playerId);
+      this.state.priorityPlayerId = this.state.timingWindow.priorityPlayerId;
     }
 
     return { success: true };
@@ -844,6 +865,21 @@ export class GameEngine {
       return { success: false, error: validationError };
     }
 
+    // 6.5.1.c 结束阶段弃牌
+    if (choice.effectType === 'END_PHASE_DISCARD') {
+      for (const id of action.selectedIds) {
+        const card = this.state.cards[id];
+        if (!card || card.zone !== 'HAND' || card.controllerPlayerId !== action.playerId) {
+          return { success: false, error: '只能选择自己的手牌' };
+        }
+        this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+      }
+      this.state.endPhaseStep = 'CLEANUP';
+      this.state.currentPendingChoice = undefined;
+      advancePendingChoice(this.state);
+      return { success: true };
+    }
+
     // 先摘下当前决策再结算：结算中产生的后续决策直接成为当前决策，排队中的决策随后进行
     this.state.currentPendingChoice = undefined;
     const result = this.effectEngine.handleChoiceResolution(action, choice);
@@ -854,13 +890,213 @@ export class GameEngine {
   }
 
   /**
+   * 选择不行动 (4.5.3.b)：含义取决于当前时机
+   */
+  private handlePass(playerId: string): { success: boolean; error?: string } {
+    const state = this.state;
+    if (state.phase === 'MULLIGAN_PHASE') {
+      // 5.2.1.e 在调度阶段 Pass 等同于保留全部手牌
+      return this.handleResolveMulligan({ type: 'RESOLVE_MULLIGAN', playerId, cardInstanceIdsToBottom: [] });
+    }
+    if (state.timingWindow) {
+      // 7.3.1.b / 6.5.1.a 选择不使用【瞬时】
+      if (state.timingWindow.priorityPlayerId !== playerId) {
+        return { success: false, error: '现在轮到对方选择是否使用【瞬时】' };
+      }
+      this.passTimingWindow();
+      return { success: true };
+    }
+    if (state.phase === 'COMBAT_FREE_TIMING' && state.currentCombat?.step === 'BLOCK') {
+      // 7.3.1.c 被攻击玩家选择不阻挡
+      if (playerId !== state.nonActivePlayerId) {
+        return { success: false, error: '必须等待被攻击玩家选择是否阻挡 (7.3.1.c)' };
+      }
+      return this.combatMgr.declareBlock(playerId, undefined);
+    }
+    if (playerId !== state.activePlayerId) {
+      return { success: false, error: '现在不是你的行动时机' };
+    }
+    if (state.phase === 'MAIN_PHASE' && !state.currentCombat) {
+      // 6.4.1.c 回合玩家选择不再执行行动，进入结束阶段
+      this.phaseMachine.startEndPhase();
+      return { success: true };
+    }
+    if (state.phase === 'DRAW_CHARGE_PHASE') {
+      // 6.3.1.c 不放置明费，进入主要阶段
+      this.phaseMachine.chargeCostFromHand(playerId, undefined);
+      return { success: true };
+    }
+    return { success: false, error: '当前时机不能选择不行动' };
+  }
+
+  /**
+   * 持有优先权的玩家选择不使用【瞬时】：轮到另一位玩家；双方连续不使用时结束该时机
+   */
+  private passTimingWindow(): void {
+    const window = this.state.timingWindow;
+    if (!window) return;
+    window.consecutivePasses += 1;
+    if (window.consecutivePasses >= 2) {
+      this.state.timingWindow = undefined;
+      return;
+    }
+    window.priorityPlayerId = this.getOpponentId(window.priorityPlayerId);
+    this.state.priorityPlayerId = window.priorityPlayerId;
+  }
+
+  /**
+   * 8.6.2.e.3 战术牌的效果处理完毕后放置到所属玩家的墓地。没有待处理的决策、也没有正在充能的卡牌时，
+   * 处理区中不应残留战术牌 (兜底，避免个别效果分支遗漏送墓)
+   */
+  private sweepResolvedTactics(): void {
+    if (this.state.currentPendingChoice) return;
+    const combat = this.state.currentCombat;
+    for (const card of Object.values(this.state.cards)) {
+      if (card.zone !== 'PROCESSING') continue;
+      if (card.instanceId === combat?.pendingChargeCardId || card.instanceId === combat?.pendingDamageCardId) continue;
+      const def = this.cardDb.getCard(card.cardNumber);
+      if (def?.cardType === CardType.TACTICS) {
+        this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      }
+    }
+  }
+
+  private getOpponentId(playerId: string): string {
+    return playerId === this.state.activePlayerId ? this.state.nonActivePlayerId : this.state.activePlayerId;
+  }
+
+  /**
+   * 推进不需要玩家行动的流程 (攻击流程的各步骤、结束阶段的各步骤、无可用瞬时时自动放弃)，
+   * 直到需要玩家行动或决策为止
+   */
+  private continueFlow(): void {
+    for (let guard = 0; guard < 1000; guard++) {
+      if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return;
+
+      const window = this.state.timingWindow;
+      if (window) {
+        if (this.hasUsableInstant(window.priorityPlayerId)) return;
+        // 没有任何可以使用的【瞬时】时自动选择不使用
+        this.passTimingWindow();
+        continue;
+      }
+
+      if (this.state.currentCombat) {
+        if (!this.combatMgr.advance()) return;
+        continue;
+      }
+
+      if (this.state.phase === 'END_PHASE') {
+        if (!this.advanceEndPhase()) return;
+        continue;
+      }
+      return;
+    }
+    throw new Error('流程推进超过上限，可能存在循环');
+  }
+
+  /**
+   * 6.5.1 结束阶段：瞬时 (6.5.1.a) → 回合结束时 (6.5.1.b) → 手牌弃至上限 (6.5.1.c) → 清理与回合交接 (6.5.1.d/e)
+   */
+  private advanceEndPhase(): boolean {
+    switch (this.state.endPhaseStep) {
+      case 'INSTANTS':
+        // 6.5.1.b「回合结束时」的触发条件生效后，进入检查时机
+        this.state.endPhaseStep = 'TRIGGERS';
+        this.checkTimingMgr.resolveCheckTiming();
+        return true;
+      case 'TRIGGERS': {
+        this.state.endPhaseStep = 'DISCARD';
+        const overflow = this.phaseMachine.getHandOverflow();
+        if (overflow > 0) {
+          const hand = this.zoneMgr.getCardsInZone(this.state.activePlayerId, 'HAND');
+          enqueuePendingChoice(this.state, {
+            id: `choice-end-discard-${this.state.turnNumber}`,
+            playerId: this.state.activePlayerId,
+            choiceType: 'SELECT_CARDS',
+            prompt: `回合结束：手牌超过上限 ${RULE_CONSTANTS.MAX_HAND_SIZE_END_PHASE} 张，请选择 ${overflow} 张手牌放置到墓地 (6.5.1.c)`,
+            options: hand.map((c) => this.effectEngine.createGeneralCardChoiceOption(c)),
+            effectType: 'END_PHASE_DISCARD',
+            minSelections: overflow,
+            maxSelections: overflow,
+          });
+        } else {
+          this.state.endPhaseStep = 'CLEANUP';
+        }
+        return true;
+      }
+      case 'DISCARD':
+        return false; // 等待回合玩家选择弃掉的手牌
+      case 'CLEANUP':
+        this.phaseMachine.finishEndPhase();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * 玩家当前是否持有可以使用的【瞬时】(用于没有瞬时时自动放弃，避免每次攻击都要双方手动确认)
+   */
+  private hasUsableInstant(playerId: string): boolean {
+    const costCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
+    const payable = costCards.filter((c) => !c.isFaceUp || c.isReady).length;
+    const openAttributes = new Set(
+      costCards.filter((c) => c.isFaceUp).map((c) => this.cardDb.getCard(c.cardNumber)?.attribute)
+    );
+    return this.zoneMgr.getCardsInZone(playerId, 'HAND').some((card) => {
+      const def = this.cardDb.getCard(card.cardNumber);
+      if (!def || !isInstantTactics(def)) return false;
+      if (def.attribute !== ElementAttribute.NONE && !openAttributes.has(def.attribute)) return false;
+      if (this.calculateCardCost(playerId, card.instanceId).costToPay > payable) return false;
+      return !this.checkInstantTiming(playerId, def);
+    });
+  }
+
+  /**
+   * 【瞬时】卡牌文本中记述的使用时机限制
+   */
+  private checkInstantTiming(playerId: string, def: CardVersionData): string | undefined {
+    const text = def.rulesText;
+    const window = this.state.timingWindow;
+    const combat = this.state.currentCombat;
+    const isOpponentTurn = playerId !== this.state.activePlayerId;
+
+    if ((text.includes('该牌只能在对方回合使用') || /【瞬时】[:：]\s*对方回合中/.test(text)) && !isOpponentTurn) {
+      return '该牌只能在对方回合使用';
+    }
+    if (text.includes('我方玩家被攻击时才能发动')) {
+      const attacked = window?.kind === 'FREE_TIMING' && combat?.targetType === 'PLAYER' && isOpponentTurn;
+      if (!attacked) return '只能在我方玩家被攻击时使用';
+    }
+    if ((text.includes('角色攻击时才能发动') || text.includes('该牌只能在自由时点步骤发动')) && window?.kind !== 'FREE_TIMING') {
+      return '只能在角色攻击的自由时点步骤使用';
+    }
+    const fieldRequirement = text.match(/该牌只能在我方战场存在([《<])([^》>]+)[》>](?:角色)?时才能使用/);
+    if (fieldRequirement) {
+      const bracket = fieldRequirement[1]!;
+      const subject = fieldRequirement[2]!;
+      const exists = this.fieldMgr.getSlots(playerId).some((s) => {
+        const role = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
+        const roleDef = role ? this.cardDb.getCard(role.cardNumber) : undefined;
+        if (!roleDef) return false;
+        return bracket === '《' ? roleDef.name === subject : roleDef.traits.includes(subject);
+      });
+      if (!exists) {
+        return `该牌只能在我方战场存在${bracket === '《' ? `《${subject}》` : `<${subject}>`}时才能使用`;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * 回合玩家在主要阶段的行动时机才能执行的行动 (6.4.1.b) 的公共前置检查
    */
   private checkMainPhaseAction(playerId: string): string | undefined {
     if (this.state.activePlayerId !== playerId) {
       return '只能在自己回合的主要阶段执行该行动 (6.4.1.b)';
     }
-    if (this.state.phase !== 'MAIN_PHASE' || this.state.currentCombat) {
+    if (this.state.phase !== 'MAIN_PHASE' || this.state.currentCombat || this.state.timingWindow) {
       return '只能在主要阶段的行动时机执行该行动 (6.4.1.b)';
     }
     return undefined;
@@ -999,4 +1235,11 @@ export function validateChoiceSelection(choice: PendingChoice, selectedIds: unkn
     return `最多只能选择 ${choice.maxSelections} 项`;
   }
   return undefined;
+}
+
+/**
+ * 是否为瞬时战术牌 (2.2.2.b.2)
+ */
+export function isInstantTactics(def: CardVersionData): boolean {
+  return def.cardType === CardType.TACTICS && (def.isInstant || /【瞬时(?:战术牌)?】/.test(def.rulesText));
 }

@@ -31,6 +31,8 @@ interface CardContextMenuProps {
   isMyTurn: boolean;
   phase: GamePhase;
   myAvailableCost: number;
+  /** 轮到我方选择是否使用【瞬时】 */
+  canUseInstant?: boolean;
   effectiveCost?: number;
   isFriendlyRole: boolean;
   isOpponentRole: boolean;
@@ -58,6 +60,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   isMyTurn,
   phase,
   myAvailableCost,
+  canUseInstant,
   effectiveCost,
   isFriendlyRole,
   isOpponentRole,
@@ -147,13 +150,19 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
         });
       }
     } else if (cardDef?.cardType === CardType.TACTICS) {
+      // 10.8 瞬时战术牌只能在轮到我方使用【瞬时】时使用 (部分卡牌允许在我方主要阶段使用)
+      const isInstantCard = !!cardDef.isInstant || !!cardDef.rulesText?.includes('【瞬时');
+      const canUseNow = isInstantCard
+        ? !!canUseInstant ||
+          (isMyTurn && phase === 'MAIN_PHASE' && !!cardDef.rulesText?.includes('主要阶段也可以发动'))
+        : isMyTurn && phase === 'MAIN_PHASE';
       actions.push({
         id: 'play_tactics',
-        label: card.cardNumber?.startsWith('ORB-') ? '放置信号球' : '发动战术卡',
+        label: cardDef.signalOrb ? '放置信号球' : isInstantCard ? '使用瞬时战术' : '发动战术卡',
         subLabel: costLabel,
         icon: <Zap className="w-3.5 h-3.5" />,
         variant: 'primary',
-        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < currentCost,
+        disabled: !canUseNow || myAvailableCost < currentCost,
         onClick: () => {
           onPlayCard?.(card);
           onClose();

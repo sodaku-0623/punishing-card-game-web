@@ -117,53 +117,59 @@ export class PhaseMachine {
   }
 
   /**
-   * 6.5 结束阶段 (End Phase)
+   * 6.5 结束阶段开始：6.5.1.a 由回合玩家开始轮流使用【瞬时】。之后的步骤由引擎按 endPhaseStep 推进。
    */
   startEndPhase(): void {
     this.transitionTo('END_PHASE');
+    this.state.endPhaseStep = 'INSTANTS';
+    this.state.timingWindow = {
+      kind: 'END_PHASE',
+      priorityPlayerId: this.state.activePlayerId,
+      consecutivePasses: 0,
+    };
+    this.state.priorityPlayerId = this.state.activePlayerId;
+  }
+
+  /**
+   * 6.5.1.c 回合玩家手牌超出上限的张数
+   */
+  getHandOverflow(): number {
+    const handCount = this.zoneMgr.getCardsInZone(this.state.activePlayerId, 'HAND').length;
+    return Math.max(0, handCount - RULE_CONSTANTS.MAX_HAND_SIZE_END_PHASE);
+  }
+
+  /**
+   * 6.5.1.d 之后的清理与 6.5.1.e 回合交接
+   */
+  finishEndPhase(): void {
     const activePlayerId = this.state.activePlayerId;
 
-    // 6.5.1.a 瞬时时点轮转已结束 (由玩家Pass触发进入本阶段)
-    // 6.5.1.b 回合结束触发检查时机
+    // 6.5.1.d 进入检查时机，之后「回合结束前」「该回合中」为期限的效果同时消失
     this.checkTimingMgr.resolveCheckTiming();
-
-    // 6.5.1.c 回合玩家手牌超过上限7张时，弃至7张
-    const handCards = this.zoneMgr.getCardsInZone(activePlayerId, 'HAND');
-    if (handCards.length > RULE_CONSTANTS.MAX_HAND_SIZE_END_PHASE) {
-      const excess = handCards.length - RULE_CONSTANTS.MAX_HAND_SIZE_END_PHASE;
-      for (let i = 0; i < excess; i++) {
-        const toDiscard = handCards[handCards.length - 1 - i]!;
-        this.zoneMgr.moveCard(toDiscard.instanceId, 'GRAVEYARD', { isFaceUp: true });
-      }
-    }
-
-    // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地
-    const costCards = this.zoneMgr.getCardsInZone(activePlayerId, 'COST');
-    for (const c of costCards) {
-      if (!c.isFaceUp) {
-        this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true });
-      }
-    }
-
-    // 6.5.1.d 清理“该回合中”的临时加成与词条
     for (const card of Object.values(this.state.cards)) {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
     }
-
-    // 重置所有玩家的【回合1】能力计数与费用减免修改器 (直到回合结束为止)
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};
       p.costModifiers = [];
     }
 
-    this.checkTimingMgr.resolveCheckTiming();
+    // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5)
+    for (const c of this.zoneMgr.getCardsInZone(activePlayerId, 'COST')) {
+      if (!c.isFaceUp) {
+        this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      }
+    }
 
-    // 6.5.1.e 切换攻守玩家，开始下一个回合
+    this.checkTimingMgr.resolveCheckTiming();
+    if (this.state.status === 'FINISHED') return;
+    this.state.endPhaseStep = undefined;
+
+    // 6.5.1.e 回合外玩家成为回合玩家，进入下一回合的竖直阶段
     const nextActivePlayerId = this.state.nonActivePlayerId;
-    const nextNonActivePlayerId = this.state.activePlayerId;
+    this.state.nonActivePlayerId = activePlayerId;
     this.state.activePlayerId = nextActivePlayerId;
-    this.state.nonActivePlayerId = nextNonActivePlayerId;
     this.state.turnNumber += 1;
     this.state.priorityPlayerId = nextActivePlayerId;
 
@@ -173,7 +179,6 @@ export class PhaseMachine {
       activePlayerId: nextActivePlayerId,
     });
 
-    // 进入下一回合竖直阶段
     this.startStandPhase();
   }
 }

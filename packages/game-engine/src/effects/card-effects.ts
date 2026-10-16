@@ -2392,15 +2392,18 @@ export class CardEffectEngine {
     if (this.ctx.state.currentPendingChoice && this.ctx.state.currentPendingChoice.id !== choice.id) {
       // 保持派生的二级目标选择决策激活状态
     } else {
-      // 结算完成后将处理区中残留的普通战术牌送入墓地 (信号球与招式已入信号球区，不受影响)
-      const processingTactics = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'PROCESSING')
-        .filter((c) => {
-          const d = this.getCardDef(c);
-          return d?.cardType === CardType.TACTICS;
-        });
-      for (const t of processingTactics) {
-        this.ctx.zoneMgr.moveCard(t.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      // 8.6.2.e.3 使用的战术牌处理完毕后放置到所属玩家的墓地。只处理产生本次决策的战术牌：
+      // 正在充能中、等待放置的卡牌 (4.12) 也位于处理区，不能一并送墓
+      const combat = this.ctx.state.currentCombat;
+      const source = choice.sourceCardInstanceId ? this.ctx.state.cards[choice.sourceCardInstanceId] : undefined;
+      if (
+        source &&
+        source.zone === 'PROCESSING' &&
+        source.instanceId !== combat?.pendingChargeCardId &&
+        source.instanceId !== combat?.pendingDamageCardId &&
+        this.getCardDef(source)?.cardType === CardType.TACTICS
+      ) {
+        this.ctx.zoneMgr.moveCard(source.instanceId, 'GRAVEYARD', { isFaceUp: true });
       }
 
       this.ctx.setPendingChoice(undefined);
