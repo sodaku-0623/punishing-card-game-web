@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useEffect } from 'react';
+import { getTimingStatus } from '@/lib/timing';
 import {
   PublicGameState,
   CardInstance,
@@ -91,6 +92,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   onInspectCard,
   onOpenGraveyard,
 }) => {
+  const timing = getTimingStatus(gameState, resolvedMyUserId);
   const mySlots = gameState.battlefields?.[resolvedMyUserId] || [];
   const opponentSlots = gameState.battlefields?.[opponentUserId] || [];
 
@@ -222,28 +224,27 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
                   【交战中】目标: {gameState.currentCombat.targetType === 'PLAYER' ? '对方玩家' : '角色卡'}
                 </span>
 
-                {gameState.phase === 'COMBAT_FREE_TIMING' && (
-                  isMyTurn ? (
-                    <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
-                      <Clock className="w-3 h-3 text-yellow-400 animate-spin" />
-                      <span>等待对方选择是否阻挡...</span>
+                {timing.waitingHint && gameState.phase === 'COMBAT_FREE_TIMING' && (
+                  <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
+                    <Clock className="w-3 h-3 text-yellow-400 animate-spin" />
+                    <span>{timing.waitingHint}</span>
+                  </span>
+                )}
+                {(timing.canDeclareBlock || (timing.hasInstantPriority && gameState.phase === 'COMBAT_FREE_TIMING')) && (
+                  <div className="flex items-center gap-2 ml-1">
+                    <span className="px-2 py-0.5 rounded bg-erosionRed/30 text-red-200 border border-erosionRed/60 text-[10px] font-bold flex items-center gap-1 animate-pulse">
+                      <Shield className="w-3 h-3 text-yellow-300" />
+                      <span>{timing.canDeclareBlock ? '请选择角色【阻挡】，或：' : '可以使用【瞬时】，或：'}</span>
                     </span>
-                  ) : (
-                    <div className="flex items-center gap-2 ml-1">
-                      <span className="px-2 py-0.5 rounded bg-erosionRed/30 text-red-200 border border-erosionRed/60 text-[10px] font-bold flex items-center gap-1 animate-pulse">
-                        <Shield className="w-3 h-3 text-yellow-300" />
-                        <span>请选择角色【阻挡】，或：</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={onPassTiming}
-                        className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-black text-[10px] font-mono shadow-[0_0_12px_rgba(255,200,0,0.8)] animate-bounce active:scale-95 transition-all cursor-pointer"
-                        title="放弃阻挡并推进战斗伤害结算 (快捷键: Space)"
-                      >
-                        放弃阻挡 [Space]
-                      </button>
-                    </div>
-                  )
+                    <button
+                      type="button"
+                      onClick={onPassTiming}
+                      className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-black text-[10px] font-mono shadow-[0_0_12px_rgba(255,200,0,0.8)] animate-bounce active:scale-95 transition-all cursor-pointer"
+                      title="快捷键: Space"
+                    >
+                      {timing.passLabel} [Space]
+                    </button>
+                  </div>
                 )}
               </>
             )}
@@ -273,10 +274,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           gameState.phase === 'MAIN_PHASE' &&
           !!roleCard?.isReady &&
           (roleCard.turnEnteredZone < gameState.turnNumber || hasRush);
-        const canBlock =
-          !isMyTurn &&
-          gameState.phase === 'COMBAT_FREE_TIMING' &&
-          !!roleCard?.isReady;
+        const canBlock = timing.canDeclareBlock && !!roleCard?.isReady;
 
         const isAttacking = !!attackAnim && !!roleCard && attackAnim.attackerCardId === roleCard.instanceId;
         const isHit = !!attackAnim && !!roleCard && attackAnim.targetCardId === roleCard.instanceId && attackAnim.isClashing;

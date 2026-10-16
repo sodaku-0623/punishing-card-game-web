@@ -106,7 +106,32 @@ export interface CostModifier {
   remainingCount?: number; // 1 表示下1张
 }
 
+/**
+ * 角色攻击流程中的当前步骤 (第 7 章)
+ * FREE_TIMING: 7.3.1.b 轮流使用瞬时；BLOCK: 7.3.1.c 被攻击玩家选择是否阻挡；
+ * CHARGE: 7.4 攻击充能；DAMAGE: 7.5 伤害步骤；BATTLE: 7.6 角色战斗步骤；END: 攻击结束
+ */
+export type CombatStep = 'FREE_TIMING' | 'BLOCK' | 'CHARGE' | 'DAMAGE' | 'BATTLE' | 'END';
+
+/**
+ * 轮流使用【瞬时】的时机 (7.3.1.b 自由时点步骤 / 6.5.1.a 结束阶段)
+ */
+export interface TimingWindow {
+  kind: 'FREE_TIMING' | 'END_PHASE';
+  priorityPlayerId: string; // 当前可以使用瞬时或选择不使用的玩家
+  consecutivePasses: number; // 连续选择不使用的次数，达到 2 时结束
+}
+
+/** 6.5.1 结束阶段的当前步骤 */
+export type EndPhaseStep = 'INSTANTS' | 'TRIGGERS' | 'DISCARD' | 'CLEANUP';
+
 export interface CombatState {
+  step?: CombatStep;
+  chargesRemaining?: number; // 7.4.1.b 尚未执行的攻击充能次数
+  chargeIndex?: number;
+  pendingChargeCardId?: string; // 已翻开到处理区、等待能力处理完毕后放置的充能卡牌
+  damageRemaining?: number; // 7.5.1.b 尚未执行的伤害充能次数 (伤害量在伤害步骤开始时锁定)
+  pendingDamageCardId?: string;
   attackerCardId: string;
   targetType: 'PLAYER' | 'CHARACTER';
   targetCardId?: string;
@@ -134,6 +159,8 @@ export interface GameState {
   pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
   currentPendingChoice?: PendingChoice; // 待决玩家决策
   pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)
+  timingWindow?: TimingWindow; // 轮流使用瞬时的时机 (7.3.1.b / 6.5.1.a)
+  endPhaseStep?: EndPhaseStep;
   
   winnerId?: string;
   isDraw: boolean;
@@ -157,6 +184,8 @@ export interface PublicGameState {
   players: Record<string, PlayerState>;
   battlefields: Record<string, BattlefieldSlot[]>;
   currentCombat?: CombatState;
+  timingWindow?: TimingWindow;
+  endPhaseStep?: EndPhaseStep;
   currentPendingChoice?: PendingChoice;
   opponentPendingChoice?: { playerId: string; prompt: string; effectType?: string };
   winnerId?: string;

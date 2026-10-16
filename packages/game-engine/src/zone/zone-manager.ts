@@ -232,6 +232,10 @@ export class ZoneManager {
     return res;
   }
 
+  private isFinished(): boolean {
+    return this.state.status === 'FINISHED';
+  }
+
   /**
    * 9.2 牌组更新处理 (中断型规则处理)：牌组没有卡牌时，将墓地所有卡牌移动到牌组并洗切，侵蚀计数+1。
    * 墓地也没有卡牌时该玩家立即败北 (9.2.2.a)。返回牌组中是否有卡牌可供继续处理。
@@ -307,107 +311,101 @@ export class ZoneManager {
   }
 
   /**
-   * 4.12.2 攻击充能处理
-   * 将牌组顶卡牌翻开至处理区，相关能力处理完毕后：
-   * - 若为信号球牌，放置到信号球区最上方 (4.12.2.a)
-   * - 若不为信号球牌，加入手牌 (4.12.2.b)
+   * 4.12.1 充能的第一步：将牌组顶的牌翻开放置到处理区 (牌组为空时先执行牌组更新)，
+   * 并处理其充能时自动能力 (10.2.1.b)。返回翻开的卡牌；无法翻开时返回 undefined。
+   * 能力可能产生需要玩家决定的选择，调用方须在选择处理完毕后再调用 completeAttackCharge / completeDamageCharge。
+   */
+  revealTopForCharge(playerId: string): string | undefined {
+    if (!this.refreshDeckIfEmpty(playerId)) return undefined;
+    const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
+    this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
+
+    const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
+    // 目前只实现了信号球牌的【充能自】，其他卡牌的充能时自动能力随卡牌效果逐步实现
+    if (cardDef?.signalOrb && cardDef.rulesText.includes('充能自')) {
+      this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef);
+    }
+    return topCard.instanceId;
+  }
+
+  /**
+   * 4.12.2.a/b 攻击充能的第二步：信号球牌放置到信号球区最上方，其他卡牌加入手牌。
+   * 若能力处理中该牌已离开处理区，则不再移动。
+   */
+  completeAttackCharge(attackerCardId: string, cardInstanceId: string, chargeIndex: number): void {
+    const card = this.state.cards[cardInstanceId];
+    if (!card || card.zone !== 'PROCESSING') return;
+    const cardDef = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+    const destination = cardDef?.signalOrb ? 'SIGNAL_ORB' : 'HAND';
+    this.moveCard(cardInstanceId, destination, { isFaceUp: true });
+    this.events.push({
+      type: 'ATTACK_CHARGE_PERFORMED',
+      attackerCardId,
+      chargeIndex,
+      revealedCardId: cardInstanceId,
+      resultDestination: destination,
+    });
+  }
+
+  /**
+   * 4.12.3.a / 4.10.1.b 伤害充能的第二步：以背面竖直状态放置到费用区成为暗费
+   * (费用区已满时改为放置到墓地，3.6.4)，然后侵蚀计数 +1。
+   */
+  completeDamageCharge(defenderPlayerId: string, cardInstanceId: string | undefined): void {
+    const player = this.state.players[defenderPlayerId];
+    if (!player) return;
+    const card = cardInstanceId ? this.state.cards[cardInstanceId] : undefined;
+    if (card && card.zone === 'PROCESSING') {
+      const toCost = player.totalCostCount < RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+      if (toCost) {
+        this.moveCard(card.instanceId, 'COST', { isFaceUp: false, isReady: true });
+      } else {
+        this.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      }
+      this.events.push({
+        type: 'DAMAGE_CHARGE_PERFORMED',
+        defenderPlayerId,
+        revealedCardId: card.instanceId,
+        placedToCostFaceDown: toCost,
+      });
+    }
+
+    const oldErosion = player.erosionCount;
+    player.erosionCount += 1;
+    this.events.push({
+      type: 'EROSION_INCREASED',
+      playerId: defenderPlayerId,
+      previousValue: oldErosion,
+      newValue: player.erosionCount,
+      reason: 'DAMAGE',
+    });
+  }
+
+  /**
+   * 4.12.2 依次执行攻击充能 (不等待玩家选择的同步版本，供卡牌效果等直接调用)
    */
   performAttackCharge(attackerCardId: string, chargeCount: number = 1): void {
     const attacker = this.state.cards[attackerCardId];
     if (!attacker) return;
-    const playerId = attacker.controllerPlayerId;
-
     for (let i = 0; i < chargeCount; i++) {
-      if (!this.refreshDeckIfEmpty(playerId)) break;
-      const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
-      // 临时翻开到处理区 (3.8.1.b)
-      this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
-
-      const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
-      const isSignalOrb = !!cardDef?.signalOrb;
-
-      if (isSignalOrb) {
-        // 10.2.1.b 充能时自动能力在充能过程中处理
-        if (cardDef && cardDef.rulesText.includes('充能自')) {
-          this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef);
-        }
-        // 4.12.2.a 放置到信号球区最上方 (3.7)
-        this.moveCard(topCard.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
-        this.events.push({
-          type: 'ATTACK_CHARGE_PERFORMED',
-          attackerCardId,
-          chargeIndex: i + 1,
-          revealedCardId: topCard.instanceId,
-          resultDestination: 'SIGNAL_ORB',
-        });
-      } else {
-        // 4.12.2.b 加入手牌
-        this.moveCard(topCard.instanceId, 'HAND', { isFaceUp: true });
-        this.events.push({
-          type: 'ATTACK_CHARGE_PERFORMED',
-          attackerCardId,
-          chargeIndex: i + 1,
-          revealedCardId: topCard.instanceId,
-          resultDestination: 'HAND',
-        });
-      }
+      const cardId = this.revealTopForCharge(attacker.controllerPlayerId);
+      if (!cardId) break;
+      this.completeAttackCharge(attackerCardId, cardId, i + 1);
     }
   }
 
   /**
-   * 4.10 伤害处理 & 4.12.3 伤害充能
-   * 承受伤害的玩家根据伤害量依次执行等量伤害充能：
-   * - 翻开至处理区并执行其<充能自>效果，之后以背面竖直状态放置到费用区成为暗费 (4.12.3.a)
-   * - 每次伤害充能完毕后，承受伤害玩家侵蚀计数+1 (4.10.1.b)
+   * 4.10 伤害处理：依次执行与伤害量相同次数的伤害充能，每次完毕侵蚀计数 +1
+   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用)
    */
   applyDamageToPlayer(defenderPlayerId: string, damageAmount: number): void {
-    const player = this.state.players[defenderPlayerId];
-    if (!player || damageAmount <= 0) return;
-
+    if (!this.state.players[defenderPlayerId] || damageAmount <= 0) return;
     for (let i = 0; i < damageAmount; i++) {
-      if (this.state.status === 'FINISHED') return;
-      if (this.refreshDeckIfEmpty(defenderPlayerId)) {
-        const topCard = this.getCardsInZone(defenderPlayerId, 'DECK')[0]!;
-        // 翻开至处理区
-        this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
-
-        const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
-        // 执行其<充能自>效果
-        if (cardDef && cardDef.signalOrb && cardDef.rulesText.includes('充能自')) {
-          this.onChargeAutoEffectCallback?.(defenderPlayerId, topCard.instanceId, cardDef);
-        }
-
-        // 3.6.4 费用区达到上限时，原本放置到费用区的卡牌改为放置到墓地
-        if (player.totalCostCount >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY) {
-          this.moveCard(topCard.instanceId, 'GRAVEYARD', { isFaceUp: true });
-          this.events.push({
-            type: 'DAMAGE_CHARGE_PERFORMED',
-            defenderPlayerId,
-            revealedCardId: topCard.instanceId,
-            placedToCostFaceDown: false,
-          });
-        } else {
-          // 4.12.3.a 以背面竖直状态放置到费用区成为暗费
-          this.moveCard(topCard.instanceId, 'COST', { isFaceUp: false, isReady: true });
-          this.events.push({
-            type: 'DAMAGE_CHARGE_PERFORMED',
-            defenderPlayerId,
-            revealedCardId: topCard.instanceId,
-            placedToCostFaceDown: true,
-          });
-        }
-      }
-
-      // 4.10.1.b 每次伤害充能执行完毕后，将承受伤害的玩家的侵蚀计数+1
-      const oldErosion = player.erosionCount;
-      player.erosionCount += 1;
-      this.events.push({
-        type: 'EROSION_INCREASED',
-        playerId: defenderPlayerId,
-        previousValue: oldErosion,
-        newValue: player.erosionCount,
-        reason: 'DAMAGE',
-      });
+      if (this.isFinished()) return;
+      const cardId = this.revealTopForCharge(defenderPlayerId);
+      // 牌组与墓地都为空时已立即败北 (9.2.2.a)
+      if (this.isFinished()) return;
+      this.completeDamageCharge(defenderPlayerId, cardId);
     }
   }
 

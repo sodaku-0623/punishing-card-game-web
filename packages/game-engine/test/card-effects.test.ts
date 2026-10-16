@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
 import { CardType } from '@zhanshuang/shared';
-import { fillCostZone } from './helpers.js';
+import { endTurn, fillCostZone } from './helpers.js';
 
 function createCustomDeck(): string[] {
   return [
@@ -1111,10 +1111,10 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     expect(act2.error).toContain('【回合1】限制');
 
     // 结束当前玩家回合 -> 进入对手回合
-    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: activeId });
-    // 对手抽牌充能后进入主要阶段，再Pass结束对手回合
+    endTurn(engine);
+    // 对手抽牌充能后进入主要阶段，再结束对手回合
     engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: oppId });
-    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: oppId });
+    endTurn(engine);
 
     // 此时回到 activeId 的新一回合主要阶段
     if (engine.getState().phase === 'DRAW_CHARGE_PHASE') {

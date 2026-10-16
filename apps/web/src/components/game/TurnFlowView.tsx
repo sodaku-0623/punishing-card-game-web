@@ -9,6 +9,8 @@ interface TurnFlowViewProps {
   isMyTurn: boolean;
   onPassTiming?: () => void;
   canPassTiming?: boolean;
+  passLabel?: string;
+  waitingHint?: string;
 }
 
 export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
@@ -16,6 +18,8 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
   isMyTurn,
   onPassTiming,
   canPassTiming,
+  passLabel,
+  waitingHint,
 }) => {
   const PHASES = [
     {
@@ -139,11 +143,11 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
         </div>
       )}
 
-      {/* 回合方发起攻击时，等待对方选择是否阻挡的提示 */}
-      {currentPhase === 'COMBAT_FREE_TIMING' && isMyTurn && (
+      {/* 等待对方使用【瞬时】或选择是否阻挡的提示 */}
+      {waitingHint && (
         <div className="mt-3 w-full py-2 px-3 rounded-xl border border-yellow-500/40 bg-yellow-500/10 text-yellow-300 font-mono text-xs flex items-center justify-center gap-2 select-none shadow-[0_0_10px_rgba(255,200,0,0.15)]">
           <Clock className="w-3.5 h-3.5 text-yellow-400 animate-spin shrink-0" />
-          <span className="truncate">等待对方选择是否阻挡...</span>
+          <span className="truncate">{waitingHint}</span>
         </div>
       )}
 
@@ -159,9 +163,7 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
           title="按下空格键 (Space) 或回车键 (Enter) 亦可快速触发"
         >
           <span>
-            {currentPhase === 'COMBAT_FREE_TIMING'
-              ? '放弃阻挡 / 推进结算 [Space]'
-              : '时点让渡 / 推进阶段 [Space]'}
+            {passLabel ?? '时点让渡 / 推进阶段'} [Space]
           </span>
           <ChevronRight className="w-3.5 h-3.5" />
         </button>

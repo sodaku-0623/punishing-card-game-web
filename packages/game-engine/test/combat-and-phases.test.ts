@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
+import { passInstantWindows, resolvePendingChoices } from './helpers.js';
 
 function create50CardDeck(): string[] {
   return [
@@ -268,6 +269,10 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
     expect(state.phase).toBe('COMBAT_FREE_TIMING');
     expect(state.cards[attackerId]?.isReady).toBe(false); // 攻方角色横置
 
+    // 7.3.1.b 双方轮流选择不使用瞬时后，进入阻挡宣言
+    passInstantWindows(engine);
+    expect(state.currentCombat?.step).toBe('BLOCK');
+
     // 2. 攻方 (p1) 在自由时点试图单方面直接结算 (PASS_ACTION_TIMING)
     // 核心规则与业务需求：回合方玩家发起进攻时，只有在被攻击玩家选择是否阻挡后才能进行结算！
     const attackerPassRes = engine.dispatchAction({
@@ -306,50 +311,39 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
     const state = engine.getState();
     const p1 = state.activePlayerId;
     const p2 = state.nonActivePlayerId;
-    state.phase = 'MAIN_PHASE';
+    engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
+    expect(state.phase).toBe('MAIN_PHASE');
 
-    const attackerId = 'attacker-role-2';
-    state.cards[attackerId] = {
-      instanceId: attackerId,
-      cardId: 'c-nanami-rush',
-      cardNumber: 'BP01-004',
-      ownerPlayerId: p1,
-      controllerPlayerId: p1,
-      zone: 'BATTLEFIELD',
-      slotIndex: 0,
-      underneathCardIds: [],
-      isFaceUp: true,
-      isReady: true,
-      turnEnteredZone: 0,
+    const place = (playerId: string, cardNumber: string, slot: number) => {
+      const card = Object.values(state.cards).find(
+        (c) => c.controllerPlayerId === playerId && c.cardNumber === cardNumber && c.zone === 'DECK'
+      )!;
+      engine.fieldMgr.playRoleCard(playerId, card.instanceId, slot);
+      card.turnEnteredZone = 0;
+      return card.instanceId;
     };
-    state.battlefields[p1]![0]!.roleCardId = attackerId;
+    const attackerId = place(p1, 'BP01-002', 0); // DP 1
+    place(p2, 'BP01-005', 0); // 守方有可以阻挡的竖直角色
 
-    // 攻方攻击对方玩家
-    engine.dispatchAction({
-      type: 'DECLARE_ATTACK',
-      playerId: p1,
-      attackerCardId: attackerId,
-      targetType: 'PLAYER',
-    });
+    engine.dispatchAction({ type: 'DECLARE_ATTACK', playerId: p1, attackerCardId: attackerId, targetType: 'PLAYER' });
     expect(state.phase).toBe('COMBAT_FREE_TIMING');
+    passInstantWindows(engine);
+    expect(state.currentCombat?.step).toBe('BLOCK');
 
     // 攻方尝试结算被拒绝
-    const earlyPass = engine.dispatchAction({
-      type: 'PASS_ACTION_TIMING',
-      playerId: p1,
-    });
+    const earlyPass = engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
     expect(earlyPass.success).toBe(false);
     expect(earlyPass.error).toContain('必须等待被攻击玩家选择是否阻挡');
 
     // 守方选择放弃阻挡 (PASS_ACTION_TIMING 由守方发出)
-    const defenderPass = engine.dispatchAction({
-      type: 'PASS_ACTION_TIMING',
-      playerId: p2,
-    });
+    const erosionBefore = state.players[p2]!.erosionCount;
+    const defenderPass = engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: p2 });
     expect(defenderPass.success).toBe(true);
-    // 成功推进结算并对守方玩家造成伤害
+    // 攻击充能、伤害充能中可能产生【充能自】的选择，处理完毕后攻击结束
+    resolvePendingChoices(engine);
     expect(state.phase).toBe('MAIN_PHASE');
-    expect(state.players[p2]!.erosionCount).toBeGreaterThan(0);
+    expect(state.currentCombat).toBeUndefined();
+    expect(state.players[p2]!.erosionCount).toBe(erosionBefore + 1);
   });
 
   it('主要阶段可以消除信号球区中相邻的3张信号球并抽1张牌，传入顺序不限 (6.4.1.b.5)', () => {
