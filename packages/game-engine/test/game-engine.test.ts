@@ -88,6 +88,10 @@ describe('GameEngine 核心规则引擎测试套件', () => {
     const state = engine.getState();
     const activePlayer = state.activePlayerId;
 
+    // 6.4.1.b.5 三消是主要阶段的行动：先放弃填充明费进入主要阶段
+    engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: activePlayer });
+    expect(state.phase).toBe('MAIN_PHASE');
+
     // 手动在信号球区放置3张相邻信号球
     const orbs = ['ST01-012', 'ST01-012', 'ST01-013'];
     const orbInstIds: [string, string, string] = ['test-orb-1', 'test-orb-2', 'test-orb-3'];

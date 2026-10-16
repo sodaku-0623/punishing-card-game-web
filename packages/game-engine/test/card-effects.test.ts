@@ -182,7 +182,9 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: activeId });
 
     // 给对手放置一个角色
-    const oppRole = engine.zoneMgr.getCardsInZone(oppId, 'DECK').find((c) => c.cardNumber === 'BP01-001')!;
+    const oppRole = Object.values(engine.getState().cards).find(
+      (c) => c.controllerPlayerId === oppId && c.cardNumber === 'BP01-001' && c.zone !== 'BATTLEFIELD'
+    )!;
     engine.fieldMgr.playRoleCard(oppId, oppRole.instanceId, 0);
 
     // 确保费用区有 PHYSICAL 属性明费

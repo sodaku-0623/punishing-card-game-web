@@ -23,6 +23,8 @@ export interface CreateGameOptions {
 export interface InitGameResult {
   state: GameState;
   events: GameEvent[];
+  /** 初始化消耗随机数后的随机数生成器状态，引擎需从此状态继续，避免与开局洗牌复用同一段随机序列 */
+  rngState: number;
 }
 
 /**
@@ -54,6 +56,9 @@ export function createInitialGameState(
   const battlefields: Record<string, BattlefieldSlot[]> = {};
   const cards: Record<string, CardInstance> = {};
 
+  // 卡牌实例 ID 随机编号：若按卡组列表顺序编号，对手可依据公开的卡表与事件中的 ID 推算出抽到的是哪张牌
+  const totalCards = player1.deckCardNumbers.length + player2.deckCardNumbers.length;
+  const instanceIdPool = rng.shuffle(Array.from({ length: totalCards }, (_, i) => i + 1));
   let cardInstanceCounter = 0;
 
   for (const p of playerConfigs) {
@@ -85,8 +90,8 @@ export function createInitialGameState(
     const initialDeckCardIds: string[] = [];
     let cardIdx = 0;
     for (const cardNumber of p.config.deckCardNumbers) {
+      const instanceId = `card-${instanceIdPool[cardInstanceCounter]}`;
       cardInstanceCounter++;
-      const instanceId = `inst-${p.config.playerId}-${cardInstanceCounter}`;
       const cardDef = cardDb.getCard(cardNumber);
       const cardId = cardDef?.id ?? cardNumber;
       const customImg = p.config.deckCardImageUrls?.[cardIdx];
@@ -180,5 +185,5 @@ export function createInitialGameState(
     isDraw: false,
   };
 
-  return { state, events };
+  return { state, events, rngState: rng.getSeed() };
 }

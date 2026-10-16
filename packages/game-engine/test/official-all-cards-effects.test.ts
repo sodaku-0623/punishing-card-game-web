@@ -79,6 +79,18 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     // 获得速攻词条
     expect(engine.getState().cards[ascRole.instanceId]?.grantedKeywords).toContain('速攻');
 
+    // ST01-001 的【出】(丢弃1张手牌：……) 代价可选，选择不支付以完成出场能力的处理
+    const entryChoice = engine.getState().currentPendingChoice;
+    expect(entryChoice?.minSelections).toBe(0);
+    expect(
+      engine.applyAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: p1,
+        pendingChoiceId: entryChoice!.id,
+        selectedIds: [],
+      }).success
+    ).toBe(true);
+
     // 验证速攻出场当回合可直接宣告攻击
     const attackRes = engine.applyAction({
       type: 'DECLARE_ATTACK',

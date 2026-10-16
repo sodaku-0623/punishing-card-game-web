@@ -37,8 +37,13 @@ export class CombatManager {
       return { success: false, error: '只有回合玩家可以宣告攻击 (7.1.1)' };
     }
 
+    if (this.state.currentCombat) {
+      return { success: false, error: '当前已有正在进行的攻击' };
+    }
+
     const attacker = this.state.cards[attackerCardId];
-    if (!attacker || attacker.controllerPlayerId !== playerId || attacker.zone !== 'BATTLEFIELD') {
+    // 7.2.1.a 只能选择自身战场卡位上的角色 (辅助机、装备、角色下方的牌都不能攻击)
+    if (!attacker || !this.fieldMgr.isSlotRole(playerId, attackerCardId)) {
       return { success: false, error: '攻击角色不存在或不属于己方战场' };
     }
 
@@ -52,6 +57,11 @@ export class CombatManager {
     const cardDef = (attacker.cardId ? this.cardDb.getCard(attacker.cardId) : undefined) || this.cardDb.getCard(attacker.cardNumber);
     const hasRush = attacker.grantedKeywords?.includes('速攻') || hasInherentKeyword(cardDef?.rulesText, '速攻');
     const hasAssault = attacker.grantedKeywords?.includes('突进') || hasInherentKeyword(cardDef?.rulesText, '突进');
+
+    // 永久能力「该牌不能攻击」(如《帕瓦》《库洛洛》)
+    if (cardDef?.rulesText.includes('【永】：该牌不能攻击')) {
+      return { success: false, error: '该角色不能攻击' };
+    }
 
     if (isEnterTurn && !hasRush && !hasAssault) {
       return { success: false, error: '角色在其出场的回合不可以进行攻击 (7.2.1.b.1)' };
@@ -69,7 +79,7 @@ export class CombatManager {
         return { success: false, error: '未指定目标角色' };
       }
       const targetCard = this.state.cards[targetCardId];
-      if (!targetCard || targetCard.controllerPlayerId !== opponentPlayerId || targetCard.zone !== 'BATTLEFIELD') {
+      if (!targetCard || !this.fieldMgr.isSlotRole(opponentPlayerId, targetCardId)) {
         return { success: false, error: '目标角色不存在或不属于对手战场' };
       }
       // 7.2.1.b.1 对方战场的横置状态的角色
@@ -155,7 +165,8 @@ export class CombatManager {
 
     if (blockerCardId) {
       const blocker = this.state.cards[blockerCardId];
-      if (!blocker || blocker.controllerPlayerId !== defenderPlayerId || blocker.zone !== 'BATTLEFIELD') {
+      // 7.3.1.c 只能用自身战场卡位上的角色阻挡
+      if (!blocker || !this.fieldMgr.isSlotRole(defenderPlayerId, blockerCardId)) {
         return { success: false, error: '阻挡角色不存在或不在己方战场' };
       }
       // 7.3.1.c.1 竖直状态的角色可以进行阻挡

@@ -2509,6 +2509,22 @@ export class CardEffectEngine {
         break;
       }
 
+      // 使用装备牌时选择装备对象 (8.6.2.e.2)
+      case 'EQUIP_FROM_PROCESSING': {
+        const equipId = choice.sourceCardInstanceId;
+        const roleId = selectedIds[0];
+        const equipCard = equipId ? this.ctx.state.cards[equipId] : undefined;
+        if (!equipCard || equipCard.zone !== 'PROCESSING' || !roleId) {
+          return { success: false, error: '装备牌已不在处理区' };
+        }
+        if (!this.ctx.fieldMgr.equipToRole(playerId, equipCard.instanceId, roleId)) {
+          return { success: false, error: '装备对象必须是自身战场上未装备装备牌的角色 (4.18.3)' };
+        }
+        const equipDef = this.getCardDef(equipCard);
+        if (equipDef) this.handleEquipmentBuff(roleId, equipDef);
+        break;
+      }
+
       // 默认兼容旧格式
       default: {
         for (const selectedId of selectedIds) {

@@ -3,7 +3,6 @@ import {
   CardInstance,
   ZoneId,
   GameEvent,
-  SignalOrbType,
 } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { SeedRng } from '../rng/seed-rng.js';
@@ -40,6 +39,11 @@ export class ZoneManager {
 
     const fromZone = card.zone;
     card.zone = toZone;
+
+    // 区域内顺序以 state.cards 的键顺序表示：新放置的卡牌排在最后，即该区域的「最上方」
+    // (墓地 3.5.2、信号球区 3.7.2、处理区 3.8.2；牌组中最后一张为牌组底)
+    delete this.state.cards[cardInstanceId];
+    this.state.cards[cardInstanceId] = card;
     if (options?.slotIndex !== undefined) card.slotIndex = options.slotIndex;
     if (options?.isFaceUp !== undefined) card.isFaceUp = options.isFaceUp;
     if (options?.isReady !== undefined) card.isReady = options.isReady;
@@ -359,102 +363,56 @@ export class ZoneManager {
   }
 
   /**
-   * 6.4.1.b.5 消除自身信号球区中任意3张相邻的信号球牌，抽1张牌
+   * 6.4.1.b.5 / 4.16.2 消除自身信号球区中任意3张相邻的信号球牌，若如此做，抽1张牌。
+   * 只要求在信号球区中相邻 (不要求同色)；不持有信号球标记的牌不能被消除 (Q&A 第4期)。
    */
   eliminateThreeOrbs(
     playerId: string,
-    orbCardInstanceIds: [string, string, string]
-  ): boolean {
-    const orbCards = this.getCardsInZone(playerId, 'SIGNAL_ORB');
-    const orbIds = orbCards.map((c) => c.instanceId);
-
-    // 容错排序：无论前端传递顺序为何，按信号球在区域中的物理索引排序
-    const sortedIds = [...orbCardInstanceIds].sort(
-      (a, b) => orbIds.indexOf(a) - orbIds.indexOf(b)
-    );
-    const idx0 = orbIds.indexOf(sortedIds[0]!);
-    const idx1 = orbIds.indexOf(sortedIds[1]!);
-    const idx2 = orbIds.indexOf(sortedIds[2]!);
-
-    if (idx0 === -1 || idx1 === -1 || idx2 === -1) {
-      return false;
+    orbCardInstanceIds: string[]
+  ): { success: boolean; error?: string } {
+    const requiredCount = RULE_CONSTANTS.ORB_ELIMINATION_REQUIRED_COUNT;
+    if (
+      !Array.isArray(orbCardInstanceIds) ||
+      orbCardInstanceIds.length !== requiredCount ||
+      new Set(orbCardInstanceIds).size !== requiredCount
+    ) {
+      return { success: false, error: `需要选择 ${requiredCount} 张不同的信号球` };
     }
 
-    const isAdjacent = idx1 === idx0 + 1 && idx2 === idx1 + 1;
-
-    // 容错检测同色三消 (如三颗红球，即使由于间隔亦可三消抽卡)
-    const getOrbColor = (id: string) => {
-      const card = this.state.cards[id];
-      if (!card) return null;
-      const def =
-        (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) ||
-        this.cardDb.getCard(card.cardNumber);
-      const num = (card.cardNumber || '').toUpperCase();
-      const traits = def?.traits || [];
-      const name = def?.name || '';
-      const orbType = def?.signalOrb;
-
-      // 1. 优先使用权威卡牌定义中的 signalOrb
-      if (orbType === SignalOrbType.RED) return 'RED';
-      if (orbType === SignalOrbType.BLUE) return 'BLUE';
-      if (orbType === SignalOrbType.YELLOW) return 'YELLOW';
-
-      // 2. 依据精准特征/编号/卡名回退判断
-      if (
-        traits.some((t) => t === '信号球·红' || t.includes('球·红')) ||
-        num.includes('ORB-RED') ||
-        num.endsWith('-RED') ||
-        name.includes('信号球·红') ||
-        name.includes('红球')
-      )
-        return 'RED';
-
-      if (
-        traits.some((t) => t === '信号球·蓝' || t.includes('球·蓝')) ||
-        num.includes('ORB-BLUE') ||
-        num.endsWith('-BLUE') ||
-        name.includes('信号球·蓝') ||
-        name.includes('蓝球')
-      )
-        return 'BLUE';
-
-      if (
-        traits.some((t) => t === '信号球·黄' || t.includes('球·黄')) ||
-        num.includes('ORB-YELLOW') ||
-        num.endsWith('-YELLOW') ||
-        name.includes('信号球·黄') ||
-        name.includes('黄球')
-      )
-        return 'YELLOW';
-
-      return null;
-    };
-
-    const c0 = getOrbColor(sortedIds[0]!);
-    const c1 = getOrbColor(sortedIds[1]!);
-    const c2 = getOrbColor(sortedIds[2]!);
-    const isSameColor = !!(c0 && c0 === c1 && c1 === c2);
-
-    // 检查是否满足：物理连续相邻 (4.16.2.a) 或 相同颜色三消
-    if (!isAdjacent && !isSameColor) {
-      return false; // 非相邻且非同色信号球
+    const orbIds = this.getCardsInZone(playerId, 'SIGNAL_ORB').map((c) => c.instanceId);
+    const positions = orbCardInstanceIds.map((id) => orbIds.indexOf(id)).sort((a, b) => a - b);
+    if (positions.some((p) => p === -1)) {
+      return { success: false, error: '所选卡牌不在自身信号球区' };
     }
 
-    // 将3张球放置到墓地 (4.16.2)
+    for (const id of orbCardInstanceIds) {
+      const card = this.state.cards[id]!;
+      const def = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+      if (!card.isFaceUp || !def?.signalOrb) {
+        return { success: false, error: '只能消除持有信号球标记的卡牌 (4.16.2)' };
+      }
+    }
+
+    const isAdjacent = positions.every((p, i) => i === 0 || p === positions[i - 1]! + 1);
+    if (!isAdjacent) {
+      return { success: false, error: '所选信号球在信号球区中并不相邻 (4.16.2)' };
+    }
+
+    // 按信号球区中的顺序放置到墓地 (4.16.2.b 剩余信号球顺序不变)
+    const sortedIds = positions.map((p) => orbIds[p]!);
     for (const orbId of sortedIds) {
       this.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
     }
 
-    // 抽1张牌 (6.4.1.b.5 若如此做，抽1张牌)
     this.drawCards(playerId, RULE_CONSTANTS.ORB_ELIMINATION_DRAW_COUNT);
 
     this.events.push({
       type: 'ORBS_ELIMINATED',
       playerId,
-      orbCardIds: [sortedIds[0]!, sortedIds[1]!, sortedIds[2]!],
+      orbCardIds: sortedIds,
       cardDrawnCount: RULE_CONSTANTS.ORB_ELIMINATION_DRAW_COUNT,
     });
 
-    return true;
+    return { success: true };
   }
 }
