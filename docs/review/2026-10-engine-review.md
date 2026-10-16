@@ -15,6 +15,7 @@
 | 严重 | **玩家决策的提交内容完全不校验**：`handleChoiceResolution` 不检查 `selectedIds` 是否属于该决策的选项、是否可选 (`eligible`)、数量是否在 `minSelections`~`maxSelections` 之间。例如「破坏对方 1 张 PP 8000 及以下的角色」可以提交任意卡牌 ID、提交多张，直接破坏对方任意角色；「从墓地出场」可以提交牌组或对方的卡牌。 | `effects/card-effects.ts` `handleChoiceResolution` |
 | 严重 | **`EQUIP_ITEM` 不校验装备牌**：不检查阶段、回合玩家、卡牌归属、卡牌类型、所在区域。可以把对方手牌、牌组中的任意卡牌 ID 当作「装备」放到自己角色下方。 | `engine.ts` `EQUIP_ITEM`、`battlefield-manager.ts` `equipToRole` |
 | 严重 | **`ELIMINATE_3_ORBS` 不校验阶段与回合玩家**，并且允许「同色但不相邻」的三消（规则要求相邻、不要求同色，4.16.2 / 6.4.1.b.5），也允许消除信号球区中不带信号球标记的牌。 | `zone-manager.ts` `eliminateThreeOrbs` |
+| 严重 | **自建部署 (Node 版) 的回放接口在对局进行中泄露随机种子**：`GET /api/replay/:gameId` 无需鉴权，且在对局**未结束**时也返回 `rngSeed` 与完整的行动、事件记录。对局中的玩家从地址栏即可得知 gameId，拿到种子后可在本地复现所有洗牌，得知双方牌组顺序与手牌。Cloudflare 版只在对局结束后写入回放，不受影响。 | `apps/server/src/app.ts`、`packages/database` `getReplayData` |
 | 严重 | **卡牌实例 ID 泄露隐藏信息**：ID 为 `inst-<玩家>-<序号>`，序号按卡组列表顺序分配。官方预组的卡表是公开的，而 `CARDS_DRAWN`、`CARD_MOVED` 等事件会广播给双方，对手据此可以推算出抽到的、调度的、放进暗费的是哪张牌。 | `state/create-game.ts` |
 | 严重 | **行动失败时状态不回滚**：`dispatchAction` 没有事务。多处在支付费用之后才做合法性检查（卡位不足、战术牌使用条件、装备失败、横置代价），失败时返回错误，但费用已经支付、卡牌可能已进入处理区。 | `engine.ts` `handlePlayCard` / `handleActivateAbility`、`card-effects.ts` `handlePlayTactics` |
 | 严重 | **有待决策时仍可执行其他行动**：存在 `currentPendingChoice` 时，玩家仍能出牌、攻击、结束回合；新的决策会直接覆盖旧的决策（只有一个决策槽），旧决策对应的效果丢失。 | `engine.ts` `dispatchAction` |
@@ -91,6 +92,7 @@
 
 按「每个 PR 可独立评审、独立回滚、合并后自建部署仍可用」拆分：
 
+0. **PR：自建部署回放接口只返回已结束的对局**（`apps/server`，单独先行修复）
 1. **PR：安全与完整性加固**（不改协议）
    - 决策提交校验（选项归属、可选性、数量）；有待决策时只接受该决策与弃权。
    - `dispatchAction` 事务化：失败时回滚状态、随机数与事件。
