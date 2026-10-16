@@ -48,27 +48,28 @@ describe('Phase 10 Replay System & Audit Logs (对局历史与回放接口测试
     await app.fastify.close();
   });
 
-  it('1. GET /api/history - 查询全服对局历史列表', async () => {
-    const res = await app.fastify.inject({
-      method: 'GET',
-      url: '/api/history',
-    });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.payload);
-    expect(body.success).toBe(true);
-    expect(body.data.length).toBeGreaterThanOrEqual(1);
+  it('1. 对局进行中：历史列表不包含该对局，回放接口按不存在处理 (防止泄露随机种子)', async () => {
+    const history = await app.fastify.inject({ method: 'GET', url: '/api/history' });
+    expect(history.statusCode).toBe(200);
+    const historyBody = JSON.parse(history.payload);
+    expect(historyBody.data.find((g: any) => g.id === testGameId)).toBeUndefined();
 
-    const match = body.data.find((g: any) => g.id === testGameId);
+    const replay = await app.fastify.inject({ method: 'GET', url: `/api/replay/${testGameId}` });
+    expect(replay.statusCode).toBe(404);
+    expect(replay.payload).not.toContain('123456');
+  });
+
+  it('2. 对局结束后：GET /api/history 列出对局，GET /api/replay/:gameId 返回种子与完整行动、事件序列', async () => {
+    await app.gameSessionMgr.processAction(testGameId, { type: 'SURRENDER', playerId: 'bob' } as any);
+
+    const history = await app.fastify.inject({ method: 'GET', url: '/api/history' });
+    expect(history.statusCode).toBe(200);
+    const match = JSON.parse(history.payload).data.find((g: any) => g.id === testGameId);
     expect(match).toBeDefined();
     expect(match.rngSeed).toBe('123456');
     expect(match.roomId).toBe('room-test-replay');
-  });
 
-  it('2. GET /api/replay/:gameId - 获取确定性回放流与动作审计事件序列', async () => {
-    const res = await app.fastify.inject({
-      method: 'GET',
-      url: `/api/replay/${testGameId}`,
-    });
+    const res = await app.fastify.inject({ method: 'GET', url: `/api/replay/${testGameId}` });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.success).toBe(true);
@@ -77,10 +78,8 @@ describe('Phase 10 Replay System & Audit Logs (对局历史与回放接口测试
     expect(game.id).toBe(testGameId);
     expect(game.rngSeed).toBe('123456');
     expect(players.length).toBe(2);
-
-    // 检验行动序列与事件序列
-    expect(actions.length).toBeGreaterThanOrEqual(1);
     expect(actions[0].actionType).toBe('PASS_ACTION_TIMING');
+    expect(actions.at(-1).actionType).toBe('SURRENDER');
     expect(events.length).toBeGreaterThan(0);
   });
 
