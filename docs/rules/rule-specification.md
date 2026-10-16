@@ -1,916 +1,1211 @@
-# 《战双帕弥什 卡牌对战》规则编译与引擎架构设计规格书
-> 依据依据文档：《战双帕弥什 卡牌对战》综合规则 (A0 初版发行，2025-11-14)
-> 平台定位：网页端在线多人实时对战平台（Authoritative Server）
+# 《战双帕弥什 卡牌对战》规则整理
 
----
+> **对应版本**：官方《综合规则》**V1.4（2026-07-23）**，以及官方规则 FAQ 两期、规则 Q&A 第一期 ~ 第十期（截至 2026-09-21）。
+>
+> **官方出处**（以官方为准，本文仅为开发用的整理）：
+> - 《综合规则》：B 站「集卡社对战卡牌」<https://www.bilibili.com/opus/1135041315237527554>
+> - 规则 Q&A / FAQ：B 站专栏搜索「战双帕弥什 卡牌对战 规则Q&A」（cv42657011、cv42726096、cv43896879 … cv53111119）
+>
+> **阅读约定**
+> - 条款编号与官方《综合规则》完全一致。引擎与测试中的 `(5.2.1.e)`、`(7.3.1)` 等注释均指向这里的同号条款。
+> - 正文为对官方条款的逐条转述；`> 【Q&A·N】` 为第 N 期官方 Q&A 的裁定（`FAQ·1/2` 为快速入门 FAQ）；`> 【实现】` 为本项目引擎的实现约定或注意事项，不属于官方规则。
+> - 官方规则更新后，请同步更新本文与第 13 节的版本记录。
+>
+> 旧版规格书（基于 A0 初版、含早期架构设计）已移至 [`docs/architecture/initial-design.md`](../architecture/initial-design.md)，其中的规则描述已过时。
 
 ## 目录
-1. 游戏完整生命周期与流程
-2. 游戏阶段与回合状态机 (Phase State Machine)
-3. 游戏区域模型 (Zone Model & Slot Structure)
-4. 玩家状态模型 (Player Model)
-5. 卡牌数据与版本模型 (Card & CardVersion Model)
-6. 牌组构筑合法性验证规则 (Deck Validation Rules)
-7. Action 系统定义 (Client -> Server Actions)
-8. Event 驱动系统 (Server -> Client Events)
-9. Trigger 与检查时机系统 (Trigger & Priority Loop)
-10. Effect 效果引擎与层级系统 (Continuous / One-shot / Replacement Effects)
-11. Target 目标选择与合法性系统 (Targeting System)
-12. 战斗与攻击流程模型 (Combat Resolution System)
-13. 伤害处理与侵蚀计数机制 (Damage & Erosion System)
-14. 核心特殊机制深度建模 (升变 / 信号球消除 / 装备 / 辅助机)
-15. 规则处理与胜负判定系统 (State-Based Actions & Win Conditions)
-16. GameState 核心 TypeScript 强类型定义
-17. 数据库 ER 设计与 Prisma Schema 初版
-18. WebSocket 双向通信协议 (Socket.IO Typed Events)
-19. RESTful API 接口定义与 OpenAPI 规范
-20. 前端用户界面架构与 HUD 布局设计
-21. 管理员后台系统架构 (Card Management & Batch Import)
-22. 规则书歧义与未尽事项汇总 (RULE_UNCERTAIN)
-23. 引擎规则自动化测试方案与用例矩阵
+
+1. [游戏的概要](#1-游戏的概要)
+2. [卡牌的情报](#2-卡牌的情报)
+3. [游戏的区域](#3-游戏的区域)
+4. [游戏的基本用语](#4-游戏的基本用语)
+5. [游戏准备](#5-游戏准备)
+6. [游戏的流程](#6-游戏的流程)
+7. [攻击与战斗](#7-攻击与战斗)
+8. [卡牌或能力的使用与处理](#8-卡牌或能力的使用与处理)
+9. [规则处理](#9-规则处理)
+10. [游戏词条解释](#10-游戏词条解释)
+11. [官方 Q&A 裁定汇总（按卡牌）](#11-官方-qa-裁定汇总按卡牌)
+12. [引擎实现约定](#12-引擎实现约定)
+13. [版本记录](#13-版本记录)
 
 ---
 
-## 1. 游戏完整生命周期与流程
+## 1. 游戏的概要
 
-根据综合规则第 5 章与第 6 章，一局标准的战双帕弥什对战遵循严格的线性生命周期：
+### 1.1 游戏的性质
+- **1.1.1** 本作是集换式卡牌游戏，玩家用自己构筑的牌组与其他玩家对战。
+- **1.1.2** 规则上为两人对战，目前没有其他人数的规则。
 
-```mermaid
-flowchart TD
-    Setup[5.2 游戏准备] --> DetermineFirst[5.2.1.c 决定先攻后攻]
-    DetermineFirst --> InitErosion[5.2.1.d 侵蚀计数置0]
-    InitErosion --> DrawInitial[5.2.1.e 抽4张起始手牌]
-    DrawInitial --> Mulligan[5.2.1.e 调度: 选N张放牌组底, 抽N张]
-    Mulligan --> ShuffleDeck[5.2.1.f 牌组洗切]
-    ShuffleDeck --> InitCost[5.2.1.f 牌组顶2张牌以正面竖直置入费用区(初始明费)]
-    InitCost --> RoundLoop[回合循环: 先攻玩家开始]
-    
-    subgraph 回合推进循环 [第6章 回合流程]
-        StandPhase[6.2 竖直阶段: 战场及费用区所有卡牌竖直]
-        DrawChargePhase[6.3 抽牌填充阶段: 先手首回合抽1, 其余抽2; 选0~1张手牌充为明费]
-        MainPhase[6.4 主要阶段: 出牌 / 起动 / 装备 / 消3球抽1 / 攻击]
-        EndPhase[6.5 结束阶段: 轮流瞬时 -> 回合结束触发 -> 手牌弃至7张 -> 暗费清理 -> 期限效果消除]
-        
-        StandPhase --> DrawChargePhase
-        DrawChargePhase --> MainPhase
-        MainPhase --> EndPhase
-    end
-    
-    RoundLoop --> StandPhase
-    EndPhase --> SwitchPlayer{胜负已决?}
-    SwitchPlayer -- 否: 切换攻守玩家 --> StandPhase
-    SwitchPlayer -- 是 --> GameOver[游戏结算 / 胜负公布]
-```
+### 1.2 胜负的判定
+- **1.2.1** 任一玩家败北时游戏立即结束；对方败北且我方未败北时，我方获胜。
+- **1.2.2** 满足败北条件的玩家，在执行规则处理时由规则判定败北。
+  - **1.2.2.a** 侵蚀计数达到 7（及以上）时满足败北条件。
+  - **1.2.2.b** 牌组和墓地都没有卡牌时满足败北条件。
+- **1.2.3** 所有玩家同时处于败北状态时，判定为平局。
+- **1.2.4** 玩家可以在任意时刻宣布弃权，立即退出游戏并败北，无需等待规则处理。
+  - **1.2.4.a** 弃权不受任何卡牌效果影响：效果不能强制弃权，弃权导致的败北也不能被置换效果取代。
+- **1.2.5** 卡牌效果直接使某玩家获胜或败北时，无需等待规则处理，在效果处理过程中立即生效，游戏结束。
 
----
+> 【Q&A·9】因效果或代价受到伤害使侵蚀计数达到 7 时，**不会立刻败北**；败北判定是检查型规则处理，在该效果处理完毕后的检查时机执行。
+>
+> 【Q&A·10】双方侵蚀均为 6，我方角色攻击时用自身能力给予我方 1 点伤害：我方在该能力处理后的检查时机即败北（此时对方仍为 6），**不是平局**。
 
-## 2. 游戏阶段与回合状态机 (Phase State Machine)
+### 1.3 游戏的基本原则
+- **1.3.1** 卡牌文本与规则矛盾时，以卡牌文本为准。
+- **1.3.2** 要求执行不可能的行动时，该行动不执行；要求执行一定数量的行动而部分无法执行时，尽可能执行剩余部分。
+  - **1.3.2.a** 要求已处于某状态的对象再变为该状态时，不会「重新」变为该状态，该行动本身不执行。
+  - **1.3.2.b** 要求执行 0 次或负数次的行动时不执行；负数次也不会执行相反的行动。
+- **1.3.3** 卡牌效果要求执行某行动、同时存在禁止该行动的效果时，禁止效果优先。
+- **1.3.4** 要求双方同时进行选择时，回合玩家 (6.1.1.a) 先选择；回合外玩家 (6.1.1.b) 在知晓回合玩家的选择后再选择。
+- **1.3.5** 卡牌或规则要求选择数值时，除特殊说明外必须选择 0 及以上的整数，不能选择负数或小数。
 
-引擎采用层级有限状态机 (Hierarchical Finite State Machine, HFSM)。所有阶段的切换必须由引擎根据 Action 和检查时机自动推进，禁止客户端跳步。
-
-```mermaid
-stateDiagram-v2
-    [*] --> PRE_GAME
-    
-    state PRE_GAME {
-        DECK_CHECK --> ROLL_FIRST_PLAYER
-        ROLL_FIRST_PLAYER --> DRAW_INITIAL_HAND
-        DRAW_INITIAL_HAND --> MULLIGAN_ACTIVE
-        MULLIGAN_ACTIVE --> MULLIGAN_NON_ACTIVE
-        MULLIGAN_NON_ACTIVE --> INIT_COST_ZONE
-    }
-    
-    PRE_GAME --> TURN_LOOP
-    
-    state TURN_LOOP {
-        STAND_PHASE: 6.2 竖直阶段
-        DRAW_CHARGE_PHASE: 6.3 抽牌填充阶段
-        MAIN_PHASE: 6.4 主要阶段
-        END_PHASE: 6.5 结束阶段
-        
-        state STAND_PHASE {
-            StandTrigger --> StandCheck --> StandExecuteReadyAll --> StandExitCheck
-        }
-        
-        state DRAW_CHARGE_PHASE {
-            DrawChargeTrigger --> DrawCards --> ChargeCostChoice --> DrawChargeExitCheck
-        }
-        
-        state MAIN_PHASE {
-            MainActionTiming --> ResolvePlayCard
-            MainActionTiming --> ResolveActivateAbility
-            MainActionTiming --> ResolveEquip
-            MainActionTiming --> ResolveEliminate3Orbs
-            MainActionTiming --> COMBAT_FLOW
-            MainActionTiming --> PassToNextPhase
-        }
-        
-        state COMBAT_FLOW {
-            7_2_ATTACK_DECLARATION: 攻击宣言步骤
-            7_3_FREE_TIMING: 自由时点步骤(瞬时响应 & 阻挡宣言)
-            7_4_CHARGE_STEP: 充能步骤(攻击充能)
-            7_5_DAMAGE_STEP: 伤害步骤(攻击玩家且未被阻挡)
-            7_6_CHARACTER_BATTLE_STEP: 角色战斗步骤(攻击角色或被阻挡)
-            
-            7_2_ATTACK_DECLARATION --> 7_3_FREE_TIMING
-            7_3_FREE_TIMING --> 7_4_CHARGE_STEP
-            7_4_CHARGE_STEP --> 7_5_DAMAGE_STEP: 目标为玩家且无阻挡
-            7_4_CHARGE_STEP --> 7_6_CHARACTER_BATTLE_STEP: 目标为角色或发生阻挡
-            7_5_DAMAGE_STEP --> CombatEndCheck
-            7_6_CHARACTER_BATTLE_STEP --> CombatEndCheck
-            CombatEndCheck --> MainActionTiming: 返回主要阶段
-        }
-        
-        state END_PHASE {
-            InstantWindow --> EndTriggerCheck --> HandDiscardCheck --> ClearHiddenCostsAndBuffs --> TurnTransition
-        }
-        
-        STAND_PHASE --> DRAW_CHARGE_PHASE
-        DRAW_CHARGE_PHASE --> MAIN_PHASE
-        MAIN_PHASE --> END_PHASE
-    }
-    
-    END_PHASE --> TURN_LOOP: 切换至对手回合
-    TURN_LOOP --> GAME_OVER: 触发胜负判定(9.3)
-```
+> 【Q&A·5/7/9/10】「尽可能执行」的应用：
+> - 文本中用「那之后」连接的前后两段**没有条件关系**，前段未执行（或无法执行）时后段照常执行。（启星册魂、破曙疾行、双生回响、拉弥亚·深谣 沉渊终局）
+> - 两个独立动作之间没有「若如此做」时，前段失败不影响后段。（刹那冰华、露西亚·深红囚影 BP01-014 的起动能力）
+> - 「若如此做 / 若未如此做」要求前段**实际执行**；选择 0 张视为未执行（1.3.2.b、8.6.3.a.3）。
+> - 有手牌时「将 1 张手牌放置到该牌下方」必须执行；选择了「消除【3任意信号球】」选项时必须尽可能消除，无法消除则后续「若如此做」不执行。（露娜·终焉 BP04-001）
 
 ---
 
-## 3. 游戏区域模型 (Zone Model & Slot Structure)
+## 2. 卡牌的情报
 
-根据综合规则第 3 章，对战共有 9 类明确区域。除特殊说明外，每位玩家各自持有一套独立区域：
+卡牌情报分为**游戏性情报**（与游玩直接相关）和**非游戏性情报**（插图、稀有度、版权标记等）。
 
-| 区域代码 (ZoneId) | 中文名称 | 公开性 (Visibility) | 是否有物理顺序 (Ordered) | 数量上限 (Capacity) | 放置状态 (Card Orientation) | 区域归属说明 (3.1) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `BATTLEFIELD` | 战场 | 公开 (Public) | 5 个固定卡位 (Slots) | 5 张角色/辅助机卡位 | 竖直/横置 (正面) | 角色与辅助机存在于此；下方可重叠升变卡及装备 |
-| `DECK` | 牌组 | 非公开 (Private) | 是 (严格从顶到底) | 初始刚好50张 | 背面 | 抽牌/翻开充能均从顶依次进行 (3.3.3) |
-| `HAND` | 手牌 | 操控方私密 (Owner Only) | 玩家可自由排列 | 正常无硬顶，结束阶段上限7张 (3.4.3.a) | 正面(己方)/背面(对手) | 仅操控玩家可查看内容 |
-| `GRAVEYARD` | 墓地 | 公开 (Public) | 堆叠放置，自由调整 | 无上限 | 正面 | 堆叠放置在原有卡牌上方 (3.5.2) |
-| `COST` | 费用区 | 公开 (Public) | 玩家可自由排列 | 默认上限 10 张 (3.6.4.a) | 明费:正面竖直/横置; 暗费:背面竖直 | 区分明费与暗费；总和超限送墓 (9.5.5) |
-| `SIGNAL_ORB` | 信号球区 | 公开 (Public) | 严格有序，禁止变动 | 无上限 (堆叠放置) | 正面 | 攻击充能翻出信号球堆叠置于最上方 (3.7.2) |
-| `PROCESSING` | 处理区 | 公开 (Public) | 严格入栈/出栈顺序 | 无上限 (临时周转) | 正面 | 使用中的战术牌、充能翻开卡牌临时存放区 (3.8.1) |
-| `EROSION` | 侵蚀计数区 | 公开 (Public) | 纯数值计数 | 0 ~ 7 (达到7败北) | 状态数值 | 记录玩家受到的侵蚀度 (3.9) |
-| `REMOVED` | 游戏外/放逐区 | 公开 (Public) | 集合 | 无上限 | 正面 | 规则 5.2.1.a 涉及游戏外卡牌加入牌组 |
+卡面示意：① 卡牌名称、② 卡牌类型、③ 费用、④ 属性、⑤ 卡牌文本、⑥ 卡牌特征、⑦ 卡牌编号、⑧ 基本 PP、⑨ 基本 DP、⑩ 信号球标记。
 
-### 战场卡位模型 (Battlefield Slot Model)
-战场严格由 5 个 Slot 构成（`slotIndex: 0..4`）：
-- 一个 Slot 可放置：
-  - `role`: 1 张角色牌
-  - `underneathCards`: 0~N 张因升变重叠在角色下方的卡牌 (8.11.3.f.1)
-  - `equipment`: 0~1 张装备在该角色身上的装备牌 (4.18.3, 4.18.5)
-  - 或者单独放置 1 张未装备的装备牌 (8.6.2.e.2)
-  - 或者单独放置 1 张辅助机牌 (2.2.2.c.2, 玩家战场最多同时存在1张辅助机)
+### 2.1 卡牌名称
+- **2.1.1** 记述卡牌名称。
+- **2.1.2** 名称记述位置有删除线、涂抹等情况时，该部分不作为名称的一部分，参照名称时视为不存在。
+- **2.1.3** 卡牌文本中未特殊说明的 `《》`（书名号）表示卡牌名称。
 
----
+### 2.2 卡牌类型
+- **2.2.1** 记述卡牌类型。
+- **2.2.2** 卡牌分为「角色牌」「战术牌」「道具牌」三类，卡面以缩写记述。
+  - **2.2.2.a** 角色牌：代表人物或角色，出场到战场进行战斗。
+  - **2.2.2.b** 战术牌：代表场景或事件，分为普通战术牌和瞬时战术牌。
+    - **2.2.2.b.1** 普通战术牌：在自己回合的主要阶段使用。
+    - **2.2.2.b.2** 瞬时战术牌：持有【瞬时】的战术牌，需在特定时机使用 (10.8)。
+  - **2.2.2.c** 道具牌：代表装备或辅助机，分为装备牌和辅助机牌。
+    - **2.2.2.c.1** 装备牌：可以由角色装备的道具牌，用法见 4.18。
+    - **2.2.2.c.2** 辅助机牌：出场到战场为玩家提供持续增益的道具牌。每名玩家战场最多存在 1 张辅助机；因故超过上限时，选择超出数量的辅助机放置到墓地 (9.5.4)。
 
-## 4. 玩家状态模型 (Player Model)
+### 2.3 费用
+记述费用。费用可能成为使用该卡牌的限制条件，见 8.6。
 
-```typescript
-export interface PlayerState {
-  readonly playerId: string;
-  readonly seatOrder: 0 | 1; // 0: 先手, 1: 后手
-  readonly isFirstPlayer: boolean;
-  erosionCount: number; // 侵蚀计数 (0..7)
-  hasMulliganed: boolean;
-  surrendered: boolean;
-  
-  // 费用统计快照
-  totalCostCount: number; // 明费 + 暗费 (<= 10)
-  openCostCount: number; // 明费总数
-  availableOpenCostCount: number; // 竖直状态的明费
-  exhaustedOpenCostCount: number; // 横置状态的明费
-  hiddenCostCount: number; // 暗费总数(背面竖直)
-  
-  // 词条限制计数器 (Per Turn / Per Game)
-  turnAbilityUsage: Record<string, number>; // cardInstanceId -> 发动次数 (10.1)
-  gameAbilityUsage: Record<string, number>; // cardNumber -> 发动次数 (10.11)
-}
-```
+### 2.4 属性
+以属性图标记述 (10.13)。属性可能成为使用该卡牌的限制条件，见 8.6。
 
----
+### 2.5 卡牌文本
+- **2.5.1** 记述卡牌持有的能力。
+- **2.5.2** 若无特殊记述，特定类型卡牌的文本仅在特定区域有效：
+  - **2.5.2.a** 角色牌的文本仅在该角色存在于战场时生效。
+  - **2.5.2.b** 道具牌的文本仅在该道具存在于战场时生效。
+  - **2.5.2.c** 以「在特定区域使用」为前提的能力，在该区域也同样生效（如「该牌可以从墓地使用」）。
+- **2.5.3** `（）` 括起的内容是**注释文本**，属于卡牌文本，但只起说明作用，不影响游戏。
 
-## 5. 卡牌数据与版本模型 (Card & CardVersion Model)
+> 【Q&A·10】若无特殊说明，角色牌的效果只在战场生效：战场的《丽芙·极昼》被放置到墓地时，手牌中的 BP04-073 费用不会变化。
 
-依据第 2 章卡牌情报，卡牌模型拆分为元数据与版本规则数据：
+### 2.6 卡牌特征
+- **2.6.1** 记述卡牌特征。
+- **2.6.2** 特征本身在规则上没有特殊意义，但可能被能力或效果引用。
+- **2.6.3** 卡牌文本中未特殊说明的 `<>`（单括号）表示卡牌特征。
 
-```typescript
-export enum CardType {
-  ROLE = 'ROLE', // 角色牌 (2.2.2.a)
-  TACTICS = 'TACTICS', // 战术牌 (2.2.2.b)
-  EQUIPMENT = 'EQUIPMENT', // 道具牌-装备 (2.2.2.c.1)
-  ASSIST = 'ASSIST', // 道具牌-辅助机 (2.2.2.c.2)
-}
+> 【Q&A·4】`<灰鸦小队·高级>` 与 `<灰鸦小队>` 是两种不同的特征，前者**不包含**后者。
 
-export enum ElementAttribute {
-  FIRE = 'FIRE', // 火属性 (10.13)
-  LIGHTNING = 'LIGHTNING', // 雷属性
-  DARK = 'DARK', // 暗属性
-  ICE = 'ICE', // 冰属性
-  PHYSICAL = 'PHYSICAL', // 物理属性
-  NONE = 'NONE', // 无属性 (信号球牌)
-}
+### 2.7 卡牌编号
+- **2.7.1** 以字母 + 数字的序列记述在卡牌右下方。
+- **2.7.2** 采用「(产品编号)-(卡牌编号)」的形式，如 `BP01-001`。
+- **2.7.3** 编号末尾的小写字母（a、b、c 等）不视为卡牌编号的一部分，游戏中无特殊意义。
 
-export enum SignalOrbType {
-  RED = 'RED', // 信号球·红 (2.10)
-  BLUE = 'BLUE', // 信号球·蓝
-  YELLOW = 'YELLOW', // 信号球·黄
-}
+> 【实现】构筑时「同编号 ≤4 张」按去掉末尾小写字母后的编号统计（`BP01-056`、`BP01-056a`、`BP01-056b` 视为同一编号）。
 
-export interface CardVersionData {
-  id: string;
-  cardNumber: string; // 2.7 例如: "BP01-001"
-  name: string; // 2.1
-  cardType: CardType; // 2.2
-  cost: number; // 2.3 费用
-  attribute: ElementAttribute; // 2.4 属性
-  traits: string[]; // 2.6 卡牌特征，如 ["升格者", "灰鸦小队"]
-  basePP?: number; // 2.8 基本力量 (角色/装备牌)
-  baseDP?: number; // 2.9 基本伤害 (角色牌)
-  signalOrb?: SignalOrbType; // 2.10 信号球标记
-  isInstant: boolean; // 10.8 是否持有【瞬时】
-  ascensionConfig?: AscensionRuleConfig; // 8.11 升变机制配置
-  abilities: AbilityDefinition[]; // 8.1 能力列表
-  rulesText: string;
-  flavorText?: string;
-}
+### 2.8 基本 PP
+- **2.8.1** 代表卡牌在战斗中的力量，见第 7 章。
+- **2.8.2** 只存在于角色牌和装备牌。
+- **2.8.3** 战场上 PP 变为 0 及以下的角色牌会因规则而破坏 (4.15、9.4)。
 
-export interface AscensionRuleConfig {
-  targetFilter: CardFilterCondition; // 8.11.2.a.1 升变对象 (例如: "费用<=5 的 <露西亚>")
-  restrictionFilter?: GameStateCondition; // 8.11.2.a.2 限制条件 (例如: "费用上限>=5")
-  ascensionCost: number; // 8.11.2.b 升变代价 (例如: 3费)
-  grantKeywords: string[]; // 8.11.2.c 升变出场获得词条，如 ["RUSH"]
-}
-```
+### 2.9 基本 DP
+- **2.9.1** 代表卡牌对玩家造成伤害的基准值，见第 7 章。
+- **2.9.2** 只存在于角色牌。
+
+### 2.10 信号球标记
+- **2.10.1** 记述卡牌的信号球情报，分为 `<信号球·红>`、`<信号球·蓝>`、`<信号球·黄>` 三种。
+- **2.10.2** 记述有信号球标记的卡牌为信号球牌，见 4.16。
+
+### 2.11 卡牌插图 / 2.12 稀有度标记 / 2.13 版权标记
+均为非游戏性情报，在游戏中没有特殊意义。插图中的文字称为风味文本，与游戏机制无关。
 
 ---
 
-## 6. 牌组构筑合法性验证规则 (Deck Validation Rules)
+## 3. 游戏的区域
 
-根据综合规则 5.1 节，牌组必须经过强类型校验机检验：
-1. **总张数限制 (5.1.2.a)**：牌组必须**恰好 50 张**卡牌 (`cards.length === 50`)。
-2. **同名卡上限 (5.1.2.b)**：同一卡牌编号 (`cardNumber`) 的卡牌在牌组中**不得超过 4 张**。
-3. **信号球硬性构成 (5.1.2.c)**：牌组中必须投入：
-   - 恰好 4 张 `<信号球·红>`
-   - 恰好 4 张 `<信号球·蓝>`
-   - 恰好 4 张 `<信号球·黄>`
-   - （合计 12 张信号球牌，且各自依然必须满足同一卡号不超过 4 张的限制）。
-4. **永久能力置换 (5.1.2.d)**：某些卡牌拥有的构筑永久能力作为置换效果应用于上述构筑规则（引擎保留 Hook）。
+### 3.1 区域的基本原则
+- **3.1.1** 除特殊说明外，每种区域每位玩家各持有一个。
+- **3.1.2** 各区域的卡牌**数量**对所有玩家公开，可随时确认。
+- **3.1.3** 卡牌情报公开的区域称为公开区域，否则为非公开区域。
+- **3.1.4** 卡牌从一个区域移动到另一个区域时，除特殊说明外视为**新区域中的新卡牌**，原区域中适用的效果不延续到新区域。
+- **3.1.5** 多张卡牌同时放置到同一区域时，若无特殊指定，放置顺序由卡牌所有者决定。
+  - **3.1.5.a** 多张卡牌同时放置到非公开区域、或在非公开区域调整顺序时，若所有者能决定顺序，其他玩家无法知晓该顺序。
+    - **3.1.5.a.1** 卡牌放置到非公开区域的特定位置时，所有玩家都可以知晓该位置的卡牌数量。
+- **3.1.6** 卡牌被指定移动到未指定所属玩家的区域时，除特殊说明外，移动到其**所属玩家**的对应区域。
 
----
+> 【Q&A·6】从战场【浮空】到处理区的卡牌，不继承在战场时的持续效果或状态（冰冻、速攻、PP+1000 等）(3.1.4)。
+>
+> 【Q&A·6】艾拉·万华 BP03-047「将对方角色以横置状态放置到费用区」：放到**对方**的费用区 (3.1.6)。
+>
+> 【Q&A·5】对方「按任意顺序放置到牌组底」时，我方不能得知顺序 (3.3.2)。
 
-## 7. Action 系统定义 (Client -> Server Actions)
+### 3.2 战场
+- **3.2.1** 放置出场的角色牌和道具牌的区域。
+- **3.2.2** 公开区域。
+- **3.2.3** 共有 **5 个战场卡位**，每个卡位上的卡牌都属于同一战场。
+- **3.2.4** 除特殊说明外，战场中的卡牌只占用其所在的卡位。
+- **3.2.5** 卡位的排列顺序在游戏中没有意义。
+- **3.2.6** 除特殊说明外，战场中角色、装备、辅助机**下方的卡牌不视为战场中的牌**。上方的卡牌离开战场时，下方的卡牌因规则处理放置到墓地 (9.6)。
 
-客户端向服务端提交的一切请求，全部封装为具有原子 ID 和签名的 Action：
+> 【Q&A·5/7】角色下方的牌（包括视为《飞叶点翠》的 BP02-040）不能被「将我方战场 1 张《飞叶点翠》放置到墓地」选中；也不能被「横置我方战场 1 张牌」横置。
+>
+> 【Q&A·9】战场的卡牌因效果被放置到其他战场卡牌的下方时，**视为离场**，满足「离场时」触发条件；其原本下方的卡牌成为无所属卡牌，因 9.6 放置到墓地。
 
-```typescript
-export type GameAction =
-  | { type: 'SURRENDER'; playerId: string } // 1.2.4
-  | { type: 'CHOOSE_FIRST_PLAYER'; playerId: string; chosenPlayerId: string } // 5.2.1.c
-  | { type: 'RESOLVE_MULLIGAN'; playerId: string; cardInstanceIdsToBottom: string[] } // 5.2.1.e
-  | { type: 'CHARGE_COST_FROM_HAND'; playerId: string; cardInstanceId?: string } // 6.3.1.c (可选放0或1张)
-  | { type: 'PLAY_CARD'; playerId: string; cardInstanceId: string; targetSlotIndex?: number; equipTargetCardId?: string; isAscension?: boolean } // 6.4.1.b.1 / 8.6
-  | { type: 'EQUIP_ITEM'; playerId: string; equipmentCardId: string; targetRoleCardId: string } // 6.4.1.b.4
-  | { type: 'ELIMINATE_3_ORBS'; playerId: string; orbCardInstanceIds: [string, string, string] } // 6.4.1.b.5
-  | { type: 'ACTIVATE_ABILITY'; playerId: string; sourceCardId: string; abilityIndex: number } // 6.4.1.b.3
-  | { type: 'DECLARE_ATTACK'; playerId: string; attackerCardId: string; targetType: 'PLAYER' | 'CHARACTER'; targetCardId?: string } // 7.2
-  | { type: 'DECLARE_BLOCK'; playerId: string; blockerCardId?: string } // 7.3.1.c (不阻挡则 blockerCardId 为空)
-  | { type: 'USE_INSTANT'; playerId: string; cardInstanceId?: string; abilitySourceCardId?: string; pass?: boolean } // 7.3.1.b / 6.5.1.a
-  | { type: 'DISCARD_HAND_OVERFLOW'; playerId: string; cardInstanceIds: string[] } // 6.5.1.c
-  | { type: 'SELECT_CHOICE_OPTION'; playerId: string; pendingChoiceId: string; selectedIds: string[] } // 8.6.3
-  | { type: 'PASS_ACTION_TIMING'; playerId: string }; // 4.5.3.b
-```
+### 3.3 牌组
+- **3.3.1** 游戏开始时放置自身牌组的区域。
+- **3.3.2** 非公开区域，背面表示堆叠放置；任何玩家都不能查看内容或顺序，也不能变更顺序。
+- **3.3.3** 对牌组顶或牌组底的指定数量卡牌执行行动时，从顶（底）**依次 1 张**执行。
+  - **3.3.3.a** 指定数量为「最多~张」时，在开始处理下一张前可以宣布放弃并终止。
+    - **3.3.3.a.1** 也可以在处理第一张之前终止，完全不执行。
+  - **3.3.3.b** 行动执行期间牌组耗尽时，暂停当前行动，执行牌组更新 (9.2) 后继续。例：要求抽 3 张而牌组只剩 1 张 → 抽 1 张 → 牌组更新 → 再抽 2 张。
+  - **3.3.3.c** 公开、查看牌组等不改变牌组数量的行动，若牌组剩余数量少于指定数量，则处理完剩余数量后终止。例：「公开牌组顶 5 张」时只剩 3 张 → 依次公开 3 张后终止。
+- **3.3.4** 要求洗切牌组时，将顺序随机打乱；该行动由牌组的**所属玩家**执行，与发出要求的主体无关。
+- **3.3.5** 要求公开或翻开牌组时，将指定卡牌公开并放置到处理区 (3.8)。
+- **3.3.6** 因效果或能力公开牌组的指定卡牌后，相关处理结束时，除特殊说明外需要洗切牌组。
 
----
+### 3.4 手牌
+- **3.4.1** 放置从牌组抽取的卡牌的区域。
+- **3.4.2** 非公开区域，但玩家可以自由查看、自由排列自己的手牌；不能查看对方手牌。
+- **3.4.3** 回合玩家在自己回合的结束阶段手牌超过上限时，必须放置到墓地直至达到上限。
+  - **3.4.3.a** 若无特殊效果，手牌上限为 **7 张**。
 
-## 8. Event 驱动系统 (Server -> Client Events)
+### 3.5 墓地
+- **3.5.1** 放置从战场离开的角色牌和道具牌（未指定离开方式时）、已使用的战术牌等。
+- **3.5.2** 公开区域，正面表示堆叠放置，任何玩家可以自由查看；所有者可以调整自己墓地的顺序；新放置的卡牌堆叠在原有卡牌上方。
 
-服务端对 Action 进行验证并结算后，原子性更新 GameState，并生成按顺序排布的 `GameEvent[]`。客户端仅监听事件驱动动画：
+### 3.6 费用区
+- **3.6.1** 放置玩家费用的区域。
+- **3.6.2** 公开区域，任何玩家可以自由查看；所有者可以自由排列顺序。
+- **3.6.3** 费用区中的卡牌为玩家的费用，分为**明费**和**暗费**。
+  - **3.6.3.a** 明费：以正面表示放置的卡牌，持续存在于费用区。通过横置明费来支付费用 (8.6)。
+  - **3.6.3.b** 暗费：以**背面竖直状态**放置的卡牌，临时存在于费用区。通过伤害充能 (4.12.3) 获得；支付后以正面表示放置到墓地。
+    - **3.6.3.b.1** 在回合玩家的结束阶段 (6.5)，将回合玩家的暗费以正面表示放置到墓地。
+    - **3.6.3.b.2** 虽然费用区是公开区域，但**只有操控玩家能查看自己的暗费内容**；暗费也不能成为卡牌使用或效果处理中的情报参照。
+- **3.6.4** 费用区卡牌达到数量上限 (3.6.4.a) 时，原本要放置到费用区的卡牌**改为放置到墓地**。
+  - **3.6.4.a** 若无特殊效果，费用区的数量上限为 **10 张**。
+- **3.6.5** 支付费用的步骤：
+  - **3.6.5.a** 选择自身费用区中合计数量**与需支付费用相同**的竖直状态明费和暗费进行支付。
+    - **3.6.5.a.1** 支付明费：将竖直状态的明费横置。
+    - **3.6.5.a.2** 支付暗费：将暗费以正面表示放置到墓地。
+- **3.6.6** **费用上限**指玩家费用区的费用合计张数。
+  - **3.6.6.a** **明费上限**指费用区的明费合计张数。
+  - **3.6.6.b** **暗费上限**指费用区的暗费合计张数。
 
-```typescript
-export type GameEvent =
-  | { type: 'GAME_STARTED'; firstPlayerId: string; seed: number }
-  | { type: 'TURN_STARTED'; turnNumber: number; activePlayerId: string }
-  | { type: 'PHASE_CHANGED'; fromPhase: GamePhase; toPhase: GamePhase }
-  | { type: 'CARDS_DRAWN'; playerId: string; count: number; cardInstances?: PublicCardInstance[] }
-  | { type: 'MULLIGAN_COMPLETED'; playerId: string; bottomCount: number; redrawCount: number }
-  | { type: 'CARD_MOVED'; cardInstanceId: string; fromZone: ZoneId; toZone: ZoneId; fromSlot?: number; toSlot?: number; isFaceUp: boolean; isReady: boolean }
-  | { type: 'CARDS_SHUFFLED'; playerId: string; zone: ZoneId }
-  | { type: 'COST_PAID'; playerId: string; openCostTappedIds: string[]; hiddenCostDiscardedIds: string[] }
-  | { type: 'CARD_PLAYED'; playerId: string; cardInstanceId: string; slotIndex: number; isAscension: boolean }
-  | { type: 'CARD_ASCENDED'; parentCardId: string; underneathCardIds: string[] }
-  | { type: 'CARD_EQUIPPED'; equipmentCardId: string; roleCardId: string }
-  | { type: 'ORBS_ELIMINATED'; playerId: string; orbCardIds: string[]; cardDrawnCount: number }
-  | { type: 'ATTACK_DECLARED'; attackerCardId: string; targetType: 'PLAYER' | 'CHARACTER'; targetCardId?: string }
-  | { type: 'BLOCK_DECLARED'; blockerCardId?: string; isBlocked: boolean }
-  | { type: 'ATTACK_CHARGE_PERFORMED'; attackerCardId: string; chargeIndex: number; revealedCard: PublicCardInstance; resultDestination: 'SIGNAL_ORB' | 'HAND' }
-  | { type: 'DAMAGE_CHARGE_PERFORMED'; defenderPlayerId: string; revealedCard: PublicCardInstance; placedToCostFaceDown: boolean }
-  | { type: 'EROSION_INCREASED'; playerId: string; previousValue: number; newValue: number; reason: 'DAMAGE' | 'DECK_REFRESH' | 'EFFECT' }
-  | { type: 'BATTLE_COMPARED'; attackerCardId: string; attackerPP: number; defenderCardId: string; defenderPP: number; destroyedDefenderCardId?: string }
-  | { type: 'CARD_DESTROYED'; cardInstanceId: string; reason: 'BATTLE' | 'PP_ZERO' | 'EFFECT' }
-  | { type: 'DECK_REFRESHED'; playerId: string; cardsShuffledCount: number; newErosionCount: number }
-  | { type: 'CHOICE_REQUIRED'; pendingChoice: PendingChoice }
-  | { type: 'GAME_OVER'; winnerPlayerId?: string; isDraw: boolean; reason: string };
-```
+> 【FAQ·1】「费用上限 X 及以上」= 费用区卡牌数（明费 + 暗费）≥ X。例：4 明费 + 1 暗费 → 费用上限 5；用掉 2 张暗费后费用上限随之下降。
+>
+> 【FAQ·2】支付必须**恰好**等量，不可多付也不可少付。例：需付 4 费，有 5 张竖直明费 + 1 张暗费 → 可以 3 明费 + 1 暗费，也可以 4 明费。
+>
+> 【Q&A·5】费用区已满（10 张）时，**不存在**「把旧卡挤到墓地再放入新卡」的操作；抽牌填充阶段放入费用区的牌也改为放置到墓地。
+>
+> 【Q&A·4】费用区已满时，伤害充能的牌改放墓地：这不视为「从牌组放置到墓地」（拉弥亚·深谣 BP02-030 不触发）。
+>
+> 【Q&A·4】费用区已满时，《自由》要放到费用区的角色改放墓地：这是规则导致的移动，不满足「因效果或代价从战场放置到墓地」（丽芙·极昼 BP02-010 不触发）。
+>
+> 【Q&A·6】对方把我方 BP03-052 放到已满（10 张）的费用区：此时上限仍为 10，该牌改放墓地，其「上限变为 11」的永久能力来不及生效。
+>
+> 【Q&A·6】「选择我方费用区的《艾拉·万华》出场」**不能选暗费**（暗费正面信息不可参照）；「选择我方费用区 1 张牌加入手牌」**可以选暗费**。
+>
+> 【实现】下发给对手的状态中，暗费必须以背面形式呈现（不含卡号等信息）。
 
----
+### 3.7 信号球区
+- **3.7.1** 放置信号球牌 (4.16) **和其他卡牌**的区域。
+- **3.7.2** 公开区域，任何玩家可以自由查看；但**不能自由变更顺序**，新放置的卡牌堆叠在原有卡牌上方。
+  - **3.7.2.a** 信号球区的卡牌离开信号球区（未指定离开方式）时，也不能自由变更剩余卡牌的顺序。
 
-## 9. Trigger 与检查时机系统 (Priority Loop)
+> 【Q&A·6】以**背面表示**放置到信号球区的卡牌（七实·芒星之迹等）为非公开卡牌，双方都不能确认，效果也不能参照其正面情报。若信号球区最下方是背面牌，暮/晖形态的条件都无法满足 (10.14)。
+>
+> 【Q&A·4】形如「将我方信号球区的牌按任意顺序排列」的效果可以移动信号球区中的非信号球牌。
+>
+> 【实现】信号球区为有序列表，下标 0 视为「最下方」或「最上方」须统一约定（见第 12 节）。目前规则没有信号球区数量上限。
 
-根据综合规则 8.5 节，本游戏引擎**不采用传统的 LIFO 堆叠，而是采用符合规则 8.5 的检查时机优先循环 (Check Timing Priority Loop)**：
+### 3.8 处理区
+- **3.8.1** 临时放置正在处理的效果或充能 (4.12) 卡牌的区域。
+  - **3.8.1.a** 已使用的战术牌放置到处理区，处理其效果后放置到所属玩家 (4.2) 的墓地。
+  - **3.8.1.b** 通过充能 (4.12) 从牌组翻开的卡牌放置到处理区，随后根据充能类型移动到对应区域。
+  - **3.8.1.c** 通过卡牌能力或效果公开的卡牌临时放置到处理区，处理完毕后移动到其他区域。
+  - **3.8.1.d** 因能力或效果**临时**放置到处理区的卡牌，规则上视为**同时存在于原本的区域和处理区**。
+- **3.8.2** 公开区域，正面表示堆叠放置，任何玩家可以自由查看；不能自由变更顺序，新放置的卡牌堆叠在原有卡牌上方。
 
-```mermaid
-flowchart TD
-    TriggerEvent[游戏事件发生 / 时机转换] --> CheckTimingBegin[8.5.1 进入检查时机]
-    
-    CheckTimingBegin --> ActiveSBA[8.5.1.a 回合玩家执行规则处理 SBA]
-    ActiveSBA --> HasMoreActiveSBA{产生新SBA?}
-    HasMoreActiveSBA -- 是 --> ActiveSBA
-    HasMoreActiveSBA -- 否 --> NonActiveSBA[8.5.1.b 回合外玩家执行规则处理 SBA]
-    
-    NonActiveSBA --> HasMoreNonActiveSBA{产生新SBA?}
-    HasMoreNonActiveSBA -- 是 --> ActiveSBA
-    HasMoreNonActiveSBA -- 否 --> CheckActiveTriggers{8.5.1.c 回合玩家存在生效的自动能力?}
-    
-    CheckActiveTriggers -- 是 --> ResolveActiveOne[回合玩家选择 1 项发动并执行]
-    ResolveActiveOne --> CheckTimingBegin
-    
-    CheckActiveTriggers -- 否 --> CheckNonActiveTriggers{8.5.1.d 回合外玩家存在生效的自动能力?}
-    CheckNonActiveTriggers -- 是 --> ResolveNonActiveOne[回合外玩家选择 1 项发动并执行]
-    ResolveNonActiveOne --> CheckTimingBegin
-    
-    CheckNonActiveTriggers -- 否 --> CheckTimingEnd[8.5.1.e 检查时机结束]
-    CheckTimingEnd --> ActionTiming[4.5 玩家真正获得行动时机]
-```
+> 【Q&A·6】莉莉丝·谬影 BP03-063「所有玩家公开牌组顶 1 张……我方抽 1 张牌」：抽的就是处理区中公开的那张（它仍视为牌组顶的牌，3.8.1.d）。
+>
+> 【实现】【浮空模式】的卡牌也存放在处理区 (10.18)，每名玩家最多 1 张。
 
----
-
-## 10. Effect 效果引擎与层级系统 (Continuous / One-shot / Replacement Effects)
-
-依据综合规则 8.2 与 8.9，效果计算严格分为三类：
-1. **单发效果 (8.2.1.a)**：在结算时立刻执行指示动作即销毁（例如抽卡、造成伤害、消灭目标）。
-2. **置换效果 (8.2.1.c / 8.10)**：侦测目标事件发生时，取消原事件并直接用新事件替代（8.10.1.a 原事件视为完全未发生）。受影响方自行选择适用顺序，每事件最多适用一次（8.10.2.c）。
-3. **持续效果层级系统 (8.9.1 Layers)**：
-   - **Layer 1 (8.9.1.a - Base Values)**: 卡牌票面记载的原始基本值（Base PP, Base DP, Cost, Attribute, Traits）。
-   - **Layer 2 (8.9.1.b - Non-numeric Modifications)**: 赋予/移除特征、获得/失去能力、改变属性、规则限制。
-   - **Layer 3 (8.9.1.c - Numeric Modifications)**: 改变 PP 数值、DP 数值或充能数的持续效果（如 +1000 PP, +1 DP）。
-   - **Dependency & Timestamps (8.9.1.d/e)**: 依赖优先，无依赖则按进入区域的时间戳（永久能力）或发动时间戳生效。
-
----
-
-## 11. Target 目标选择与合法性系统 (Targeting System)
-
-根据 8.6.3：
-- 选择指示必须在指定数量内选择尽可能多的合法对象（8.6.3.a）。
-- 若记述为“选择最多 X 张”，可选数量为 `0..X`（8.6.3.a.1）。
-- 若从非公开区域选择且涉及特征（如“从牌组选择1张角色牌”），由于无法验证，即使存在，玩家仍可**合法放弃选择 (Fail to find)**（8.6.3.a.4）。
-- 目标合法性验证必须进行双重核验：
-  1. 宣告时验证 (Declaration Validation)
-  2. 结算时再次核验 (Resolution Re-check - 8.3.4 若目标已失效或移动区域，则该部分效果不予执行)。
+### 3.9 侵蚀计数区
+- **3.9.1** 记录玩家自身侵蚀计数的区域。
+- **3.9.2** 公开区域。
+- **3.9.3** 计数达到 7 或更高时，该玩家满足败北条件 (1.2.2.a)。
+- **3.9.4** 侵蚀计数区并非记录侵蚀计数的唯一方式。
+  - **3.9.4.a** 赛事规则允许时，可以使用双方认可的方式记录。
 
 ---
 
-## 12. 战斗与攻击流程模型 (Combat Resolution System)
+## 4. 游戏的基本用语
 
-根据第 7 章，攻击由以下 4 到 5 个子流程严格构成：
+### 4.1 能力和效果
+- **4.1.1** 能力：卡牌文本或某种效果触发的行动。
+  - **4.1.1.a** 能力分为永久能力、自动能力、起动能力三种（第 8 章）。
+- **4.1.2** 效果：能力所指示的行动内容本身。
+  - **4.1.2.1** 效果分为单发效果、持续效果、置换效果三种（第 8 章）。
 
-```mermaid
-flowchart TD
-    Declare[7.2 攻击宣言步骤] --> CheckAttacker[选择自身竖直角色, 必须非出场回合/或有速攻/突进]
-    CheckAttacker --> TapAttacker[将攻击角色横置]
-    TapAttacker --> DeclareTarget[宣告攻击目标: 对方玩家 OR 对方横置角色]
-    DeclareTarget --> FreeTiming[7.3 自由时点步骤]
-    
-    FreeTiming --> InstantP1[回合外玩家优先使用瞬时]
-    InstantP1 --> InstantP2[双方轮流瞬时直至连续Pass]
-    InstantP2 --> BlockStep[7.3.1.c 回合外玩家选择是否用竖直角色横置阻挡]
-    
-    BlockStep --> ChargeStep[7.4 充能步骤]
-    ChargeStep --> AttackChargeLoop[攻击角色执行 N 次攻击充能]
-    AttackChargeLoop --> OrbCheck{翻出是否为信号球牌?}
-    OrbCheck -- 是: 信号球牌 --> MoveToOrbZone[移动至信号球区最上方 3.7.2]
-    OrbCheck -- 否: 非信号球 --> AddToHand[加入手牌 4.12.2.b]
-    
-    AddToHand --> BranchCombat{判断后续步骤}
-    MoveToOrbZone --> BranchCombat
-    
-    BranchCombat -- 目标为玩家 且 未阻挡 --> DamageStep[7.5 伤害步骤]
-    BranchCombat -- 目标为角色 或 已阻挡 --> BattleStep[7.6 角色战斗步骤]
-    
-    DamageStep --> DealDamage[对玩家造成攻击角色DP等量的伤害]
-    DealDamage --> CombatEnd[攻击结束触发 -> 返回主要阶段]
-    
-    BattleStep --> ComparePP{比较双方PP}
-    ComparePP -- 攻击方PP >= 防守方PP --> DestroyDefender[防守角色因战斗破坏入墓 7.6.1.b]
-    ComparePP -- 攻击方PP < 防守方PP --> NoDestruction[无事发生! 攻击角色不被破坏!]
-    DestroyDefender --> PiercingCheck{攻击方是否持有贯通?}
-    PiercingCheck -- 是 --> PiercingDamage[贯通: 给予对手玩家1点伤害 10.7]
-    PiercingCheck -- 否 --> CombatEnd
-    NoDestruction --> CombatEnd
-```
+### 4.2 所属玩家
+- **4.2.1** 卡牌的物理持有者。
+- **4.2.2** 即把该卡牌加入牌组并开始游戏的玩家。
+- **4.2.3** 游戏结束时，每位玩家回收自己持有的所有卡牌。
 
----
+### 4.3 操控玩家
+- **4.3.1** 当前正在使用卡牌、能力或效果的玩家。
+- **4.3.2** 放置在某区域的卡牌，其操控玩家是该区域的所属玩家。
+- **4.3.3** 效果的操控玩家是触发该效果的能力的操控玩家。
+- **4.3.4** 【永】永久能力的操控玩家：持有该能力的卡牌（或触发该效果的卡牌）的操控玩家。
+- **4.3.5** 【自】自动能力的操控玩家：同上。
+- **4.3.6** 【出】出场能力的操控玩家：同上。
+- **4.3.7** 【起】起动能力的操控玩家：使用该能力的玩家。
+- **4.3.8** 卡牌文本中「我方」指作为操控玩家的你，「对方」指另一位玩家。
 
-## 13. 伤害处理与侵蚀计数机制 (Damage & Erosion System)
+### 4.4 检查时机
+- **4.4.1** 游戏中需要执行规则处理或已触发的自动能力的时机。
+- **4.4.2** 检查时机中先执行所有规则处理，待执行的规则处理清零后，再执行满足触发条件的自动能力（详见 8.5）。
 
-根据 4.10 与 4.12.3：
-1. **伤害不是扣除生命值，而是转化成伤害充能与侵蚀度**！
-2. 受到 $D$ 点伤害的玩家，执行 $D$ 次独立的伤害充能循环：
-   - 抽取牌组顶 1 张卡牌翻开至处理区 (3.8)。
-   - 在触发能力结算后，**将该卡牌以背面竖直状态置入费用区作为暗费 (Hidden Cost)** (4.12.3.a)。
-   - 该次充能完毕后，**承受伤害的玩家侵蚀计数 + 1** (4.10.1.b)。
-3. **特别注意 (4.10.2)**：卡牌效果直接“使玩家侵蚀计数增加”的行动，**不属于伤害处理**，因此绝对不执行伤害充能，也不会产生暗费！
+### 4.5 行动时机
+- **4.5.1** 特定玩家能够主动采取行动的时机。
+- **4.5.2** 玩家获得行动时机时，在实际选择行动前**必定先进入检查时机**；该检查时机中待处理的规则处理和自动能力全部处理完毕后，该玩家才真正获得行动时机。
+- **4.5.3** 获得行动时机的玩家选择执行当下可执行的**单一**行动，或选择不行动。
+  - **4.5.3.a** 选择行动时，执行完毕后除特殊说明外该玩家**再次获得**行动时机。
+  - **4.5.3.b** 选择不行动时，游戏自动推进。
 
----
+### 4.6 卡牌的放置状态
+- **4.6.1** 战场和费用区的卡牌持有以下两种状态之一：
+  - **4.6.1.a** 竖直状态：正常竖立放置。变为竖直的行动称为「竖直」。
+  - **4.6.1.b** 横置状态：正常横向放置。变为横置的行动称为「横置」。
+- **4.6.2** 各区域的卡牌持有以下两种状态之一：
+  - **4.6.2.a** 正面状态。变为正面的行动称为「以正面表示」。
+  - **4.6.2.b** 背面状态。变为背面的行动称为「以背面表示」。
+    - **4.6.2.b.1** 背面状态与公开/非公开区域 (3.1.3) 是不同概念。除特殊说明外，能否查看、能否排列由卡牌所在区域决定。
 
-## 14. 核心特殊机制深度建模
+### 4.7 抽牌
+- **4.7.1** 「抽牌」= 将牌组顶的卡牌移动到手牌。
 
-### 14.1 升变机制 (8.11 Ascension)
-- 升变角色牌从手牌打出时，满足属性匹配。
-- 选定升变对象（通常为战场已有角色）与卡位。
-- 支付升变代价（替代原费用）。
-- 升变出场时，被升变的对象卡牌及其下层卡牌全部保持在升变后角色牌的正下方（Stacking）。
-- 装备自动转移至升变后角色身上（8.11.3.f.2）。
-- 升变角色不继承被升变角色的临时状态与数值（8.11.4.c）。
-- 升变角色离场时，其下方所有重叠的卡牌全部送入墓地（9.6）。
+### 4.8 公开动作
+- **4.8.1** 「公开（指定区域）（指定卡牌）」= 公开指定区域中指定卡牌的情报。
 
-### 14.2 信号球消除与抽牌机制 (6.4.1.b.5 & 4.16.2)
-- 在主要阶段行动时机，回合玩家可选择信号球区中**任意 3 张物理相邻且连续**的信号球牌送入墓地。
-- 结算：若成功消除，执行抽 1 张牌。
-- 消除后，不可打乱剩余信号球顺序。
+### 4.9 查看动作
+- **4.9.1** 「查看（指定区域）（指定卡牌）」= 该能力或效果的操控玩家可以查看指定卡牌的情报。
 
-### 14.3 辅助机数量上限 (2.2.2.c.2 & 9.5.4)
-- 每位玩家战场最多存在 1 张辅助机。
-- 手牌打出新辅助机时，可选择直接替换已有辅助机（已有辅助机入墓，新辅助机占据该卡位，见 8.6.2.e.3）。
+### 4.10 伤害处理
+- **4.10.1** 玩家受到伤害后执行的处理：
+  - **4.10.1.a** 受到伤害的玩家根据伤害量，**依次**执行等量的伤害充能 (4.12.3)。
+  - **4.10.1.b** **每次**伤害充能执行完毕后，受到伤害的玩家侵蚀计数 +1。
+- **4.10.2** 「将指定玩家的侵蚀计数增加」的行动**不属于伤害处理**，不执行伤害充能。
 
----
+> 【Q&A·9】因卡牌效果的能力或代价受到伤害（如《薇拉·灼惘》「给予我方 1 点伤害」）时，执行**完整的伤害处理**：伤害充能、获得暗费、侵蚀计数增加。
+>
+> 【Q&A·9】PP 不足被规则破坏也包含在「我方角色被破坏」之内（<遗忘者> 相关）。
 
-## 15. 规则处理与胜负判定系统 (State-Based Actions & Win Conditions)
+### 4.11 伤害的来源
+- **4.11.1** 某些效果需要判定伤害的来源：
+  - **4.11.1.a** 战斗流程伤害步骤中根据规则由攻击角色造成的伤害，来源是该攻击角色。
+  - **4.11.1.b** 战术牌或其他卡牌的能力造成伤害时，除特殊说明外来源是该卡牌本身。
+    - **4.11.1.b.1** 此时若伤害来源是玩家，则来源改为该卡牌本身。
 
-### 15.1 规则处理分类 (9.1)
-- **中断型规则处理 (Interruptive SBA - 立即打断当前操作插入执行)**：
-  1. `DECK_REFRESH` (9.2): 牌组抽空瞬间，立即将墓地全部卡牌洗回牌组，玩家侵蚀计数 + 1。若牌组和墓地均为空，则立即判负！
-  2. `DANGLING_CARDS` (9.6): 宿主角色离开战场时，其下方重叠卡和装备卡立刻送入墓地。
-- **检查型规则处理 (Check-timing SBA - 仅在 8.5 检查时机确认执行)**：
-  1. `CHECK_WIN_LOSS` (9.3):
-     - 侵蚀计数 $\ge 7$ 者判负 (9.3.1.a)。
-     - 牌组和墓地均为空者判负 (9.3.1.b)。
-     - 双方同时判负则为平局 (1.2.3)。
-  2. `PP_ZERO_DESTROY` (9.4): 战场角色 PP $\le 0$ 时立刻因规则破坏入墓。
-  3. `ILLEGAL_CARDS` (9.5):
-     - 战场非角色/道具卡送墓 (9.5.2)。
-     - 角色装备超限（>1）多出者送墓 (9.5.3)。
-     - 战场辅助机超限（>1）多出者送墓 (9.5.4)。
-     - 费用区总张数超限（>10）多出者送墓 (9.5.5)。
+> 【Q&A·10】【贯通】造成的伤害**不属于**「该牌的攻击对玩家造成伤害」，而是卡牌效果造成的伤害。
 
----
+### 4.12 充能
+- **4.12.1** 充能：将牌组顶的牌翻开并放置到处理区，随后根据充能类型移动到对应区域。充能分为攻击充能和伤害充能。
+- **4.12.2** 攻击充能：战斗流程充能步骤 (7.4) 中执行的充能；规则上视攻击角色为执行主体。
+  - **4.12.2.a** 翻开的是信号球牌 (4.16)：相关规则或能力处理完毕后，放置到**信号球区最上方**。
+  - **4.12.2.b** 翻开的不是信号球牌：相关规则或能力处理完毕后，**加入手牌**。
+  - **4.12.2.c** 攻击充能次数 = 攻击角色的充能数。角色牌的**基本充能数为 1**，会因 10.3、10.4 变化。
+- **4.12.3** 伤害充能：玩家受到伤害时执行的充能；规则上视受伤玩家为执行主体。
+  - **4.12.3.a** 翻开的卡牌在相关规则或能力处理完毕后，以**背面竖直状态**放置到费用区成为**暗费** (3.6.3.b)。
+  - **4.12.3.b** 伤害充能次数 = 受到的伤害数量。**每次**伤害充能执行完毕后，受伤玩家侵蚀计数 +1，并**进入检查时机**。
 
-## 16. GameState 核心 TypeScript 强类型定义
+> 【FAQ·1】充能数为 2 时，处理完第 1 张后再进行第 2 张。
+>
+> 【FAQ·2】攻击充能翻出信号球：发动其【充能自】，然后放置到信号球区最上方。伤害充能翻出信号球：发动其【充能自】，然后以背面竖直状态放置到费用区成为暗费。例：伤害充能翻出黄色信号球，侵蚀 5 对 3，可以先选择侵蚀 -1，再把该牌作为暗费放入费用区，之后因受伤侵蚀 +1。
+>
+> 【实现】伤害充能的顺序固定为：翻开到处理区 →（若有）处理【充能自】→ 放入费用区（满则改放墓地，3.6.4）→ 侵蚀 +1 → 检查时机（败北在此判定）。
 
-```typescript
-export type GameStatus = 'WAITING' | 'PREPARING' | 'PLAYING' | 'FINISHED';
+### 4.13 出场
+- **4.13.1** 卡牌从非战场区域放置到战场时，即视为该卡牌**出场**。
+- **4.13.2** 卡牌文本中把从其他区域放置到战场的行动称为「出场」或「将其出场」。
+- **4.13.3** 除特殊说明外，卡牌以**正面竖直状态**出场。
 
-export type GamePhase =
-  | 'STAND_PHASE' // 6.2
-  | 'DRAW_CHARGE_PHASE' // 6.3
-  | 'MAIN_PHASE' // 6.4
-  | 'COMBAT_ATTACK_DECLARATION' // 7.2
-  | 'COMBAT_FREE_TIMING' // 7.3
-  | 'COMBAT_CHARGE' // 7.4
-  | 'COMBAT_DAMAGE' // 7.5
-  | 'COMBAT_BATTLE' // 7.6
-  | 'END_PHASE'; // 6.5
+### 4.14 区域移动的行动
+- **4.14.1** 卡牌因规则或能力从一个区域移动到另一个区域。
+  - **4.14.1.a** 移动中，放置状态根据所在区域的规则变化。
+- **4.14.2** 移动到手牌：「加入手牌」「返回手牌」「抽牌」等。
+- **4.14.3** 移动到牌组：「加入牌组」「放置到牌组」「返回牌组」等。
+- **4.14.4** 移动到墓地：「放置到墓地」「丢弃」。
+- **4.14.5** 移动到费用区：「放置到费用区」。除特殊说明外，以**正面竖直状态**放置。
+- **4.14.6** 移动到信号球区：「放置到信号球区」。
 
-export interface CardInstance {
-  readonly instanceId: string; // 运行时唯一UUID
-  readonly cardId: string; // 静态卡牌表ID
-  readonly cardNumber: string;
-  readonly ownerPlayerId: string;
-  controllerPlayerId: string;
-  zone: ZoneId;
-  slotIndex?: number; // 战场 0..4
-  underneathCardIds: string[]; // 升变垫片
-  attachedEquipmentId?: string; // 装备
-  isFaceUp: boolean;
-  isReady: boolean; // true: 竖直, false: 横置
-  turnEnteredZone: number; // 进入当前区域的回合数(用于计算出场攻击限制)
-}
+### 4.15 破坏
+- **4.15.1** 破坏：规则或卡牌能力指示的针对卡牌执行的行动，被破坏的卡牌放置到墓地。文本记述为「将其破坏」。
+- **4.15.2** 结果都是放置到墓地，但「**破坏**」与「**放置到墓地**」不是相同的行动。
 
-export interface BattlefieldSlot {
-  slotIndex: number;
-  roleCardId?: string;
-  standaloneEquipmentId?: string;
-  assistCardId?: string;
-}
+> 【Q&A·4】被《重逢》破坏的 BP02-010 不满足「因效果或代价从战场放置到墓地」，其【自】不触发；被《裁定合击》「放置到墓地」则满足 (Q&A·8)。
+>
+> 【Q&A·2】被战斗破坏时用「改为不离场」类效果代替（BP01-017），视为**未被破坏**，对方的【贯通】不会给予伤害。
 
-export interface PendingTrigger {
-  id: string;
-  abilityId: string;
-  sourceCardInstanceId: string;
-  controllerPlayerId: string;
-  triggerContext: Record<string, unknown>;
-}
+### 4.16 信号球与消除信号球
+- **4.16.1** 信号球牌是持有信号球标记的卡牌，通常是一种特殊的普通战术牌：
+  - **4.16.1.a** 通常不持有属性，使用时可以无视属性条件 (8.6.2.a.1)。
+  - **4.16.1.b** 分为 `<信号球·红>`、`<信号球·蓝>`、`<信号球·黄>` 三种，以卡牌特征 (2.6) 和信号球标记 (2.10) 记述。
+  - **4.16.1.c** 构筑时除特殊说明外，必须投入红、蓝、黄各 4 张。
+- **4.16.2** **消除信号球**：将信号球区中**特定排列顺序且相邻**的信号球牌放置到墓地。
+  - **4.16.2.a** 「消除（指定信号球牌）」：将信号球区中指定排列顺序、持有指定信号球标记的相邻信号球牌放置到墓地。
+  - **4.16.2.b** 消除后，玩家不可自由调整信号球区的剩余顺序。
 
-export interface PendingChoice {
-  id: string;
-  playerId: string;
-  choiceType: 'SELECT_CARDS' | 'SELECT_SLOT' | 'SELECT_OPTION' | 'YES_NO';
-  prompt: string;
-  options: { id: string; label: string; payload?: unknown }[];
-  minSelections: number;
-  maxSelections: number;
-}
+> 【Q&A·4】信号球区中**不持有信号球标记**的牌（如奥罗拉放入的牌）**不能**被消除。
+>
+> 【Q&A·1】《万世铭》使 1 张信号球「视为 3 个相同信号球」后，需要消除 **2** 个时不能用它代替（只能整体当 3 个用）。
+>
+> 【Q&A·6】BP03-075 的「将信号球区【蓝色信号球】放置到墓地」**不是消除**，可以选不相邻的牌；被视为 3 个的那 1 张放到墓地也只算 1 张。被其他效果视为【蓝色信号球】的牌可以选。
+>
+> 【Q&A·9】「本回合中消除过【3任意信号球】」= 因任意原因完成过 1 次「同时消除 3 张信号球」的行动：规则行动三消、能力消除 3 任意 / 3 同色、用视为 3 个的 1 张来消除 3 任意都算；分 3 次各消 1 张不算。
 
-export interface GameState {
-  readonly gameId: string;
-  readonly rngSeed: number;
-  readonly createdAt: number;
-  status: GameStatus;
-  turnNumber: number;
-  activePlayerId: string;
-  nonActivePlayerId: string;
-  phase: GamePhase;
-  priorityPlayerId: string; // 当前拥有行动时机/选择权的玩家
-  
-  players: Record<string, PlayerState>;
-  cards: Record<string, CardInstance>;
-  battlefields: Record<string, BattlefieldSlot[]>; // playerId -> 5 slots
-  
-  // 正在进行的战斗快照
-  currentCombat?: {
-    attackerCardId: string;
-    targetType: 'PLAYER' | 'CHARACTER';
-    targetCardId?: string;
-    blockerCardId?: string;
-    freeTimingPassCount: number; // 双方连续Pass计数
-  };
-  
-  // 待处理堆
-  pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
-  currentPendingChoice?: PendingChoice;
-  
-  // 胜负判定结果
-  winnerId?: string;
-  isDraw: boolean;
-  finishReason?: string;
-}
-```
+### 4.17 选择牌组
+- **4.17.1** 要求「选择」自身牌组的特定卡牌时，查看自身牌组内容，按条件选择指定数量。
+- **4.17.2** 只指定数量、未指定具体情报时，所选卡牌在无特殊指示时不公开。
+  - **4.17.2.a** 除牌组数量不足外，只指定数量时必须选择该数量。
+- **4.17.3** 指定了特定情报时，选择后需公开该卡牌以证明其持有该情报。
+  - **4.17.3.a** 牌组中是否存在特定情报的卡牌无法保证；即使实际存在，玩家仍可视为不存在而放弃选择并终止相关行动。
+
+### 4.18 装备相关
+- **4.18.1** 装备牌被放置到角色**下方**进行装备，该角色为其装备角色。文本记述为「装备」。
+- **4.18.2** 装备角色的 PP **增加**其装备牌的基本 PP。
+- **4.18.3** 每张角色最多装备 1 张装备牌；每张装备牌最多被 1 张角色装备。
+- **4.18.4** 角色装备达到上限时不能再装备新的装备牌；因故超过上限时，选择超出数量的装备放置到墓地。
+- **4.18.5** 战场中的装备牌占用 1 个卡位。装备角色与其装备占用**同一**卡位，该装备仍视为战场中的装备牌。装备牌从非战场区域放置到战场角色的下方进行装备时，**视为该装备牌出场**。
+- **4.18.6** 规则上角色的装备是该角色**下方的卡牌**。除特殊说明外，装备角色离开战场时，其装备因规则处理 (9.6) 放置到墓地。
+
+> 【Q&A·4】含英·檀心 BP02-037 的起动能力从手牌/墓地装备《飞叶点翠》时视为出场，发动其【出】。先单独出场《飞叶点翠》再装备给角色：出场时未装备任何角色，【出】的效果无法执行；之后装备不算出场，不再发动。
+>
+> 【Q&A·4】视为《飞叶点翠》的 BP02-040 仍是角色牌，**不能**被装备。
+>
+> 【Q&A·5/7】装备中的牌视为战场中的装备牌，可以被「将我方战场 1 张装备放置到墓地」选中（枪林弹雨、含英·檀心 BP02-041）；但它是角色下方的牌，**没有竖直/横置状态**，不能被「横置我方战场 1 张牌」横置。
+>
+> 【Q&A·7】效果「将装备牌出场」与「使用装备牌」不同：效果出场的装备牌**只能**放到空卡位，不能直接装备给角色 (8.6.2.e.2 只适用于使用)。
+>
+> 【Q&A·6】装备带来的 PP 是规则加成，不是持续效果：PP 被「变为 70」后再卸下 +500 的装备，PP 变为 -430 并因规则破坏。
 
 ---
 
-## 17. 数据库 ER 设计与 Prisma Schema 初版
+## 5. 游戏准备
 
-```prisma
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+### 5.1 牌组的准备
+- **5.1.1** 每位玩家在游戏开始前用自己的卡牌构筑牌组。
+- **5.1.2** 牌组构筑：
+  - **5.1.2.a** 除特殊说明外，牌组必须**恰好 50 张**。
+  - **5.1.2.b** 同一卡牌编号的卡牌每种**不得超过 4 张**。
+  - **5.1.2.c** 必须投入 `<信号球·红>`、`<信号球·蓝>`、`<信号球·黄>` **各 4 张**，同时遵守 5.1.2.b。
+  - **5.1.2.d** 关于构筑条件的永久能力 (8.1) 作为**置换效果**应用于上述构筑规则。
 
-generator client {
-  provider = "prisma-client-js"
-}
+### 5.2 游戏前的准备步骤
+- **5.2.1** 每局游戏开始前，每位玩家执行：
+  - **5.2.1.a** 确认本局使用的牌组满足 5.1；赛事要求时展示牌组。牌组只需在这一步满足 5.1（游戏中因效果从游戏外加入牌组不违反构筑规则）。
+  - **5.2.1.b** 每位玩家充分洗切自己的牌组，随后可以选择洗切对手的牌组；之后将牌组背面堆叠放到牌组区域。
+  - **5.2.1.c** **随机**决定先攻玩家。
+    - **5.2.1.c.1** 决定先攻时不允许任何人为干预。
+  - **5.2.1.d** 每位玩家将侵蚀计数设为 0。
+  - **5.2.1.e** 每位玩家抽 **4 张**作为起始手牌。随后**从先攻玩家开始依次**，每位玩家可以把任意数量的手牌按任意顺序以背面表示放到牌组底，并抽取等量的卡牌（调度）。
+  - **5.2.1.f** 每位玩家充分洗切自己的牌组，随后可以选择洗切对手的牌组；之后每位玩家将牌组顶 **2 张**以**正面竖直状态**放置到费用区作为起始明费。
+  - **5.2.1.g** 以先攻玩家为回合玩家开始游戏。
 
-enum Role {
-  USER
-  ADMIN
-}
-
-enum RoomStatus {
-  WAITING
-  READY
-  PLAYING
-  FINISHED
-  CLOSED
-}
-
-enum CardTypeEnum {
-  ROLE
-  TACTICS
-  EQUIPMENT
-  ASSIST
-}
-
-enum ElementAttributeEnum {
-  FIRE
-  LIGHTNING
-  DARK
-  ICE
-  PHYSICAL
-  NONE
-}
-
-enum SignalOrbTypeEnum {
-  RED
-  BLUE
-  YELLOW
-}
-
-model User {
-  id            String       @id @default(uuid())
-  username      String       @unique
-  passwordHash  String
-  nickname      String
-  avatarUrl     String?
-  role          Role         @default(USER)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  decks         Deck[]
-  roomPlayers   RoomPlayer[]
-  gamePlayers   GamePlayer[]
-}
-
-model Card {
-  id            String        @id @default(uuid())
-  cardNumber    String        @unique // 如 BP01-001
-  name          String
-  cardType      CardTypeEnum
-  attribute     ElementAttributeEnum
-  cost          Int
-  basePP        Int?
-  baseDP        Int?
-  signalOrb     SignalOrbTypeEnum?
-  traits        String[]      // 数组存储特征
-  isInstant     Boolean       @default(false)
-  imageUrl      String?
-  rulesText     String
-  flavorText    String?
-  isActive      Boolean       @default(true)
-  currentVersion Int          @default(1)
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-
-  versions      CardVersion[]
-  deckCards     DeckCard[]
-}
-
-model CardVersion {
-  id            String        @id @default(uuid())
-  cardId        String
-  versionNumber Int
-  snapshotData  Json          // 存储完整规则与效果AST
-  createdAt     DateTime      @default(now())
-
-  card          Card          @relation(fields: [cardId], references: [id], onDelete: Cascade)
-
-  @@unique([cardId, versionNumber])
-}
-
-model Deck {
-  id            String       @id @default(uuid())
-  userId        String
-  name          String
-  description   String?
-  isValid       Boolean      @default(false)
-  validationLog String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cards         DeckCard[]
-  gamePlayers   GamePlayer[]
-}
-
-model DeckCard {
-  id            String       @id @default(uuid())
-  deckId        String
-  cardId        String
-  count         Int          @default(1)
-
-  deck          Deck         @relation(fields: [deckId], references: [id], onDelete: Cascade)
-  card          Card         @relation(fields: [cardId], references: [id])
-
-  @@unique([deckId, cardId])
-}
-
-model Room {
-  id            String       @id @default(uuid())
-  roomCode      String       @unique
-  title         String
-  passwordHash  String?
-  creatorId     String
-  status        RoomStatus   @default(WAITING)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  players       RoomPlayer[]
-  games         Game[]
-}
-
-model RoomPlayer {
-  id            String       @id @default(uuid())
-  roomId        String
-  userId        String
-  seatIndex     Int          // 0 或 1
-  isReady       Boolean      @default(false)
-  joinedAt      DateTime     @default(now())
-
-  room          Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  user          User         @relation(fields: [userId], references: [id])
-
-  @@unique([roomId, userId])
-  @@unique([roomId, seatIndex])
-}
-
-model Game {
-  id            String       @id @default(uuid())
-  roomId        String
-  rngSeed       BigInt
-  winnerUserId  String?
-  isDraw        Boolean      @default(false)
-  finishReason  String?
-  startedAt     DateTime     @default(now())
-  finishedAt    DateTime?
-
-  room          Room         @relation(fields: [roomId], references: [id])
-  players       GamePlayer[]
-  actions       GameActionRecord[]
-  events        GameEventRecord[]
-}
-
-model GamePlayer {
-  id            String       @id @default(uuid())
-  gameId        String
-  userId        String
-  deckId        String
-  seatOrder     Int          // 0: 先手, 1: 后手
-
-  game          Game         @relation(fields: [gameId], references: [id])
-  user          User         @relation(fields: [userId], references: [id])
-  deck          Deck         @relation(fields: [deckId], references: [id])
-
-  @@unique([gameId, userId])
-}
-
-model GameActionRecord {
-  id            String       @id @default(uuid())
-  gameId        String
-  seq           Int
-  playerId      String
-  actionType    String
-  payload       Json
-  timestamp     DateTime     @default(now())
-
-  game          Game         @relation(fields: [gameId], references: [id])
-
-  @@unique([gameId, seq])
-}
-
-model GameEventRecord {
-  id            String       @id @default(uuid())
-  gameId        String
-  seq           Int
-  eventType     String
-  payload       Json
-  timestamp     DateTime     @default(now())
-
-  game          Game         @relation(fields: [gameId], references: [id])
-
-  @@unique([gameId, seq])
-}
-```
+> 【实现】线上环境中「洗切对手牌组」与「洗切自己牌组」等效，由服务端随机数完成即可。调度只能进行 1 次，先攻玩家先调度。
 
 ---
 
-## 18. WebSocket 双向通信协议 (Socket.IO Typed Events)
+## 6. 游戏的流程
 
-### Client -> Server Events
-- `room:join { roomId: string, password?: string }`
-- `room:leave {}`
-- `room:ready { isReady: boolean, deckId: string }`
-- `room:start {}`
-- `game:action { action: GameAction }`
-- `game:choice { pendingChoiceId: string, selections: string[] }`
-- `game:reconnect { gameId: string, token: string }`
+### 6.1 回合流程
+- **6.1.1** 由一位玩家担任回合玩家推进游戏，按以下顺序执行各阶段，称为一个「回合」：竖直阶段 → 抽牌填充阶段 → 主要阶段 → 结束阶段。
+  - **6.1.1.a** 回合玩家：推进当前回合的玩家。
+  - **6.1.1.b** 回合外玩家：回合玩家以外的玩家。
 
-### Server -> Client Events
-- `room:state_updated { room: PublicRoomState }`
-- `game:sync_state { state: PublicGameState }`
-- `game:events { events: GameEvent[] }`
-- `game:error { code: string, message: string, details?: unknown }`
-- `game:choice_required { choice: PendingChoice }`
-- `game:ended { winnerId?: string, isDraw: boolean, reason: string }`
+### 6.2 竖直阶段
+- **6.2.1** 回合玩家竖直自己操控的角色和费用：
+  - **6.2.1.a** 「回合开始时」和「竖直阶段开始时」的触发条件生效后，进入检查时机。
+  - **6.2.1.b** 回合玩家将自身**战场和费用区的所有卡牌**竖直（处于冰冻状态的卡牌不因规则竖直，10.15）。
+  - **6.2.1.c** 相关触发条件生效后，该检查时机的所有处理完毕后，进入抽牌填充阶段。
 
----
+> 【实现】【浮空模式】的卡牌在 6.2.1.a 的检查时机中作为规则处理回到战场 (10.18.2.c)；冰冻状态在竖直阶段结束时解除 (10.15.3)。
 
-## 19. RESTful API 接口设计
+### 6.3 抽牌填充阶段
+- **6.3.1** 回合玩家抽牌并填充费用：
+  - **6.3.1.a** 「抽牌填充阶段开始时」的触发条件生效后，进入检查时机。
+  - **6.3.1.b** 回合玩家从自身牌组抽 **2 张**（**先攻玩家的第一个回合只抽 1 张**），进入检查时机。
+  - **6.3.1.c** 回合玩家可以将手牌中**最多 1 张**以**正面竖直状态**放置到费用区成为明费（费用区已满则改放墓地，3.6.4）。
+  - **6.3.1.d** 相关触发条件生效后，该检查时机的所有处理完毕后，进入主要阶段。
 
-- `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
-- `GET /api/cards` (支持 `type`, `element`, `cost`, `query`, `page` 筛选)
-- `GET /api/cards/:id`
-- `GET /api/decks`, `POST /api/decks`, `PUT /api/decks/:id`, `DELETE /api/decks/:id`
-- `POST /api/decks/:id/validate`
-- `GET /api/rooms`, `POST /api/rooms`, `GET /api/rooms/:id`
-- `GET /api/games/:id/replay` (完整包含 seed + action 序列以供前端精确重放)
-- `POST /api/admin/cards` (管理创建卡牌)
-- `PUT /api/admin/cards/:id` (管理更新卡牌，自动升级版本号)
-- `POST /api/admin/cards/import` (CSV/JSON 批量导入与格式预检)
-- `GET /api/admin/cards/export` (卡牌库导出)
+### 6.4 主要阶段
+- **6.4.1** 回合玩家执行各类操作：
+  - **6.4.1.a** 「主要阶段开始时」的触发条件生效后，进入检查时机。
+  - **6.4.1.b** 回合玩家获得行动时机（以及在此之前的检查时机），可以执行以下行动之一（无顺序限制）：
+    - **6.4.1.b.1** 使用手牌中的角色牌和道具牌（8.6）。
+    - **6.4.1.b.2** 使用手牌中的战术牌：放置到处理区，处理效果后移动到所属玩家的墓地。
+    - **6.4.1.b.3** 发动自身可发动、有效的起动能力。
+    - **6.4.1.b.4** 将自身战场上**未被装备**的装备牌装备给自身战场的角色（4.18）。
+    - **6.4.1.b.5** 消除自身信号球区中**任意 3 张相邻**的信号球牌；若如此做，**抽 1 张牌**。
+    - **6.4.1.b.6** 用自身操控的战场角色进行攻击（第 7 章）。
+  - **6.4.1.c** 回合玩家选择不再执行任何行动时，进入结束阶段。
 
----
+> 【实现】6.4.1.b.5 的三消在规则书中**没有每回合次数限制**，也**不要求同色**；与卡牌效果中的「消除【3任意信号球】」是同一类行动 (Q&A·9)。
+>
+> 【Q&A·8】只有回合玩家能在行动时机使用卡牌；文本「主要阶段也可以发动【瞬时】」指的是**我方**的主要阶段（如《潮涌球》）。
 
-## 20. 前端页面结构与游戏 HUD 设计
+### 6.5 结束阶段
+- **6.5.1** 执行回合结束相关处理：
+  - **6.5.1.a** 所有玩家**从回合玩家开始**轮流使用【瞬时】(10.8)，直至所有玩家都选择不使用，进入下一步骤。
+  - **6.5.1.b** 「回合结束时」的触发条件生效后，进入检查时机。
+  - **6.5.1.c** 回合玩家手牌超过上限 (3.4.3.a) 时，选择超出数量的手牌放置到自身墓地。
+  - **6.5.1.d** 进入检查时机。该检查时机的所有处理完毕后，所有以「**回合结束前**」为期限的效果和以「**该回合中**」为期限的效果同时消失。
+  - **6.5.1.e** 回合外玩家成为回合玩家，进入下一回合的竖直阶段，本回合结束。
 
-```
-apps/web/
-├── app/
-│   ├── page.tsx               # 首页 / 快速匹配 / 登录入口
-│   ├── rooms/
-│   │   ├── page.tsx           # 房间列表与创建弹窗
-│   │   └── [id]/page.tsx      # 对战等待室 (准备/选卡组)
-│   ├── game/
-│   │   └── [id]/page.tsx      # 核心卡牌桌游对战 HUD
-│   ├── cards/
-│   │   ├── page.tsx           # 卡牌全图鉴与筛选检索
-│   │   └── [id]/page.tsx      # 卡牌版本与大图详情
-│   ├── decks/
-│   │   ├── page.tsx           # 卡组仓库与构筑入口
-│   │   └── [id]/page.tsx      # 交互式卡组构筑器 (含合规校验仪)
-│   ├── replay/
-│   │   └── [id]/page.tsx      # 历史对局 Replay 播放器
-│   └── admin/
-│       ├── cards/page.tsx     # 管理员卡牌数据表格
-│       └── import/page.tsx    # CSV/JSON 批量导入校验控制台
-```
-
-### 游戏桌游 HUD 布局设计
-- **视觉风格**：战双帕弥什科技终端风格（深灰色底调 `#0b0e14`、全息冰蓝高光 `#00f0ff`、侵蚀警报赤红 `#ff3366`、金色信号球发光）。
-- **空间分区**：
-  - **顶部对方区**：对手侵蚀度仪表盘（0/7格条状晶格）、对手手牌背面、对手费用区（区分明暗费）、对手信号球堆栈。
-  - **中央战斗主场**：双方各 5 个高精卡位 Slot，具备出场悬停光效、PP/DP 醒目 Badge、升变重叠卡层级指示、装备角标。
-  - **底部己方区**：己方手牌扇形展开、己方 5 卡位、费用区（支持点击竖直明费横置）、信号球区（支持高亮选中3张相邻消除）。
-  - **右侧战术终端面板**：当前回合/阶段 HUD（竖直/抽牌/主要/结束）、行动计时器、瞬时响应按钮、日志流、Pass 按钮。
+> 【FAQ·2】结束阶段第 1 步由回合玩家开始轮流使用【瞬时】及其他可发动的能力，效果即时处理，**不存在效果堆叠**。
+>
+> 【Q&A·10】对方回合的结束阶段，我方用【瞬时】出场的角色从墓地把《炽能球》加入手牌后，仍可在同一轮流中使用该《炽能球》（轮流持续到双方都不再使用为止）。
+>
+> 【Q&A·4】结束阶段的处理顺序：「回合结束时」的自动能力先触发并处理 (6.5.1.b)，之后「直到回合结束为止」的效果才消失 (6.5.1.d)。因此「直到回合结束为止，失去能力且不能获得新能力」的角色，其被赋予的「该回合结束时将该牌放置到墓地」**不会**执行。
+>
+> 【Q&A·5】回合结束时因效果新出场的角色，错过了本次「回合结束时」的触发，其「我方回合结束时」能力不发动。
+>
+> 【Q&A·10】协战搭档的解除发生在 6.5.1.d 的检查时机中，作为规则处理执行，且早于「回合结束前」期限效果的消失。
+>
+> 【实现】暗费送墓 (3.6.3.b.1)：规则未写明具体子步骤。本项目放在 6.5.1.d 的期限效果消失之后、回合交接 (6.5.1.e) 之前，使回合玩家在 6.5.1.a 仍可用暗费支付【瞬时】。库洛洛 BP03-079 可以指定 1 张暗费在本回合结束时不因规则送墓。
 
 ---
 
-## 21. 管理员后台系统 (Card Management & Batch Import)
+## 7. 攻击与战斗
 
-- **JSON / CSV Schema 校验**：基于 Zod 进行严格字段格式验证（名称、费用、卡型、特征、PP/DP、属性、信号球类型）。
-- **批量导入事务机制**：
-  1. 上传文件 -> 内存流解析。
-  2. 针对每一行执行合法性校验与重复性检验（按卡牌编号）。
-  3. 报告精确定位：“第 X 行第 Y 列字段格式错误”。
-  4. 验证通过后进入预览确认视图。
-  5. 管理员点击导入后开启数据库事务，写入卡牌并生成初始 `CardVersion` 快照。
+### 7.1 概要
+- **7.1.1** 主要阶段中，回合玩家可以用自身操控的战场角色进行攻击，攻击通过从攻击宣言步骤开始的一系列步骤推进。
+- **7.1.2** 从攻击宣言步骤到伤害步骤（未执行伤害步骤时到角色战斗步骤）的一系列步骤统称**角色攻击流程**，属于回合玩家的主要阶段。
+
+### 7.2 攻击宣言步骤
+- **7.2.1** 回合玩家宣言用哪张角色攻击哪个对象：
+  - **7.2.1.a** 选择 1 张自身操控、可以攻击的角色。
+    - **7.2.1.a.1** 规则上自身操控的**竖直状态**角色可以攻击。
+  - **7.2.1.b** 将选择的攻击角色**横置**，选择 1 个可攻击的对象做出攻击宣言。
+    - **7.2.1.b.1** 规则上角色在其**出场的回合不能攻击**；可选择的攻击对象为**对方玩家**和**对方战场横置状态的角色**。
+  - **7.2.1.c** 选择对方角色作为攻击对象时，除非该角色移动到其他区域，否则处于「被攻击」状态。
+  - **7.2.1.d** 「攻击时」的触发条件生效后，进入检查时机；处理完毕后进入自由时点步骤。
+
+> 【FAQ·2】新出场的角色当回合不能攻击（速攻、突进等例外，见 10.5、10.6）。
+>
+> 【Q&A·3】「该牌可以攻击对方玩家」= 出场的回合就可以选择对方玩家作为攻击对象。
+>
+> 【Q&A·9】卡牌效果**变更**攻击对象（布偶熊·觅语 BP04-038、塞西莉 BP04-047、银晕辉光 PR-014）不属于「选择攻击对象」，变更后的对象可以是竖直状态的角色。
+>
+> 【Q&A·3】丽芙·极昼 BP02-010「对方选择角色作为攻击对象时必须选择该角色」不影响阻挡，也不会改变已选的对象。
+>
+> 【Q&A·7】PR-031：信号球区少于 7 张时，在 7.2.1.a 选择它作为攻击角色时必须将手牌 1 张雷属性牌背面放到信号球区最下方，否则不能选择它攻击（这是永久能力，不在检查时机发动）。
+
+### 7.3 自由时点步骤
+- **7.3.1** 所有玩家针对回合玩家的攻击采取行动：
+  - **7.3.1.a** 「自由时点步骤开始时」的触发条件生效后，进入检查时机。
+  - **7.3.1.b** 所有玩家**从回合外玩家开始**轮流使用【瞬时】(10.8)，直至所有玩家都选择不使用，进入下一流程。
+    - **7.3.1.b.1** 每位玩家使用的【瞬时】处理完毕后，相关触发条件生效，进入检查时机。
+  - **7.3.1.c** 回合外玩家（被攻击的玩家）可以将 1 张自身操控的角色**横置**，称为「**阻挡**」。
+    - **7.3.1.c.1** 规则上自身操控的**竖直状态**角色可以阻挡。
+    - **7.3.1.c.2** 进行阻挡的角色在角色战斗步骤中**代替被攻击的对象**处理战斗。
+  - **7.3.1.d** 进入检查时机；处理完毕后进入充能步骤。
+
+> 【Q&A·8】自由时点步骤中，由**被攻击方**开始轮流使用【瞬时】**或协战机制**；双方都确认不再使用后，被攻击方才选择是否阻挡。阻挡之后**没有**再次使用【瞬时】的窗口。
+>
+> 【Q&A·1】被攻击的横置角色在自由时点被效果竖直（如《荣光护盾》）后，可以自己横置进行阻挡。
+>
+> 【FAQ·2】效果即时处理，不存在效果堆叠。
+
+### 7.4 充能步骤
+- **7.4.1** 执行攻击角色的攻击充能 (4.12.2)：
+  - **7.4.1.a** 「攻击充能开始时」的触发条件生效后，进入检查时机。
+  - **7.4.1.b** 根据攻击角色的充能数 (4.12.2.c) 依次执行相同次数的攻击充能。
+    - **7.4.1.b.1** 翻开的是信号球牌：相关规则或能力处理完毕后，放置到信号球区最上方。
+    - **7.4.1.b.2** 翻开的不是信号球牌：相关规则或能力处理完毕后，加入手牌。
+    - **7.4.1.b.3** 该牌持有多个满足触发条件的能力时，可以按任意顺序处理。
+  - **7.4.1.c** 进入检查时机；处理完毕后，若攻击对象为**对方玩家**且对方在自由时点步骤**未阻挡**，进入**伤害步骤**；否则进入**角色战斗步骤**。
+
+> 【Q&A·6】充能次数在 7.4.1.b 开始时确定。攻击角色在第 1 次充能中离场（如被 BP03-023 的【充能自】升变覆盖），第 2 次充能仍执行，并仍视为原攻击角色的攻击充能。
+>
+> 【Q&A·5】被攻击角色在自由时点离场：仍执行攻击充能；之后进入角色战斗步骤并「无事发生」，不进入伤害步骤。
+
+### 7.5 伤害步骤
+- **7.5.1** 对方玩家承受攻击角色造成的伤害：
+  - **7.5.1.a** 「伤害步骤开始时」的触发条件生效后，进入检查时机。
+  - **7.5.1.b** 若攻击角色存在，根据攻击角色的 **DP** 向对方玩家造成等量伤害。
+    - **7.5.1.b.1** DP 为 0 或以下时不造成伤害，不存在「造成 0 点（或负数点）伤害」。
+    - **7.5.1.b.2** 攻击角色已不在对应区域，或其操控玩家发生变更时，不造成伤害。
+    - **7.5.1.b.3** 伤害数量由 7.5.1.b **此时**的 DP 决定，之后 DP 或角色状态变化不改变伤害量；造成伤害的过程中 DP 变化、攻击角色离场或操控者变更，**伤害继续执行**。例：DP 2 的攻击造成 2 点伤害，第 1 点伤害充能触发的【充能自】使攻击角色离场，对方仍受到第 2 点伤害。
+  - **7.5.1.c** 进入检查时机；处理完毕后进入下一流程。
+  - **7.5.1.d** 「攻击结束时」的触发条件生效后，进入检查时机；随后结束该次角色攻击流程，返回回合玩家主要阶段的行动时机。
+
+> 【Q&A·6】伤害充能中也可以使用《里·超刻》《超宏爆发》的【充能自】；把攻击角色放到牌组底后，仍受到剩余伤害。
+>
+> 【Q&A·7】PR-034「直到那次攻击结束为止，其不能造成伤害」同时防止规则伤害和其自身能力造成的伤害（包括【贯通】）。
+>
+> 【实现】「那次攻击不能造成伤害」类效果（枪林弹雨、一碰即碎的花火、死神与无色、天幕的光明永不褪色）与「伤害步骤只能造成最多 1 点伤害」（决意、心象边境）需要以攻击为作用域记录，在 7.5.1.b 计算伤害时应用。
+
+### 7.6 角色战斗步骤
+- **7.6.1** 处理攻击角色与被攻击角色之间的战斗；执行该步骤的角色称为「**发生战斗的角色**」：
+  - **7.6.1.a** 「角色战斗步骤开始时」的触发条件生效后，进入检查时机。
+  - **7.6.1.b** 攻击角色和被攻击的角色**均存在**时，比较双方 PP：攻击角色 PP **大于等于**被攻击角色 PP 时，被攻击角色**因战斗被破坏** (4.15)；否则无事发生（攻击角色不会因此被破坏）。
+  - **7.6.1.c** 攻击角色或被攻击角色不再存在于对应区域，或任一角色的操控玩家变更时，**不比较 PP**，所有角色都不会因战斗被破坏。
+  - **7.6.1.d** 进入检查时机；处理完毕后进入下一流程。
+  - **7.6.1.f** 「攻击结束时」的触发条件生效后，进入检查时机；随后结束该次角色攻击流程，返回主要阶段的行动时机。
+
+> 【Q&A·10】因战斗被破坏而触发的自动能力在 7.6.1.d 的检查时机处理；「攻击结束时」的能力在 7.6.1.f 的检查时机处理。例：里·超刻 BP03-023 战斗破坏狂涛肇始 → 7.6.1.d 对方用狂涛肇始的【自】从墓地出场一张角色 → 7.6.1.f 我方的「攻击结束时」能力可以破坏那张新出场的角色。
+>
+> 【Q&A·6】阻挡的角色用能力把攻击角色【浮空】后，攻击角色不在战场，「将攻击角色破坏」类效果（库洛姆·荣光 ST04-002）无法执行。检查时机中**回合玩家的自动能力先处理**。
+>
+> 【实现】官方条款编号在 7.6.1.d 之后直接是 7.6.1.f（没有 7.6.1.e），本文照录。
 
 ---
 
-## 22. 规则书歧义与未尽事项汇总 (RULE_UNCERTAIN)
+## 8. 卡牌或能力的使用与处理
 
-根据严格的“规则书唯一依据”原则，我们在精读整本 PDF 后，标记出以下 5 处需要特别建立系统扩展保护的规则点：
+### 8.1 能力的类型
+- **8.1.1** 能力分为永久能力、自动能力、起动能力三种；其他能力都是这三种在指定条件下的衍生能力。
+  - **8.1.1.a** **永久能力**：生效期间始终产生某种效果。
+    - **8.1.1.a.1** 文本形式「【永】：(效果)」。
+  - **8.1.1.b** **自动能力**：文本记述的事件在游戏中发生时自动触发。
+    - **8.1.1.b.1** 文本形式「【自】(条件)时，(效果)」「【自】(阶段或步骤)开始时，(效果)」「【自】(阶段或步骤)结束时，(效果)」等。条件、阶段或步骤所记述的事件称为**触发条件**；满足时称为「该自动能力被触发」。
+    - **8.1.1.b.2** **出场能力**是以「卡牌出场」为触发条件的自动能力的衍生能力，文本形式「【出】【(代价)】：(效果)」。`【】` 内为代价，其后为效果。
+  - **8.1.1.c** **起动能力**：玩家获得行动时机时，通过支付代价 (8.4) 主动发动。
+    - **8.1.1.c.1** 文本形式「【起】【(代价)】：(效果)」。
+    - **8.1.1.c.2** 「使用起动能力」即「完成起动能力的代价支付」。
 
-### [RULE_UNCERTAIN-01] 信号球区是否有物理容量上限
-1. **问题所在**：规则书第 3.7 节与第 4.16 节规定了信号球区的放置规则与消除机制，但全书均未提及信号球区是否存在张数上限（例如是否可能累积到几十张球？）。
-2. **涉及规则**：3.7 (信号球区), 4.16 (信号球与消除), 9.5 (违规卡牌处理).
-3. **当前能确定**：规则书 9.5 明确规定了辅助机上限 1 张 (9.5.4)、装备每角色上限 1 张 (9.5.3)、费用区上限 10 张 (9.5.5)，**唯独没有定义信号球区上限**。
-4. **当前不能确定**：未来版本或线下裁判细则是否会对信号球区实施容量限制。
-5. **程序设计扩展空间**：在规则配置字典 `RuleConfig` 中设立 `signalOrbZoneCapacity: number | null = null`。引擎默认不设限，若后续规则补充上限，只需开启配置即可自动触发违规送墓逻辑。
+> 【FAQ·2】【出】能力在卡牌进入战场时**自动发动**，玩家不能选择不发动；但【出】与「：」之间的代价可以选择不支付，此时不发动该能力。【自】同样不能选择不发动。【永】满足条件时持续生效，不能选择无视。【起】在自己回合主要阶段选择发动。
 
-### [RULE_UNCERTAIN-02] 结束阶段“暗费放置到墓地”的绝对微观时机
-1. **问题所在**：3.6.3.b.1 写道“在回合玩家的结束阶段（6.5），将回合玩家的暗费以正面表示放置到墓地”，但在 6.5 结束阶段详细步骤拆解中（6.5.1.a 瞬时 -> 6.5.1.b 触发 -> 6.5.1.c 弃牌 -> 6.5.1.d 效果消除），未明确该送墓究竟位于 6.5.1.a 之前还是 6.5.1.d。
-2. **涉及规则**：3.6.3.b.1 与 6.5.1 结束阶段步骤.
-3. **当前能确定**：暗费无法跨回合保留，在结束阶段必定被清空送入墓地。
-4. **当前不能确定**：回合玩家在结束阶段 6.5.1.a 步骤使用【瞬时】战术时，是否仍可使用本回合受伤害积累的暗费进行支付。
-5. **程序设计扩展空间**：在 `EndPhase` 状态机执行钩子中，设立独立的 `CLEAR_HIDDEN_COSTS` 处理节点。默认置于 6.5.1.d 效果消除与回合交接前（使玩家在 6.5.1.a 的瞬时结算中仍可支付暗费），同时配置项支持一键切换至阶段入口。
+### 8.2 效果的类型
+- **8.2.1** 效果分为单发、持续、置换三种：
+  - **8.2.1.a** **单发效果**：处理过程中执行行动后即终止。如「我方抽 1 张牌」「将该角色放置到墓地」。
+  - **8.2.1.b** **持续效果**：在特定期限内持续生效（未指定期限时为「本局游戏中」）。如「我方战场所有<升格者>角色 PP+1000」「直到回合结束为止，该牌 DP+1」。
+  - **8.2.1.c** **置换效果**：特定事件发生时，不执行原本的行动而执行其他行动。
+    - **8.2.1.c.1** 「(执行 A 行动)时，改为(执行 B 行动)」。
+    - **8.2.1.c.2** 选择型置换效果：「(执行 A 行动)时，可改为【选择】。若如此做，(执行 B 行动)」。
+    - **8.2.1.c.3** 置换效果改变游戏的标准流程。执行某行动时触发了置换效果，由**操控玩家**选择是否在该执行过程中发动。例：「【自】：(条件)时，改为(效果)」的置换效果改变了自动能力的执行方式——它**不在检查时机执行**，而是在效果处理过程中满足条件时改为执行置换。
 
-### [RULE_UNCERTAIN-03] 自由时点步骤中阻挡后是否追加瞬时优先权轮转
-1. **问题所在**：7.3.1.b 说明双方轮流使用瞬时直到连续 Pass，紧接着 7.3.1.c 回合外玩家执行阻挡宣言，7.3.1.d 进入检查时机后直接进入充能步骤。规则中没有在阻挡后再次开启瞬时轮流窗口的描述。
-2. **涉及规则**：7.3.1.b, 7.3.1.c, 7.3.1.d, 10.8 (瞬时).
-3. **当前能确定**：阻挡宣言本身是一个主动动作，横置竖直角色进行阻挡；阻挡后会进入 7.3.1.d 检查时机处理触发的能力。
-4. **当前不能确定**：在阻挡角色确定后，双方是否被允许再次使用【瞬时】牌进行攻防增益。
-5. **程序设计扩展空间**：状态机把 `FREE_TIMING_INSTANTS` 和 `DECLARE_BLOCK` 明确拆为两个子状态，并在 `DECLARE_BLOCK` 结束后配置 `allowInstantAfterBlock: boolean = false`。若官方勘误开启，无需重构战斗状态机。
+> 【Q&A·9】莱特宁 BP04-065 的第一个【自】实际是**置换效果**，满足条件时必须处理：装备角色《比安卡·真理》离场时，莱特宁不因无所属送墓，改为放到信号球区最下方；顺序固定为先放《比安卡·真理》，再放莱特宁。
+>
+> 【Q&A·6】旋光灿昼 BP03-010 的「改为~」是置换效果：在执行效果时判定条件，而不是出场后再判定。
 
-### [RULE_UNCERTAIN-04] 装备牌单独出场占用空卡位时的行为特征
-1. **问题所在**：8.6.2.e.2 允许玩家把手牌中的装备牌以竖直状态放置到战场空余卡位（待后续主要阶段行动 6.4.1.b.4 装备给角色）。此时该单独占位的装备牌是否能被攻击？是否具有 PP？
-2. **涉及规则**：2.8.2 (装备牌有基本PP), 4.18.5 (占用卡位), 7.2.1.b.1 (攻击对象为横置角色).
-3. **当前能确定**：7.2.1.b.1 明确规定攻击对象只能是“对方玩家”或“对方战场的横置状态的角色牌”。单独在战场的装备牌**不是角色牌**，因此不能被攻击宣言选为攻击对象。
-4. **当前不能确定**：单独放置的装备牌是否会受到针对“道具牌”或“战场卡牌”的破坏效果影响。
-5. **程序设计扩展空间**：卡位 Slot 模型中严格区分 `roleCardId` 与 `standaloneEquipmentId`，卡牌过滤器根据 `CardType.EQUIPMENT` 进行精准匹配。
+### 8.3 有效能力与无效能力
+- **8.3.1** 某些效果因特定条件处于「有效」或「无效」状态，按以下规则处理。
+- **8.3.2** 效果的部分或全部文本记述为在特定条件下**无效**时，在该条件下这部分虽然作为能力存在，但**不产生效果**；原本需要的选择也不执行。
+- **8.3.3** 效果的部分或全部文本记述为在特定条件下**有效**时，未满足条件时该部分无效。
+- **8.3.4** 处理能力或效果时需检查其状态；卡牌因故失去能力或效果无效时，相关能力或效果在处理时**改为不处理**。
 
-### [RULE_UNCERTAIN-05] 牌组构筑中的同一编号异名/同名异号卡牌界定
-1. **问题所在**：5.1.2.b 述“同一卡牌编号的卡牌，在牌组中每种不得超过4张”，2.7.3 述“卡牌编号末尾小写字母不视为卡牌编号”。
-2. **涉及规则**：2.7 (卡牌编号), 5.1.2 (牌组构筑).
-3. **当前能确定**：构筑同名判定依据是卡牌编号（去除尾部 a/b/c 异画版本后缀后的核心编号），而非卡牌中文名称。
-4. **当前不能确定**：是否存在卡牌编号不同但角色名称完全相同的同名卡同时构筑（常规 TCG 允许不同编号同名角色同时存在）。
-5. **程序设计扩展空间**：牌组校验规则严格以去除变体后缀的 `coreCardNumber` 作为上限 4 张的分组统计键，保留扩展属性 `characterNameLimit` 备用。
+> 【Q&A·4】伊什梅尔·幻日「效果无效出场」的角色：其能力不产生任何效果，**连代价也不能支付**；但之后通过其他效果**新获得的能力有效**（时间戳，8.9.1.e）。
+>
+> 【Q&A·4】被「失去能力」的 BP02-069 因战斗被破坏时，其【自】不处理 (8.3.4)。
+>
+> 【Q&A·1】七实·遥星之座下方有三张《帕瓦》时失去能力：《帕瓦》给予的 PP+1000、基本 DP+1 不受影响（那是《帕瓦》的能力），但《帕瓦》给予的【充能+1】**能力**会失去。
+>
+> 【Q&A·3】失去能力后，同回合用《荣光护盾》再次赋予的自动能力有效（两者都是持续效果，按时间顺序适用）。
+>
+> 【Q&A·10】BP04-001 失去所有永久能力时 PP 变为 0 而因规则破坏；变为辅助机期间不会因 PP 不足破坏，变回角色牌后的检查时机中若下方无牌则破坏。
+
+### 8.4 代价与支付
+- **8.4.1** 起动能力或自动能力文本中支付代价的行动即为该能力的代价。
+  - **8.4.1.a** 【起】/【出】与「：」之间为代价；不支付则不能发动该能力。
+- **8.4.2** 支付代价 = 执行代价所记述的行动。
+  - **8.4.2.a** 代价包含多项行动时按文本顺序依次执行；支付代价期间**不执行牌组更新** (9.2)。
+  - **8.4.2.b** 无法支付全部或部分代价时，本次**不能支付任何代价**。
+    - **8.4.2.b.1** 能否支付在确定代价内容时确认；多项行动必须都能分别执行，否则不能支付。
+    - **8.4.2.b.2** 实际支付时，只要能支付全部代价，可以用与 8.4.2.b.1 确认时不同的行动来支付。
+- **8.4.3** 文本中的【费用X】表示操控玩家需要支付与 X 相同数量的费用 (8.6) 作为代价。
+
+> 【Q&A·6】费用因减费变为负数（如 -1）时，实际支付 0，**不会**把费用区的牌竖直 (1.3.2.b)。
+>
+> 【Q&A·6】瞬时**战术牌**需要支付卡牌费用；而卡牌持有的【瞬时】**能力**不一定有支付费用的代价（如艾拉·万华 BP03-054 的【瞬时】无需支付其 2 费）。
+
+### 8.5 检查时机与行动时机
+- **8.5.1** 检查时机发生时，按以下步骤推进：
+  - **8.5.1.a** **回合玩家**执行当前所有应处理的规则处理；若因此产生新的需要执行的规则处理，在仍有待执行的规则处理期间重复该步骤。
+  - **8.5.1.b** **回合外玩家**执行当前所有应处理的规则处理；同上重复。
+  - **8.5.1.c** 若回合玩家存在触发条件生效的自动能力，回合玩家选择**一项**发动并执行，随后返回 8.5.1.a。
+  - **8.5.1.d** 若回合外玩家存在触发条件生效的自动能力，回合外玩家选择**一项**发动并执行，随后返回 8.5.1.a。
+  - **8.5.1.e** 检查时机结束。
+- **8.5.2** 任一玩家获得行动时机时，按以下步骤推进：
+  - **8.5.2.a** 相关触发条件生效后，该检查时机需要执行的所有处理完毕后，进入下一步骤。
+  - **8.5.2.b** 实际给予该玩家行动时机；该玩家选择执行当前可执行的任意行动或选择不行动。若执行了行动，除特殊说明外再次获得行动时机。
+  - **8.5.2.c** 选择不行动时，该行动时机结束，阶段或步骤继续推进。
+- **8.5.3** 特殊地，在能力或效果的处理过程中，若执行的行动导致需要进入检查时机，**不会中断**该能力或效果的处理；在其处理完毕后再进入检查时机。例：玩家 A 执行「可以给予我方 1 点伤害。若如此做，抽 1 张牌」，伤害充能要求进入检查时机 (4.12.3.b)，但不打断该效果；执行完「抽 1 张牌」后才进入检查时机。
+
+> 【实现】本游戏**没有效果堆叠**（FAQ·2）：每个能力或效果完整处理完毕后，才进入检查时机处理新触发的能力。
+
+### 8.6 行动与处理
+- **8.6.1** 起动能力、自动能力以及手牌中的卡牌通过「使用」来处理并产生效果；永久能力不会被使用，其效果始终持续生效。
+- **8.6.2** 使用卡牌或能力时遵循以下步骤：
+  - **8.6.2.a** 指定要使用的能力或手牌中的卡牌。使用**手牌**中的卡牌需满足属性条件 (8.6.2.a.1)，并从手牌公开；从手牌**以外**的区域使用卡牌**不需要**满足属性条件。
+    - **8.6.2.a.1** **属性条件**：使用的卡牌的属性需与**自身费用区中任意一张明费**的属性相同；不符合则不能使用。
+  - **8.6.2.b** 使用角色牌或道具牌时，检查战场是否满足条件：
+    - **8.6.2.b.1** 角色牌：除特殊说明外，所属玩家战场需要存在**空余的卡位**。
+    - **8.6.2.b.2** 辅助机牌：需要存在空余卡位，**或**所属玩家战场已存在辅助机牌。
+    - **8.6.2.b.3** 装备牌：需要存在空余卡位，**或**存在可以装备该装备牌的角色。
+  - **8.6.2.c** 若存在使用代价，确定并支付全部代价：
+    - **8.6.2.c.1** 卡牌或起动能力：支付其记述的代价。
+    - **8.6.2.c.2** 若无特殊说明，卡牌的使用代价即其费用 (2.3)。
+    - **8.6.2.c.3** 无法支付全部代价时不能使用，不能只支付部分。
+  - **8.6.2.d** 此时该卡牌或能力的「使用」相关触发条件生效。
+  - **8.6.2.e** 开始执行卡牌使用或能力的结算：
+    - **8.6.2.e.1** 角色牌：以正面竖直状态放置到所属玩家战场的空余卡位。
+    - **8.6.2.e.2** 装备牌：操控玩家可以以正面竖直状态放置到自身战场的空余卡位，**或**放置到可以装备该牌的自身战场角色下方进行装备。
+    - **8.6.2.e.3** 辅助机牌：可以以正面竖直状态放置到自身战场的空余卡位；也可以将自身战场原有的辅助机放置到墓地，将使用中的辅助机以正面竖直状态放置到原辅助机所占的卡位。
+    - **8.6.2.e.3（战术牌）** 战术牌：放置到自身处理区并执行其效果；除特殊说明外，执行后放置到所属玩家的墓地。（官方原文此处编号重复为 8.6.2.e.3）
+    - **8.6.2.e.4** 起动能力或自动能力：执行该能力所指示的效果。
+- **8.6.3** 卡牌或能力指示「选择~」时，在处理阶段按指示选择卡牌、玩家等（统称「对象」）：
+  - **8.6.3.a** 指定了选择数量时，必须在可能范围内选择足够的对象；存在可选对象时不能主动放弃选择。
+    - **8.6.3.a.1** 「选择最多~」时，可在 0 至指定数值之间选择任意数量。
+    - **8.6.3.a.2** 指定数量而无法选满时，尽可能选择，并对所选对象执行效果。
+    - **8.6.3.a.3** 指定数量而无法选择任何对象时，不选择，该对象相关的所有效果均被忽略。
+    - **8.6.3.a.4** 选择**非公开区域**的卡牌且选择条件需要参照卡牌情报时，即使存在符合条件的卡牌，选择玩家也可以不选择。
+- **8.6.4** 效果中出现「执行行动 A 后，可以执行行动 B。若未执行行动 A，则执行行动 C」时，后段「若未执行 A，则执行 C」仅在以下情况触发：选择时无法执行 A，或可以执行但选择不执行 A。
+  - **8.6.4.a** 「执行 A 时」「未执行 A 时」有时分别记述为「若如此做」「若未如此做」。
+- **8.6.5** 卡牌或效果未明确记述由谁执行时，由该卡牌、能力或效果的操控玩家执行。
+- **8.6.6** 效果导致查看特定卡牌情报或公开卡牌时，效果处理完毕后：查看的恢复到查看前状态，公开的结束公开状态。
+  - **8.6.6.a** 上述卡牌在效果处理完成前移动到其他区域、或选择不执行相关动作保留在原区域、或因洗切等导致顺序改变时，仅限该卡牌在原区域的查看/公开处理终止。
+
+> 【Q&A·7】战场没有空余卡位时，不能使用角色牌；因此 BP02-012「使用该牌时可以将《丽芙·极昼》送墓」的条件也不满足，不能靠它腾出卡位。
+>
+> 【Q&A·8】「**使用卡牌**」的范围：从手牌（或文本允许的其他区域）使用卡牌、使用升变机制（包括从墓地升变出场《拉弥亚·深谣 沉渊终局》）。**不包括**：攻击、使用起动能力、使用【瞬时】能力、使用协战机制、发动【充能自】、使用费用区卡牌的起动能力。（罗塞塔·凛冽的「已使用的卡牌的张数」按此计数，Q&A·6/8）
+>
+> 【Q&A·8】使用**手牌中卡牌的起动能力**（如《海妲魔女》丢弃自身发动）不需要满足属性条件。
+>
+> 【Q&A·4】BP02-012「使用该牌时费用变为 4」只在使用过程中生效，出场后费用仍为原本的 7。BP02-013 因永久能力费用变为 3 时，不满足 BP02-010「选择手牌 1 张费用为 4 的《丽芙·极昼》」。
+>
+> 【Q&A·7】BP02-011「将竖直状态的该牌从战场放置到墓地」：该牌为横置状态时无法执行，后续「若如此做」不执行。
+
+### 8.7 自动能力的处理
+- **8.7.1** 自动能力：在特定触发条件满足后自动发动。
+- **8.7.2** 触发条件满足时，该能力进入**待机状态**。
+  - **8.7.2.a** 同一自动能力的触发条件被多次满足时，进入相应次数的待机状态。
+- **8.7.3** 检查时机发生时，被要求发动自动能力的玩家从自身操控的自动能力中，选择处于待机状态的进行处理。
+  - **8.7.3.a** 待机状态的自动能力的发动是**强制**的，不能选择不发动；存在多个时可以任选一个优先发动。
+  - **8.7.3.b** 所选的待机能力因故无法发动时，结束该次待机状态。
+    - **8.7.3.b.1** 处理过程中即使选择**不支付**文本中可任意支付的代价，该能力仍视为已发动，并结束该次待机状态。
+- **8.7.4** 以卡牌区域移动为触发条件的自动能力称为**区域移动触发**。
+  - **8.7.4.a** 区域移动触发的自动能力需要参照触发卡牌的情报时：
+    - **8.7.4.a.1** 从公开区域移到非公开区域、或从非公开区域移到公开区域而触发：使用该卡牌**处于公开区域时**的情报。
+    - **8.7.4.a.2** 从战场移到其他区域而触发、或涉及操控玩家变更的区域移动而触发：使用该卡牌**处于战场时**的情报。
+    - **8.7.4.a.3** 除 8.7.4.a.2 外，在公开区域之间移动而触发：使用该卡牌**移动到新区域时**的情报。
+- **8.7.5** 某些效果会在之后的特定时点触发自动能力，称为**时限触发**。例：「【自】：回合结束时，XXXX」。
+  - **8.7.5.a** 除特殊说明外，时限触发只在满足触发条件时生效一次。
+- **8.7.6** 以特定条件满足（而非特定事件发生）作为触发条件的自动能力，称为**状态触发**。例：「【自】：当我方手牌变为 0 张时，XXX」。
+  - **8.7.6.a** 状态触发在该状态发生时只进入一次待机状态；处理后若条件再次满足，再次进入待机状态。
+- **8.7.7** 待机状态的自动能力发动时，即使持有该能力的卡牌所在区域已变化，**仍必须执行**；但因区域变化导致效果无法实现时，该效果处理失败。
+
+> 【Q&A·3/5】同时触发的多个自动能力，玩家可以选择处理顺序，并可利用前一个的结果改变后一个的有效性（例：先用奥罗拉把奇数费用牌放到信号球区最下方，再处理比安卡·晖暮的晖形态能力；ST05-002 的晖、暮两个【出】都会进入待机，可分别在不同时点处理并都生效）。
+>
+> 【Q&A·7】梦赴光寥之乡：墓地存在该牌且我方消除信号球时，该【自】**一定发动**并消耗次数（即使最后不加入手牌，或因牌组更新已不在墓地）；墓地不存在时不消耗次数。
+
+### 8.8 单发效果的处理
+- **8.8.1** 要求执行单发效果时，只执行一次所指示的行动。
+
+### 8.9 持续效果的处理
+- **8.9.1** 查询卡牌情报时，按以下顺序适用持续效果：
+  - **8.9.1.a** 卡牌本身记述的情报作为**基本值**。
+  - **8.9.1.b** 其次，适用所有**不改变** PP、DP 或充能数的持续效果。
+  - **8.9.1.c** 最后，适用所有**改变** PP、DP 或充能数的持续效果。
+  - **8.9.1.d** 同一层内，若持续效果 B 的适用对象或方式会因持续效果 A 的适用而改变，则 B **依赖于** A，依赖方总是晚于被依赖方处理。例：角色 A「我方战场的其他角色获得<升格者>」，角色 B「我方战场所有<升格者>角色 PP+1000」，新出场的角色 C 无论出场顺序都获得<升格者>且 PP+1000。
+  - **8.9.1.e** 无法通过上述规则确定顺序时，按**触发先后顺序**依次适用：
+    - **8.9.1.e.1** 源自永久能力的持续效果：以持有该能力的卡牌**进入当前区域的时点**为基准；放置到战场的角色以其从其他区域进入战场的时点为基准。
+    - **8.9.1.e.2** 其他能力：以该能力**被使用的时点**为基准。例：A（基本 PP 3000）、B（【永】：我方战场其他 PP 3000 及以下的角色 PP+500）。若之后对 A 使用「直到回合结束为止，其 PP 变为 0」，A 的 PP 为 0 并因规则破坏。
+- **8.9.2** 除永久能力外，持续效果**不适用于**在该能力发动后才从其他区域进入对应区域的卡牌。例：使用「直到下个回合结束为止，我方战场横置状态的<三头犬小队>角色 PP+1000」后，再攻击使 B 变为横置，B 的 PP 仍为 3000。
+- **8.9.3** 改变特定区域卡牌情报的持续效果，在对应卡牌进入该区域时立即生效。
+  - **8.9.3.a** 以持有特定情报的卡牌进入区域为触发条件的自动能力，需参照适用该区域持续效果之后的情报。
+
+> 【Q&A·3/4】暗域力场、胜光战旗的「直到~为止」效果只作用于使用时已在场且满足条件的角色；之后出场或之后才变为横置的角色不受影响 (8.9.2)。
+>
+> 【Q&A·6】「PP **变为** X」覆盖之前的数值修改：ST02-001（先进入战场）给<升格者> PP+1000，之后 BP03-012 使其 PP 变为 70 → PP 为 70。「变为」与「增减」是不同的行动，「PP 不会因对方效果增减」的 BP04-016 挡不住「变为 70」(Q&A·9)。
+>
+> 【Q&A·7】效果使信号球区的【蓝色信号球】视为其他颜色：不影响之后才放入信号球区的牌 (8.9.2)；被其他效果视为蓝色的红色信号球，之后可再被视为黄色（按时间顺序）。
+
+### 8.10 置换效果的处理
+- **8.10.1** 存在置换效果时，其针对的事件即将发生时不发生该事件，而是直接置换为指定的另一个事件。
+  - **8.10.1.a** 被置换的原本事件**视为完全未发生**。
+- **8.10.2** 同一事件存在多个置换效果时，由受影响的玩家决定优先适用哪个：
+  - **8.10.2.a** 受影响的是卡牌或能力时，由其所属玩家决定。
+  - **8.10.2.b** 受影响的是游戏中的行动时，由执行该行动的玩家或该行动适用的卡牌的操控玩家决定。
+  - **8.10.2.c** 针对同一事件，每个置换效果**最多适用一次**。
+- **8.10.3** 处理选择型置换效果（~时，可改为~。若如此做，~）时，若该选择无法执行，该置换效果不适用。
+
+> 【Q&A·5】费用区已满时仍可使用《万世铭》「改为以横置状态放置到费用区」的置换，结果改放墓地 (3.6.4)。
+
+### 8.11 升变
+- **8.11.1** 升变是部分卡牌持有的特殊**使用**机制。
+  - **8.11.1.a** 升变角色牌：持有升变机制的角色牌。
+  - **8.11.1.b** 通过升变机制使用卡牌的行动称为「升变」。
+  - **8.11.1.c** 通过升变机制将卡牌出场的行动称为「升变出场」。
+- **8.11.2** 升变卡牌的特殊文本分为升变条件、升变代价和升变能力（例：「费用 5 以下的<露西亚>&『费用上限 5 以上』」为条件，「【3费】」为代价，「将手牌中的该牌重叠在对象上方出场，获得【速攻】」为能力）。
+  - **8.11.2.a** **升变条件**：使用升变机制时需满足的条件，以「&」划分：
+    - **8.11.2.a.1** 「&」左边为**升变对象**；无特殊说明时，升变对象为我方操控的卡牌。
+    - **8.11.2.a.2** 「&」右边为**限制条件**；有些卡牌没有限制条件。
+  - **8.11.2.b** **升变代价**：使用升变机制时需支付的代价。
+  - **8.11.2.c** **升变能力**：使用升变机制时发动的能力。
+- **8.11.3** 使用升变机制的步骤：
+  - **8.11.3.a** 使用**手牌**中卡牌的升变机制时，需遵循属性条件 (8.6.2.a.1)。
+  - **8.11.3.b** 选择升变对象。
+    - **8.11.3.b.1** 需要选择多个升变对象时，需选择所有升变对象。
+    - **8.11.3.b.2** 升变对象可能是战场以外的卡牌；选择战场以外的卡牌作为升变对象时需将其公开。
+  - **8.11.3.c** 选择升变出场的战场卡位：
+    - **8.11.3.c.1** 升变对象包含战场中的卡牌时，选择其中 1 个升变对象所占的卡位。
+    - **8.11.3.c.2** 升变对象不包含战场中的卡牌时，选择我方 1 个空余卡位；没有空余卡位则不能使用升变机制。
+  - **8.11.3.d** 检查升变条件是否全部满足，未全部满足则不能使用。
+  - **8.11.3.e** 按文本支付升变代价，未支付全部则不能使用。
+  - **8.11.3.f** 将 8.11.3.b 选择的升变对象**按任意顺序**以正面竖直状态重叠放置到 8.11.3.c 选择的卡位（升变角色在最上方），然后执行升变能力。
+    - **8.11.3.f.1** 升变对象下方原本的卡牌**保留**在升变出场的卡牌下方。
+    - **8.11.3.f.2** 升变对象原本的**装备保留**，成为升变出场的卡牌的装备。
+    - **8.11.3.f.3** 战场以外的升变对象重叠放置到卡位时，**不会触发**那些升变对象的出场能力。
+  - **8.11.3.g** 「卡牌出场」「卡牌升变出场」等触发条件生效，进入检查时机。
+- **8.11.4** 升变卡牌的相关处理：
+  - **8.11.4.a** 玩家可以不使用升变机制，直接从手牌正常使用该卡牌。
+  - **8.11.4.b** 升变出场的卡牌离开战场时，其下方所有卡牌因规则处理 (9.6) 放置到墓地。
+  - **8.11.4.c** 升变出场的卡牌**不继承**升变对象原本的卡牌情报和卡牌状态（如横置状态、持续效果）。
+
+> 【Q&A·5】使用升变机制必须先 8.11.3.d 检查条件，再 8.11.3.e 支付代价，顺序不能颠倒：不能先付暗费让墓地凑够 10 张，再使用 BP01-001「将墓地 10 张<灰鸦小队>加入牌组」的永久能力无视限制条件。
+>
+> 【Q&A·1】通过《七实-未来》无视升变条件、不支付升变代价地升变出场时，**仍会发动升变能力**（获得【速攻】）。
+>
+> 【Q&A·4】《七实-未来》= 改变升变对象 & 无视限制条件 & 不支付升变费用，但仍是使用升变机制：对方横置的 BP02-067 要求「在横置状态的角色上方升变须额外支付 1 费」时仍需支付（与升变对象数量无关，多张 BP02-067 则叠加）。
+>
+> 【Q&A·10】信号球区中**背面**的<比安卡>不能被选为 BP04-061 的升变对象。
+>
+> 【FAQ·2】升变出场的角色离场时，下方的所有卡牌也放置到墓地（无论是被破坏、还是被返回手牌）。
+
+### 8.12 附加说明
+- **8.12.1** 效果参照特定卡牌的情报或放置状态时，若该卡牌正在从该区域移动到其他区域，则参照其**最后一次处于该区域时**的情报或放置状态。
+
+> 【Q&A·9】BP04-066 被放到墓地时，参照它在牌组时的费用（6），而不是到墓地后因永久能力减少的费用。
+
+### 8.13 协战（V1.4 新增）
+- **8.13.1** 协战是部分卡牌持有的特殊玩法机制。
+  - **8.13.1.a** 协战角色牌：持有协战机制的角色牌。
+  - **8.13.1.b** 使用协战机制的行动称为「协战」。
+  - **8.13.1.c** 通过协战机制将卡牌协战的行动称为「将其成为该牌的协战搭档」。
+- **8.13.2** 协战卡牌的特殊文本分为**协战搭档**和**协战代价**（例：「【协战搭档】<塞西莉>」「【协战代价】手牌【2费】/战场【0费】」）。
+  - **8.13.2.a** 协战搭档：使用协战机制时需要选择的搭档，需满足记述的条件。
+    - **8.13.2.a.1** 只有使用协战机制时才需满足记述条件；通过卡牌能力使角色成为搭档时，可以不满足记述条件。
+    - **8.13.2.a.2** 每张角色同时最多拥有 **1 张**协战搭档；已有搭档的角色因故获得新搭档时，将原搭档放置到墓地。
+    - **8.13.2.a.3** 角色牌、道具牌甚至战术牌都可以通过协战机制或效果成为搭档。
+  - **8.13.2.b** 协战代价：使用协战机制时需支付的代价。
+    - **8.13.2.b.1** 可能记述有多个不同的协战代价。
+    - **8.13.2.b.2** 有多个代价时，按所选搭档**所在的区域**支付对应代价。例：选择战场中满足条件的角色只需支付【0费】。
+    - **8.13.2.b.3** 将战场以外的卡牌成为搭档时，**不触发**那些卡牌的出场能力。
+  - **8.13.2.c** 协战搭档和协战代价是规则文本，**不会因卡牌能力而失去**；但原本不是协战角色、因故获得协战机制的角色，该能力会因其他效果失去或无效。
+- **8.13.3** 使用协战机制的步骤：
+  - **8.13.3.a** 规则上只能在**自由时点步骤 (7.3.1.b)** 使用协战机制。
+  - **8.13.3.b** 选择协战搭档：
+    - **8.13.3.b.1** 规则上每个回合中每张角色通过协战机制**最多获得 1 张**搭档；因卡牌能力或效果获得的搭档不计入次数。
+    - **8.13.3.b.2** 选择战场以外的卡牌作为搭档时，需将其公开（不视为游戏中的「公开」行动）。
+    - **8.13.3.b.3** 选择牌组中的卡牌作为搭档时，选择并公开后洗切牌组。
+    - **8.13.3.b.4** 自由时点步骤中，不能选择**攻击中的或被攻击中的**角色成为搭档。
+  - **8.13.3.c** 支付协战代价：
+    - **8.13.3.c.1** 按所选搭档所在的区域支付对应代价。
+    - **8.13.3.c.2** 未支付全部代价则不能使用协战机制。
+  - **8.13.3.d** 将搭档以正面表示放置，与使用协战机制的角色**紧贴放置**；称为协战，二者的关系称为**协战状态**。
+    - **8.13.3.d.1** 不使用协战机制、通过卡牌能力使某卡成为搭档时，也称为协战状态。
+    - **8.13.3.d.2** 获得搭档时，协战角色原本的情报和状态不变；搭档原本的情报和状态**不继承**给协战角色，也不继承给搭档。例：处于冰冻状态的角色 B 成为 A 的搭档，冰冻不继承给 A；B 之后再出场也不保留冰冻。
+    - **8.13.3.d.3** 战场中的卡牌成为搭档时，其原本下方的卡牌（包括装备）成为无所属卡牌，因规则 (9.6) 放置到墓地。
+  - **8.13.3.e** 「该牌获得协战搭档」「该牌成为协战搭档」等触发条件生效，进入检查时机。
+- **8.13.4** 通过协战机制或卡牌能力获得搭档的角色与其搭档处于协战状态。
+  - **8.13.4.a** 协战状态下的卡牌分为协战角色与其搭档。
+    - **8.13.4.a.1** 规则上搭档视为**战场中的卡牌**，其情报可被能力或效果参照。特殊地：
+      - 搭档只视为战场的卡牌而**非角色牌**，选择角色作为对象的效果**不能选择搭档**；
+      - 搭档只作为协战角色的附属情报存在，**没有竖直/横置**等状态；成为搭档前的状态不继承；
+      - 搭档的卡牌能力**无效**；但记述有【协战】图标的能力在其作为搭档时**有效**；
+      - 搭档解除协战状态放置到墓地时，**不视为离场**；
+      - 不能选择搭档作为升变对象，也不能选择已处于协战状态的搭档成为其他角色的搭档。
+    - **8.13.4.a.2** 协战角色与其搭档在战场上**仅视为 1 张角色**，只占用 1 个卡位；需要参照该角色的情报时，参照协战角色而非搭档。
+    - **8.13.4.a.3** 协战角色或其搭档离开战场时退出协战状态；协战角色离场时，其搭档因规则 (9.6) 放置到墓地。例：把协战角色作为升变对象升变出场其他角色时，其搭档因规则送墓。
+  - **8.13.4.b** 协战角色的部分情报因规则改变：
+    - **8.13.4.b.1** 协战角色的**费用、基本 PP、基本 DP** 增加其搭档对应的**基本数值**。例：A（费用 5、基本 PP 5000、基本 DP 1）+ 搭档 B（费用 3、基本 PP 3000、基本 DP 1）→ A 费用 8、基本 PP 8000、基本 DP 2。
+    - **8.13.4.b.2** 计算时只参考搭档的基本数值（搭档不视为角色）；搭档原本的情报和状态不继承。例：持有「【永】：战场的该牌基本 DP 变为 1」的 B（基本 DP 0）成为搭档后，A 的基本 DP 只增加 0。
+    - **8.13.4.b.3** 搭档是装备牌时同样适用。例：A（费用 3、基本 PP 3000、基本 DP 1）+ 装备 B（费用 3、基本 PP 1000）→ A 费用 6、基本 PP 4000、基本 DP 1。
+  - **8.13.4.c** 协战状态因规则退出：
+    - **8.13.4.c.1** 规则上**每位玩家回合的结束阶段**中，每张协战角色的搭档因规则放置到墓地；该行动在结束阶段的 **6.5.1.d** 步骤中作为规则处理执行。
+    - **8.13.4.c.2** 规则上将搭档退出协战状态的行动称为「**解除协战状态**」。
+    - **8.13.4.c.3** 协战角色在不违反回合次数限制 (8.13.3.b.1) 的前提下因故获得新搭档时，需将原搭档放置到墓地，这也称为「解除协战状态」。
+    - **8.13.4.c.4** 协战角色因故离场、成为升变对象、或成为其他角色的搭档时，原搭档作为无所属卡牌 (9.6.1) 因规则放置到墓地，这也称为「解除协战状态」。
+  - **8.13.4.d** 对战中需明确摆放协战状态的卡牌：
+    - **8.13.4.d.1** 协战角色与搭档应紧贴放置。
+    - **8.13.4.d.2** 可拼接成完整立绘的卡牌不强制拼接摆放。
+- **8.13.5** 【协战能力】：
+  - **8.13.5.a** 【协战能力】是能力的限制性条件，以带协战图标的【永】【自】【起】记述。
+  - **8.13.5.b** 含义：该卡牌的该能力在该牌**处于协战状态时**有效。
+    - **8.13.5.b.1** 【协战时永久能力】在持有该能力的卡牌处于协战状态时有效 (8.3)。
+    - **8.13.5.b.2** 【协战时自动能力】同上。
+    - **8.13.5.b.3** 【协战时起动能力】同上。
+  - **8.13.5.c** 协战能力以特殊图标表示：
+    - **8.13.5.c.1** 搭档的卡牌能力无效，但带协战图标的能力在其作为搭档时有效 (8.13.4.a.1)。
+    - **8.13.5.c.2** 部分自动能力在处于或不处于协战状态时都可能满足触发条件，分别满足时都可在检查时机发动。例：「【自】：该牌被破坏或成为协战搭档时，XXXX」在被破坏（非协战）和成为搭档（协战）时都会发动，不会因成为搭档而无效。
+
+> 【Q&A·8】协战机制**不算使用卡牌**（不计入罗塞塔·凛冽的已使用张数）。
+>
+> 【Q&A·8】搭档的**当前** PP/DP 变化不影响协战角色；搭档的**基本** PP/DP 变化会影响协战角色的基本值。
+>
+> 【Q&A·8】效果需要「选择战场中的卡牌」时可以选搭档（如永夜曙光「将我方 1 张《丽芙·极昼》从战场放置到墓地」可以选作为搭档的丽芙）；需要「选择角色/装备」时不能选。
+>
+> 【Q&A·8】协战角色失去能力或能力无效：协战状态和搭档不受影响；原本就持有协战机制的角色失去能力后**仍可**使用协战机制（规则机制，同升变）；靠能力获得协战机制的角色则不能。
+>
+> 【Q&A·8】「该牌不会解除协战状态」只防止 8.13.4.c.1（回合结束解除）和 8.13.4.c.3（换搭档）；对后者，获得新搭档的行动改为不执行。不影响 8.13.4.c.4（作为无所属卡牌送墓）。【Q&A·9】仍会因其他效果移动（返回手牌、出场等）。
+>
+> 【Q&A·8】阿斯特莉亚只能让本来就持有协战机制、且卡名为《亚里莎·回音》的角色从墓地选择搭档。
+>
+> 【Q&A·9】通过效果获得的搭档可以不满足协战机制的条件，不持有协战机制的角色也能通过效果获得搭档；因效果获得搭档后同回合仍可使用协战机制。
+>
+> 【Q&A·9】作为搭档的《巴克豪斯》的永久能力无效，基本 DP 仍为 0；搭档不计入「我方战场的<遗忘者>角色」。
+>
+> 【Q&A·10】协战角色 PP 先被「变为 70」，回合结束时：先解除协战（PP 变为 70 - 3000 = -2930，因规则破坏），之后期限效果才消失。若先「变为 70」再获得搭档，则为 70 + 3000。
 
 ---
 
-## 23. 第一阶段测试方案与用例矩阵 (Test Plan)
+## 9. 规则处理
 
-在进入代码开发前，建立自动化规则测试规划（基于 Vitest）：
+### 9.1 规则处理概要
+- **9.1.1** 规则处理：游戏中发生特定事件时，根据规则自动执行的处理。
+- **9.1.2** 分为**中断型**和**检查型**两种：
+  - **9.1.2.a** **中断型**：满足执行条件时，无论处于何种行动阶段，立即中断当前行动并执行；执行完毕后继续执行被中断的行动。
+    - **9.1.2.a.1** 存在多个中断型规则处理时：涉及双方时，回合玩家先执行自身相关的，回合外玩家后执行；同一玩家有多个时，该玩家自行选择顺序。
+  - **9.1.2.b** **检查型**：只在检查时机确认条件是否满足，满足时才执行；即使在执行其他行动期间满足条件，若在检查时机时条件已不满足，则不执行。
+    - **9.1.2.b.1** 多个检查型规则处理需要执行时，该玩家可以自行选择顺序。
 
-| 测试类别 | 测试模块 | 关键验证场景 | 对应规则条款 |
-| :--- | :--- | :--- | :--- |
-| **构筑合规测试** | `DeckValidator` | 50张卡、各卡号<=4张、红蓝黄信号球各恰好4张、超限/不足报错 | 5.1.2 |
-| **洗牌与准备** | `GameSetup` | 先后攻随机确定、4张初始手牌、调度换底重抽、前2张牌自动充为初始明费 | 5.2.1 |
-| **阶段流转测试** | `PhaseStateMachine` | 竖直阶段全卡位+费用区全竖直、先攻首回合抽1其余抽2、充费0~1张 | 6.2, 6.3 |
-| **出牌与费用属性** | `PlayCardRules` | 明费属性匹配方可打出手牌、信号球无视属性、费用扣减（明费横置/暗费送墓） | 8.6.2 |
-| **升变出场机制** | `AscensionRules` | 升变条件与代价核验、对象重叠置于下方、装备自动继承、离场时垫片全部入墓 | 8.11, 9.6 |
-| **战斗完整流程** | `CombatFlow` | 出场回合不可攻击/速攻突进生效、攻击横置、自由时点瞬时轮转、阻挡替代目标 | 7.1 ~ 7.4 |
-| **伤害与暗费生成** | `DamageResolution` | 攻击角色按DP造成伤害、牌组顶转入暗费(背面竖直)、侵蚀计数精确+1 | 4.10, 4.12.3 |
-| **角色PP对决** | `PPComparison` | 攻击方PP >= 防守方PP才破坏被攻击角色；攻击方PP较小时双方均不破坏 | 7.6.1.b |
-| **贯通效果结算** | `PiercingKeyword` | 战斗破坏防守角色后额外扣除对方玩家 1 侵蚀度 | 10.7 |
-| **消3球抽1卡机制** | `SignalOrbElimination`| 仅能消除 3 张物理相邻信号球并抽1张卡、不能打乱剩余球顺序 | 6.4.1.b.5 |
-| **牌组更新SBA** | `DeckRefreshSBA` | 牌组耗尽中断型洗回墓地且侵蚀+1；牌组与墓地同时为空立即判负 | 9.2, 9.3.1.b |
-| **侵蚀达7判负** | `WinLossCondition` | 检查时机确认侵蚀计数>=7触发败北，弃权立即判负且不可置换 | 1.2.2.a, 1.2.4 |
-| **断线与状态重构** | `AuthoritativeReplay`| 给定初始Seed与Action流水日志，完全100%还原所有GameState各时点快照 | 13, 23 |
+| 规则处理 | 类型 |
+| --- | --- |
+| 9.2 牌组更新 | 中断型 |
+| 9.3 败北判定 | 检查型 |
+| 9.4 角色 PP 不足 | 检查型 |
+| 9.5 违规卡牌 | 检查型 |
+| 9.6 无所属卡牌 | 中断型 |
+| 10.18.2.c 浮空模式回到战场 | 规则处理（在检查时机执行） |
+| 8.13.4.c.1 协战搭档在结束阶段送墓 | 规则处理（6.5.1.d） |
+
+### 9.2 牌组更新处理
+- **9.2.1** 任一玩家牌组没有卡牌时触发，属于**中断型**规则处理。
+- **9.2.2** 该玩家立即将自己墓地的所有卡牌移动到牌组并洗切；随后，将自身的侵蚀计数 **+1**。
+  - **9.2.2.a** 牌组没有卡牌时，若墓地也没有卡牌，该玩家**立即败北**。
+- **9.2.3** 支付能力代价期间不执行牌组更新。
+- **9.2.4** 执行牌组更新处理的行动在卡牌文本或规则中称为「牌组更新」。
+
+> 【Q&A·4】效果「将牌组顶 5 张放置到墓地」而牌组只剩 2 张：放 2 张 → 牌组更新（侵蚀 +1）→ 继续放 3 张。期间从牌组放到墓地的卡牌的【自】在之后的检查时机处理；已经被洗回牌组的卡牌无法从墓地出场，但其「可以丢弃 2 张手牌」代价仍可执行。
+>
+> 【Q&A·9】墨提斯「从牌组放置到墓地时」触发后因牌组更新被洗回牌组的，不能再从新牌组中找出来装备。
+
+### 9.3 败北判定处理
+- **9.3.1** 规则处理开始时，若任一玩家满足以下任一败北条件，所有满足条件的玩家宣告败北；属于**检查型**规则处理。
+  - **9.3.1.a** 侵蚀计数达到 **7 及以上**。
+  - **9.3.1.b** 牌组和墓地都没有卡牌。
+
+### 9.4 角色 PP 不足处理
+- **9.4.1** 任意角色的 PP 变为 **0 及以下**时，该角色因规则而破坏；属于**检查型**规则处理。
+
+### 9.5 违规卡牌处理
+- **9.5.1** 针对区域中违反规则的卡牌的**检查型**规则处理，主要包括：
+- **9.5.2** 战场区域存在角色牌、道具牌以外的卡牌时，将其移动到所属玩家的墓地。
+- **9.5.3** 每张角色最多装备 1 张装备，已有装备的角色不能装备新的装备；因故超过上限时，选择超出数量的装备放置到墓地。
+- **9.5.4** 每名玩家战场最多 1 张辅助机；因故超过上限时，选择超出数量的辅助机放置到墓地。
+- **9.5.5** 费用区的卡牌因故超过上限时，选择超出数量的卡牌放置到墓地。
+
+> 【Q&A·9】BP04-001 因能力变为辅助机牌时若已有辅助机，则选择任一辅助机送墓 (9.5.4)。BP04-052《血契者》「我方战场只能存在 1 张」超出时同样在检查时机按 9.5 处理；已有《血契者》时不能再出场新的。
+>
+> 【实现】9.5.5 处理的是「因其他原因超限」（如上限从 11 降回 10）；放入已满费用区的情况由 3.6.4 的置换处理，不会先放入再清理。
+
+### 9.6 无所属卡牌的卡牌处理
+- **9.6.1** 除特殊说明外，战场卡位上的卡牌因故离开战场时，其原本下方的**无所属卡牌**因规则处理移动到墓地；属于**中断型**规则处理。例：升变出场的角色离开战场时，其下方的卡牌（升变对象、装备等）移动到墓地。
+
+> 【Q&A·5】ST04-003「将该牌放到牌组底，选择我方墓地 1 张费用 8 及以下的<突击鹰小队>出场」：该牌放到牌组底时，其下方的卡牌立即因 9.6 送墓，之后可以被后段效果选中出场。
+>
+> 【Q&A·6】冈格尼尔 BP03-042 把另一张卡放到自己下方 / 自己被装备时，那些卡原本下方的卡成为无所属卡牌送墓（不会跟着移动）。
+>
+> 【Q&A·7】熠空 PR-028 把浮空模式的卡加入手牌时，其下方的卡成为无所属卡牌送墓；也不能选择浮空模式卡牌下方的卡。
+
+---
+
+## 10. 游戏词条解释
+
+### 10.1 【回合次数限制】（如【回合1】）
+- **10.1.1** 能力的限制性条件，以【回合1】等图标记述。
+- **10.1.2** 记述具体数值：同一回合中，该卡牌的该能力发动次数不能大于该数值。
+  - **10.1.2.a** 只适用于**同一公开区域中的同一张卡牌**；不受同区域其他同编号卡牌影响；卡牌离开该区域后在同回合再次进入，之前的计数不再影响。
+  - **10.1.2.b** 自动能力处理中选择不支付可任意支付的代价时，该能力视为已发动并结束待机状态 (8.7.3.b.1)，但该次发动**不计入**回合次数限制。
+
+> 【FAQ·2】战场有 2 张 ST02-001 时，两张的【起】【回合1】各可发动 1 次。
+>
+> 【Q&A·2】不同卡给予同一角色的同文本能力是**不同的能力**，各自计次（两张夜煌-小太刀；BP01-015 发动过夜煌-小太刀的【起】后升变为 BP01-017，可以再次发动）。
+>
+> 【Q&A·7】对同一角色使用两张《荣光护盾》：两个【回合1】不会叠加为【回合2】，但两个被赋予的能力是独立的，各可发动 1 次。
+>
+> 【Q&A·9】同一张墨提斯装在角色上，角色升变后该墨提斯的【回合1】仍已用掉。
+>
+> 【实现】文本「《卡名》的该能力每回合最多发动 N 次」：Q&A·7 认定梦赴光寥之乡为**同编号卡牌共享**；Q&A·10 认定含英·清商 BP04-077/078/079 **不同编号不共享**、各自 1 次。即按「卡牌编号 + 能力」计数。
+
+### 10.2 【充能时自动能力】（【充能自】）
+- **10.2.1** 自动能力的衍生能力，以【充能自】图标记述。
+  - **10.2.1.a** 触发条件为「卡牌因充能翻开放置到处理区」。
+  - **10.2.1.b** 特殊地，充能时自动能力在玩家**执行充能 (4.12.1) 的过程中**处理，而不是在之后的检查时机中处理。
+
+> 【FAQ·2】充能自 = 带有「被充能时」这一特殊条件的自动能力，攻击充能和伤害充能都会触发；从手牌使用信号球牌只执行其主要效果，不触发【充能自】。
+>
+> 【Q&A·6】BP03-026「持有【充能自】的卡牌」指持有充能时自动能力的卡牌；同回合多次满足不叠加减费。
+
+### 10.3 【充能X】
+- **10.3.1** 永久能力，以【充能1】等图标记述。
+  - **10.3.1.a** 使持有该能力的角色的**基本充能数变为 X**。
+    - **10.3.1.a.1** 获得多个【充能X】时，按触发先后顺序依次适用，以**最后**适用的为准。
+
+> 【Q&A·4】胜光战旗赋予【充能1】：基本充能数本就为 1 的角色不变。【充能0】= 攻击时不进行攻击充能。
+
+### 10.4 【充能+X】、【充能-X】
+- **10.4.1** 永久能力，使持有该能力的角色的充能数在当前基础上增加/减少 X。
+
+### 10.5 【速攻】
+- **10.5.1** 永久能力。持有者在**出场的回合**就可以进行攻击（攻击对象不限）。
+
+### 10.6 【突进】
+- **10.6.1** 永久能力。持有者在出场的回合就可以选择**对方的角色**作为攻击对象进行攻击（不能攻击玩家）。
+
+### 10.7 【贯通】
+- **10.7.1** **自动能力**。
+  - **10.7.1.a** 持有者在其攻击的角色战斗步骤中，若**战斗破坏**对方操控的被攻击的角色 (7.6.1.b)，给予对方玩家 **1 点伤害**（完整的伤害处理，会伤害充能并产生暗费）。
+    - **10.7.1.a.1** 角色无论持有多少个【贯通】，都只触发 1 个。
+
+> 【实现】被阻挡时，「被攻击的角色」为阻挡者；战斗破坏阻挡者同样满足条件。
+
+### 10.8 【瞬时】
+- **10.8.1** 能力的限制性条件，以【瞬时】图标记述。
+  - **10.8.1.a** 除特殊说明外，持有【瞬时】的能力或效果只能在**玩家回合的结束阶段 (6.5.1.a)** 或**角色攻击流程的自由时点步骤 (7.3)** 中使用。
+
+> 【实现】双方都可以在对方回合的这两个时点使用【瞬时】（例如「我方玩家被攻击时才能发动」的防御卡）。部分卡牌另有限制：「该牌只能在对方回合使用」（荣光护盾、双生回响）、「主要阶段也可以发动」（潮涌球、史密斯，仅限我方主要阶段）、「角色攻击时才能发动」等。
+
+### 10.9 【任意信号球】
+- **10.9.1** 卡牌文本中要求玩家消除信号球的记述，以 1/2/3 个信号球图标表示需要消除 1/2/3 张任意信号球。
+  - **10.9.1.a** 【X任意信号球】：消除对应数量的**持有信号球标记的相邻卡牌**。
+
+### 10.10 【同色信号球】
+- **10.10.1** 针对信号球的记述。
+  - **10.10.1.a** 同色信号球 = 持有**相同信号球标记** (2.10) 的信号球牌。
+
+> 【Q&A·6】「X种」与「X种及以上」不同：BP03-071 消除 3 种颜色时「1 种及以上/2 种及以上/3 种」三项都执行；BP03-074「1 种/2 种/3 种」只执行对应的一项。
+
+### 10.11 【游戏次数限制】（如【游戏1】）
+- **10.11.1** 能力的限制性条件，以【游戏1】等图标记述。
+- **10.11.2** 同一局游戏中，**同编号卡牌**持有的相同能力最多只能发动对应次数。
+
+### 10.12 【X以上/以下】与【X及以上/及以下】
+- **10.12.1** 针对数值范围的记述形式。
+- **10.12.2** 「X以上/以下」= **大于 (>) / 小于 (<)** X。
+- **10.12.3** 「X及以上/及以下」= **大于等于 (≥) / 小于等于 (≤)** X。
+
+> 【实现】这是严格区分的：「费用 8 以下的<露西亚>」= 费用 < 8；「费用上限 8 及以上」= ≥ 8。解析卡牌文本时注意区分。
+
+### 10.13 常见的属性图标
+- **10.13.1** 常见属性图标：火、雷、暗、冰、物理、**空**。
+- **10.13.2** 分别代表火属性、雷属性、暗属性、冰属性、物理属性、空属性。
+
+> 【实现】代码中「空属性」为 `VOID`；信号球牌「不持有属性」为 `NONE`，二者不同。
+
+### 10.14 【暮形态能力】&【晖形态能力】
+- **10.14.1** 能力的限制性条件，以「暮 Twilight」「晖 Raydiance」图标记述。
+- **10.14.2** 暮形态：该卡牌的该能力或该效果，在其**操控玩家信号球区最下方的卡牌的费用为偶数**时有效。
+  - **10.14.2.1** 例：「暮【永】：该牌 PP+1000」在最下方卡牌费用为偶数时有效。
+  - **10.14.2.2** 信号球牌的费用为 0（偶数），所以信号球区最下方是信号球牌时，暮形态有效。
+- **10.14.3** 晖形态：该卡牌的该能力或该效果，在信号球区最下方卡牌的费用为**奇数**时有效。
+  - **10.14.3.1** 例：「晖：追加我方抽 1 张牌」在奇数时有效。
+- **10.14.4** 信号球区没有卡牌、或最下方卡牌的费用情报因故无法参照时，持有暮/晖形态的能力和效果因缺少参照情报而**无效**。
+
+> 【Q&A·5】出场时晖、暮两个【出】都会进入待机（是否发动与奇偶无关），处理时再按当时的奇偶判定是否有效。
+>
+> 【Q&A·6】信号球区最下方是背面牌时，暮/晖都无效。
+
+### 10.15 冰冻 & 冰冻状态
+- **10.15.1** 冰冻：卡牌能力或效果针对战场卡牌执行的行动。被冰冻的卡牌在其**操控玩家下个回合的竖直阶段无法因规则 (6.2.1.b) 竖直**。文本记述为「将其冰冻」。
+- **10.15.2** 被冰冻的状态称为「冰冻状态」。
+- **10.15.3** 冰冻状态的卡牌在其操控玩家下个回合的竖直阶段无法因规则竖直；**竖直阶段结束时解除**冰冻状态。
+  - **10.15.3.1** 冰冻状态不影响卡牌原本的竖直/横置状态，两种状态的卡牌都可以被冰冻；已处于冰冻状态的不会重新变为冰冻状态 (1.3.2.a)。
+  - **10.15.3.2** 冰冻状态的卡牌仍可执行其他行动。例：冰冻状态的竖直角色仍可攻击、横置、发动能力。
+  - **10.15.3.3** 单张卡牌不会处于复数的冰冻状态；已冰冻的卡牌再次被冰冻，也只在下个回合的竖直阶段无法竖直，并在该竖直阶段结束时解除。
+
+> 【实现】冰冻只阻止「因规则」的竖直，卡牌效果仍可以将其竖直。
+
+### 10.16 【同命】
+- **10.16.1** **自动能力**，以【同命】图标记述。
+- **10.16.2** 持有【同命】的角色的**攻击结束时**，可以将该角色破坏；若如此做，将该次攻击中与该角色**发生战斗的角色** (7.6.1) 破坏。
+  - **10.16.2.1** 触发时机只有「攻击结束时」。即使没有发生战斗的角色，也可以将该角色破坏（之后因没有对象而执行完毕）。
+  - **10.16.2.2** 因其他效果导致无法因【同命】将该攻击角色破坏时，不能执行后续效果。
+
+### 10.17 【变为】
+- **10.17.1** 针对卡牌情报 (2.) 改变的一种记述形式。
+- **10.17.2** 含义：卡牌原有的情报被新的情报**代替**。
+  - **10.17.2.1** 某卡牌因能力或效果「变为」其他卡牌后，原本的情报无法被参照，需要参照时改为参照「变为」后的情报。
+
+### 10.18 【浮空】&【浮空模式】
+- **10.18.1** 【浮空】：卡牌能力或效果针对某张卡牌执行的行动，将战场的卡牌暂时存放在其操控玩家的处理区，使其在后续回合出场。文本记述为「将其【浮空】」。
+- **10.18.2** 具体含义：若操控玩家的处理区不存在【浮空模式】的卡牌，将对象以**正面竖直表示**放置到处理区，使其变为【浮空模式】；其操控玩家**下个回合开始时**，须将该卡牌从处理区出场。
+  - **10.18.2.a** 每位玩家的处理区**最多 1 张**浮空模式的卡牌；已存在时，本次【浮空】行动不执行。
+  - **10.18.2.b** 战场的卡牌被【浮空】时，其下方原有的卡牌保持不变**一同**放置到处理区。
+  - **10.18.2.c** 浮空模式卡牌的操控玩家下个回合开始时 (6.2.1.a)，将处理区的浮空模式卡牌及其下方的卡牌保持不变一同回到战场，之后解除浮空模式。该行动为**规则处理**，在检查时机执行。
+  - **10.18.2.d** 回到战场时满足其【出】及相关能力的触发条件。
+    - **10.18.2.d.1** 回到战场的回合中，因 7.2.1.b.1 **不能攻击**（出场回合）。
+    - **10.18.2.d.2** 只有浮空模式的卡牌视为「出场」，下方的卡牌不视为出场。
+    - **10.18.2.d.3** 【浮空】战场的角色时，其装备也保持不变一同放置到处理区，并在下个回合开始时一同回到战场。
+  - **10.18.2.e** 回合开始时出场浮空模式的卡牌时，若战场没有空余卡位 (3.2.3)，改为将该卡牌及其下方的卡牌从处理区放置到墓地。
+- **10.18.3** 规则上因【浮空】以正面竖直表示放置到处理区的卡牌称为「【浮空模式】的卡牌」，该状态可被相关能力或效果参考。
+  - **10.18.3.a** 只有因【浮空】放置到处理区的卡牌才是浮空模式的卡牌；其下方的卡牌不是。
+  - **10.18.3.b** 只有因【浮空】放置到处理区的卡牌才视为处理区中的卡牌；其下方的卡牌不视为处理区中的卡牌。
+
+> 【Q&A·6】浮空不继承持续效果和状态 (3.1.4)。BP03-005「我方 1 张《露西亚·誓焰》从处理区出场时」：浮空模式的 BP03-005 自身回到战场时也触发；获得【速攻】&PP+1000 的是战场上的 BP03-005 自身。
+>
+> 【Q&A·6】用 BP03-023 的【充能自】从处理区升变出场：视为从处理区出场，并发动升变能力获得【速攻】。
+
+---
+
+## 11. 官方 Q&A 裁定汇总（按卡牌）
+
+正文各条款下已标注与规则相关的裁定，本节按卡牌编号索引，便于实现具体卡牌时查阅。
+
+| 卡牌 | 裁定要点 | 出处 |
+| --- | --- | --- |
+| BP01-001 露西亚·鸦羽 | 先检查升变条件再支付代价，不能用暗费凑墓地 10 张 | Q&A·5 |
+| BP01-007 刹那冰华 | 没有<灰鸦小队>可选时，仍可追加丢弃手牌 | Q&A·7 |
+| BP01-014 露西亚·深红囚影 | 没装备<大太刀>也执行后段；后段只影响当时在信号球区的蓝球 | Q&A·7 |
+| BP01-015/017 + BP01-022 夜煌-小太刀 | 赋予的【起】按卡计次，升变后可再发动；两张小太刀给的两个能力各自计次 | Q&A·2 |
+| BP01-017 露西亚·深红囚影 | 「改为不离场」不算被破坏，贯通不触发 | Q&A·2 |
+| BP01-023 夜煌-大太刀 | 不付可选代价不计【回合1】；不能横置下方的牌或装备中的牌 | Q&A·2/7 |
+| BP01-025 归途伴风雪 | 失去能力：帕瓦给的 PP/DP 保留，给的【充能+1】失去 | Q&A·1 |
+| BP01-037 万世铭 | 视为 3 个，不能当 2 个用；费用区满时置换改为放墓地；被 BP02-052 公开也触发 | Q&A·1/5 |
+| BP01-040 七实·遥星之座 + BP01-055 七实-未来 | 七实-未来升变仍发动升变能力，获得【速攻】；仍受 BP02-067 额外 1 费影响 | Q&A·1/4 |
+| BP01-052 帕瓦 | 战场没有七实·遥星之座时仍可发动其【起】（执行不可能的部分不执行） | Q&A·2 |
+| BP01-056 梦赴光寥之乡 | 「每回合最多 2 次」为同编号共享；墓地有该牌时消除信号球必定消耗次数 | Q&A·7 |
+| BP02-001 伊什梅尔·幻日 | 效果无效出场的角色不能支付其能力代价；之后新获得的能力有效；没有卡位出场时后段属性效果不执行 | Q&A·4/5 |
+| BP02-010 丽芙·极昼 | 被「破坏」不触发，被「放置到墓地」触发；必须选择该角色作为攻击对象不影响阻挡；手牌中费用被减为 3 的 BP02-013 不能被选 | Q&A·4/8 |
+| BP02-011 丽芙·极昼 | 横置时无法把自身送墓，后续不执行 | Q&A·7 |
+| BP02-012 丽芙·极昼 | 费用变为 4 只在使用时；没有空卡位不能用其永久能力腾位置 | Q&A·4/7 |
+| BP02-013 丽芙·极昼 | 自身因战斗被破坏时不能用其【自】代替 | Q&A·5 |
+| BP02-024 比安卡·晖暮 | 排列可以移动非信号球牌；回合结束时仍需把指定牌送墓 | Q&A·4 |
+| BP02-026 拉弥亚·深谣 沉渊终局 | 选 0 张也要洗切；后段「所有玩家放 5 张」照常执行；中途牌组更新后继续 | Q&A·4 |
+| BP02-030 拉弥亚·深谣 | 伤害充能因费用区满改放墓地不算从牌组放到墓地 | Q&A·4 |
+| BP02-040 / 041 / 044 含英·檀心 | 下方视为《飞叶点翠》的 040 不算战场中的牌；视为与否在每次处理开始时决定 | Q&A·5 |
+| BP02-037 含英·檀心 + BP02-047 飞叶点翠 | 起动能力装备视为出场，发动【出】；先出场再装备则不获得突进 | Q&A·4 |
+| BP02-058 诺克提·擎驱 | 「失去能力且不能获得新能力」使回合结束时赋予的送墓能力不执行 | Q&A·4 |
+| BP02-065 胜光战旗 | 【充能1】不增加基本为 1 的充能数；不影响之后出场的角色 | Q&A·4 |
+| BP02-067 万事·明晰梦 | 在横置角色上升变额外 1 费，与对象数无关，多张叠加 | Q&A·4 |
+| BP02-069 万事·明晰梦 | 失去能力后被战斗破坏，【自】不处理 | Q&A·4 |
+| BP03-001 / 005 / 007 露西亚·誓焰 | 浮空不继承效果；005 的【自】作用于自身；被阻挡后浮空，库洛姆不能破坏它 | Q&A·6 |
+| BP03-010 旋光灿昼 | 「改为」在执行时判定条件 | Q&A·6 |
+| BP03-012 七实·芒星之迹 | 「PP 变为 70」改的是 PP，覆盖先前修改；之后卸装备继续减 | Q&A·6/10 |
+| BP03-013 七实·芒星之迹 | 选 0 张不算「若如此做」；放到信号球区的雷属性牌需给对手确认 | Q&A·6 |
+| BP03-023 / 024 / 032 里·超刻、超宏爆发 | 充能中升变出场：攻击流程继续，第 2 次充能照做；伤害充能中也能使用 | Q&A·6/10 |
+| BP03-026 里·超刻 | 「持有【充能自】的卡」= 持有充能时自动能力；不叠加 | Q&A·6 |
+| BP03-034 罗塞塔·凛冽 | 自身计入已使用张数；只执行与张数完全相等的那项；费用减为负数时支付 0 | Q&A·6 |
+| BP03-042 冈格尼尔 | 放到下方时原下方卡送墓；可选自身但无法执行 | Q&A·6 |
+| BP03-045 / 046 / 047 / 049 / 051 / 052 / 053 / 054 艾拉·万华 | 「该牌以外」= 编号不同；不能从暗费出场；对方角色放到对方费用区；费用区满时 052 不能救自己；054 的【瞬时】不付 2 费 | Q&A·6 |
+| BP03-058 / 059 / 060 / 063 / 064 莉莉丝·谬影、BP03-065 / 066 | 费用递增 = 依次 +1；先公开手牌再公开牌组；公开中途可终止；视为费用的数值在公开时宣言 | Q&A·6 |
+| BP03-071 / 074 赛琳娜·岚音、风暴终曲 | 「X种及以上」累积执行，「X种」只执行一项 | Q&A·6 |
+| BP03-075 / 077 露西亚·深红之渊 | 放蓝球入墓不是消除、可不相邻、视为 3 个只算 1 张；「其他<阿尔法>」指自身以外 | Q&A·6 |
+| BP04-001 露娜·终焉 | 回合结束必须放 1 张手牌；选第二项必须尽量消 3；变辅助机时超限按 9.5.4；放到下方视为离场；失去能力 PP 为 0 被破坏 | Q&A·9/10 |
+| BP04-007 露娜·终焉 | 两张《露娜·终焉》下方分别有月冕权能、红月临空也满足 | Q&A·10 |
+| BP04-011 升空凌视 | 从下方使用后进入处理区，处理后送墓 | Q&A·9 |
+| BP04-012 / 019 薇拉·灼惘 | 贯通伤害不算「攻击造成伤害」；自伤到 7 先败北 | Q&A·10 |
+| BP04-016 薇拉·灼惘 | 挡不住「PP 变为 70」 | Q&A·9 |
+| BP04-022 破曙疾行 | 未自伤也执行「那之后」 | Q&A·10 |
+| BP04-028 渡边·尘铭 | 结束阶段【瞬时】出场后，加入手牌的炽能球仍可在同轮使用 | Q&A·10 |
+| BP04-029 巴克豪斯 | 作为搭档时永久能力无效；「其他<遗忘者>」不含搭档，3 张巴克豪斯互相计入 | Q&A·9 |
+| BP04-035 卡列尼娜·辉晓 | 被破坏后搭档已送墓，攻击结束时无法出场；搭档「不会解除」时仍可出场 | Q&A·9 |
+| BP04-038 布偶熊·觅语 | 变更攻击对象可以变为竖直角色 | Q&A·9 |
+| BP04-046 理想的彼岸 塞西莉 | 任何原因解除协战状态都可从墓地出场 | Q&A·9 |
+| BP04-047 塞西莉 | 只对卡名为《亚里莎·回音》的角色有效 | Q&A·10 |
+| BP04-049 双生回响 | 可让非协战角色获得搭档，可不满足条件；之后仍可用协战机制；对象搭档不可解除时不放入，但仍可竖直 | Q&A·9 |
+| BP04-052 血契者 | 已有时不能出场；超出在检查时机按违规卡牌处理 | Q&A·9 |
+| BP04-061 / 065 比安卡·真理、莱特宁 | 背面牌不能作为升变对象；莱特宁第一个【自】是置换，顺序固定 | Q&A·9/10 |
+| BP04-066 拉弥亚·深谣 | 从牌组到墓地参照牌组中的费用 | Q&A·9 |
+| BP04-070 墨提斯 | 被洗回牌组后不能再装备；同一张墨提斯的【回合1】在升变后仍已使用 | Q&A·9 |
+| BP04-073 丽芙·极昼 | 手牌中的该牌不因战场丽芙送墓而改变费用 | Q&A·10 |
+| BP04-075 赫斯提亚 | 「从墓地出场」的是装备牌自身 | Q&A·10 |
+| BP04-077 / 078 / 079 含英·清商 | 不同编号的「每回合 1 次」不共享 | Q&A·10 |
+| ST02-011 筛选开始 | 见 BP02-058 | Q&A·4 |
+| ST03-010 暗域力场 | 之后出场或之后横置的不受影响 | Q&A·3 |
+| ST04-001 荣光护盾 | 竖直后可阻挡；两张不叠加回合次数，但能力各自独立 | Q&A·1/7 |
+| ST04-003 库洛姆·荣光 | 放到牌组底时下方卡立即送墓，可被后段选中出场 | Q&A·5 |
+| ST04-009 万事·明觉 | 回合结束时被出场，本次不触发 | Q&A·5 |
+| ST05-001 / 002 比安卡·晖暮 + ST05-008 奥罗拉 | 「可以攻击对方玩家」= 出场回合可攻击玩家；可利用处理顺序先切换形态 | Q&A·3/5 |
+| ST06-002 坠落与新生 塞西莉 | 「不会解除协战状态」的作用范围 | Q&A·8 |
+| ST06-010 阿斯特莉亚 | 只对原本有协战机制、卡名为《亚里莎·回音》的角色有效 | Q&A·8 |
+| PR-014 银晕辉光 | 变更攻击对象不属于选择攻击对象 | Q&A·9 |
+| PR-016 露西亚·深红囚影 | 效果出场的封刃太刀只能放空卡位 | Q&A·7 |
+| PR-028 熠空 | 不能选浮空模式卡牌下方的卡；加入手牌后下方卡送墓 | Q&A·7 |
+| PR-031 七实·芒星之迹 | 永久能力，在选择攻击角色时检查 | Q&A·7 |
+| PR-034 另一人 | 「不能造成伤害」也防止【贯通】 | Q&A·7 |
+| PR-046 执铭化刃 | 在所有区域都视为<万世铭>；需同时加入两张；可分别从费用区和墓地选 | Q&A·9 |
+
+---
+
+## 12. 引擎实现约定
+
+本节为本项目的实现约定，不属于官方规则。
+
+### 12.1 卡牌数据与文本
+- 卡牌全集：`packages/game-engine/src/database/official-cards-data.ts`（`OFFICIAL_CARDS_DATA`）；官方预组：`packages/game-rules/src/data/starter-decks.ts`。
+- 卡牌文本中的图标在数据中写作文字，如 `【回合1】`、`【2任意信号球】`、`【充能自icon】`、`【速攻icon】`、`晖`/`暮`、`【协战自】`。解析文本时要兼容「带 icon 后缀」与「不带」两种写法。
+- 数值区间严格按 10.12 解析：「X以下」为 `< X`，「X及以下」为 `≤ X`。
+
+### 12.2 隐藏信息
+`sanitizeGameStateForPlayer` 必须隐藏：对手手牌、双方牌组内容与顺序、对手的暗费 (3.6.3.b.2)、信号球区中背面表示的卡牌（双方都不可见，Q&A·6）、对手从牌组「选择」但未公开的卡牌 (4.17.2)。
+
+### 12.3 时机与检查时机
+- 没有效果堆叠：动作 → 完整处理效果 → 检查时机（回合玩家规则处理 → 回合外玩家规则处理 → 回合玩家选 1 个待机能力 → … 循环）。
+- 中断型规则处理（牌组更新 9.2、无所属卡牌 9.6）在动作执行过程中立即执行，但支付代价期间不执行牌组更新 (9.2.3)。
+- 【充能自】在充能过程中立即处理，不进入待机池 (10.2.1.b)。
+- 置换效果在事件即将发生时处理，不进入待机池 (8.2.1.c.3)。
+
+### 12.4 已由官方明确、旧版规格书中曾列为不确定的事项
+| 旧编号 | 问题 | 现结论 |
+| --- | --- | --- |
+| RULE_UNCERTAIN-01 | 信号球区是否有容量上限 | 规则仍无上限 |
+| RULE_UNCERTAIN-02 | 结束阶段暗费送墓的微观时机 | 规则仍未写明；按 12.5 的约定处理 |
+| RULE_UNCERTAIN-03 | 阻挡后是否再开瞬时窗口 | **否**。先轮流用【瞬时】/协战，都放弃后才阻挡 (Q&A·8) |
+| RULE_UNCERTAIN-04 | 单独占卡位的装备牌能否被攻击 | 不能（攻击对象只能是对方玩家或对方横置的**角色**）；效果出场的装备只能放空卡位 (Q&A·7) |
+| RULE_UNCERTAIN-05 | 同编号判定 | 按去除末尾小写字母的编号统计 (2.7.3) |
+
+### 12.5 仍需本项目自行约定的事项
+- 暗费送墓的时点：在 6.5.1.d 期限效果消失之后、6.5.1.e 换回合之前。
+- 信号球区的「最上方 / 最下方」：数组末尾 = 最上方（新放入的卡），数组开头 = 最下方（暮/晖形态参照）。实现须保持一致。
+- 线上不执行「玩家可以洗切对手牌组」(5.2.1.b/f)，由服务端随机数统一洗切。
+
+---
+
+## 13. 版本记录
+
+### 官方《综合规则》版本
+| 日期 | 版本 | 官方更新内容 |
+| --- | --- | --- |
+| 2025-11-14 | A0 | 初版发行 |
+| 2026-01-15 | V1.1 | 新增 10.14 暮形态能力 & 晖形态能力 |
+| 2026-02-14 | V1.2 | 新增 10.13 空属性、10.15 冰冻 & 冰冻状态、10.16 同命、10.17 变为 |
+| 2026-05-25 | V1.3 | 新增 7.5.1.b.3（伤害量锁定）、10.2.1.b（充能自在充能过程中处理）、10.18 浮空 & 浮空模式 |
+| 2026-07-23 | V1.4 | 更新 1.2.2.a、9.3.1.a（侵蚀「达到 7 及以上」）；新增 8.5.3（检查时机不中断效果处理）、8.13 协战 |
+
+### 官方 Q&A
+快速入门 FAQ 第 1 期 (2025-08-12)、第 2 期 (2025-08-19)；规则 Q&A 第 1 期 (2025-11-27)、第 2 期 (2025-12-11)、第 3 期 (2026-01-23)、第 4 期 (2026-03-08)、第 5 期 (2026-04-02)、第 6 期 (2026-05-27)、第 7 期 (2026-06-19)、第 8 期 (2026-08-05)、第 9 期 (2026-09-10)、第 10 期 (2026-09-21)。
+
+### 本文档
+| 日期 | 说明 |
+| --- | --- |
+| 2026-10-16 | 按官方 V1.4 与 Q&A 第 1~10 期重写；旧版设计稿移至 `docs/architecture/initial-design.md` |

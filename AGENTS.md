@@ -16,7 +16,7 @@
 | `@zhanshuang/worker` | `apps/worker` | **Cloudflare 版后端**：Workers (Hono REST) + Durable Objects (原生 WebSocket) + D1 |
 | `@zhanshuang/web` | `apps/web` | Next.js 14 App Router 前端 (端口 3000)，两种后端共用 |
 
-规则依据：`docs/rules/rule-specification.md`。引擎与测试中的 `(5.2.1.e)`、`(7.3.1)` 等编号均指向该文档条款，修改规则逻辑时保留并更新这些引用。
+规则依据：`docs/rules/rule-specification.md`（按官方《综合规则》V1.4 与规则 Q&A 第 1~10 期整理，条款编号与官方一致）。引擎与测试中的 `(5.2.1.e)`、`(7.3.1)` 等编号均指向该文档条款，修改规则逻辑时保留并更新这些引用。官方规则以 B 站「集卡社对战卡牌」发布的为准，官方更新后同步更新该文档。
 
 ### 两种部署方式
 
