@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { CardInstance, CardType, GamePhase } from '@zhanshuang/shared';
 import { findCardByNumberOrId } from '@/lib/cards-data';
+import { getDisplayStats } from '@/lib/card-stats';
 
 export interface ContextMenuAction {
   id: string;
@@ -218,7 +219,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       actions.push({
         id: 'attack_player',
         label: '攻击对方玩家',
-        subLabel: `PP: ${(cardDef?.basePP ?? 0) + (card.tempPPBonus ?? 0)}`,
+        subLabel: `PP: ${getDisplayStats(card, cardDef).pp}`,
         icon: <Swords className="w-3.5 h-3.5" />,
         variant: 'danger',
         onClick: () => {

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
+import { formatBonus, getDisplayStats } from '@/lib/card-stats';
 import {
   Flame,
   Zap,
@@ -97,8 +98,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
   const fullImgSrc = getCardFullImageUrl(card.imageUrl, card.cardNumber);
   const cardImgSrc = getCardThumbnailUrl(card.imageUrl, card.cardNumber);
 
-  const totalPP = cardDef ? (cardDef.basePP ?? 0) + (card.tempPPBonus ?? 0) : 0;
-  const totalDP = cardDef ? (cardDef.baseDP ?? 0) + (card.tempDPBonus ?? 0) : 0;
+  const { pp: totalPP, dp: totalDP, ppBonus, dpBonus } = getDisplayStats(card, cardDef);
 
   const getElementBadge = (attr?: ElementAttribute) => {
     switch (attr) {
@@ -268,16 +268,16 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             <div className="grid grid-cols-2 gap-1.5 bg-neutral-900/80 p-1.5 rounded-lg border border-neutral-800">
               <div className="flex flex-col">
                 <span className="text-[9px] text-neutral-400">攻击力 (PP)</span>
-                <span className={`text-xs font-black ${card.tempPPBonus ? 'text-terminalCyan animate-pulse' : 'text-white'}`}>
+                <span className={`text-xs font-black ${ppBonus ? 'text-terminalCyan animate-pulse' : 'text-white'}`}>
                   {totalPP}
-                  {card.tempPPBonus ? ` (+${card.tempPPBonus})` : ''}
+                  {formatBonus(ppBonus)}
                 </span>
               </div>
               <div className="flex flex-col">
                 <span className="text-[9px] text-neutral-400">伤害值 (DP)</span>
-                <span className={`text-xs font-black ${card.tempDPBonus ? 'text-terminalGold animate-pulse' : 'text-white'}`}>
+                <span className={`text-xs font-black ${dpBonus ? 'text-terminalGold animate-pulse' : 'text-white'}`}>
                   {totalDP}
-                  {card.tempDPBonus ? ` (+${card.tempDPBonus})` : ''}
+                  {formatBonus(dpBonus)}
                 </span>
               </div>
             </div>

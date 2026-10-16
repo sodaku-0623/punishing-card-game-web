@@ -47,6 +47,7 @@ export class CombatManager {
     const card = this.state.cards[cardInstanceId];
     if (!card) return false;
     if (card.grantedKeywords?.includes(keyword)) return true;
+    if (card.modifiers?.some((m) => m.keywords?.includes(keyword))) return true;
     return parseInherentKeywords(this.getDef(card)?.rulesText).some(
       (k) => k.keyword === keyword && (!k.form || this.isFormActive(card.controllerPlayerId, k.form))
     );
@@ -205,7 +206,9 @@ export class CombatManager {
     const card = this.state.cards[attackerCardId];
     if (!card) return 0;
     const inherent = parseInherentChargeCount(parseInherentKeywords(this.getDef(card)?.rulesText));
-    return inherent ?? 1;
+    // 10.4【充能+X】在当前充能数的基础上增加
+    const bonus = (card.modifiers ?? []).reduce((sum, m) => sum + (m.charge ?? 0), 0);
+    return Math.max(0, (inherent ?? 1) + bonus);
   }
 
   private enterChargeStep(): void {

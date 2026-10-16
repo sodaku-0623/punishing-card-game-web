@@ -242,7 +242,7 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
       <div className="flex justify-between items-center text-[10px] text-neutral-400 font-mono z-10">
         <span>费:{cardDef?.cost ?? 0}</span>
         {cardDef?.basePP !== undefined && (
-          <span className="text-terminalCyan font-bold">PP:{cardDef.basePP}</span>
+          <span className="text-terminalCyan font-bold">PP:{card.effectivePP ?? cardDef.basePP}</span>
         )}
       </div>
     </div>
