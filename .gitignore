@@ -63,3 +63,12 @@ apps/web/out/
 apps/worker/static/*
 !apps/worker/static/.gitkeep
 !apps/worker/static/.assetsignore
+
+# AI Agent Local Drafts
+.claude/
+SOUL.md
+USER.md
+
+# Card Assets (按需通过 npm run cards:download 从 R2 下载，不再纳入 Git 追踪)
+apps/web/public/cards/
+
