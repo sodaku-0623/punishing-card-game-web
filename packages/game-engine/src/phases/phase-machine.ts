@@ -149,6 +149,10 @@ export class PhaseMachine {
     for (const card of Object.values(this.state.cards)) {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
+      if (card.modifiers) {
+        const remaining = card.modifiers.filter((m) => m.untilTurn > this.state.turnNumber);
+        card.modifiers = remaining.length > 0 ? remaining : undefined;
+      }
     }
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};

@@ -306,6 +306,8 @@ export class GameEngine {
         );
         success = res.success;
         error = res.error;
+        // 7.2.1.d「攻击时」触发的自动能力
+        if (success) this.effectEngine.presets.onAttackDeclared(action.attackerCardId);
         break;
       }
 
@@ -370,6 +372,7 @@ export class GameEngine {
     for (const pid of Object.keys(this.state.players)) {
       this.zoneMgr.syncCostStats(pid);
     }
+    this.refreshDisplayedStats();
 
     const newEvents = this.events.slice(startEventIndex);
     return {
@@ -793,6 +796,21 @@ export class GameEngine {
 
     const player = this.state.players[action.playerId]!;
 
+    // 官方预组的起动能力：代价 (消除信号球、横置) 与【回合1】由逐卡实现处理
+    if (this.effectEngine.presets.handlesActivation(cardDef.cardNumber)) {
+      const res = this.effectEngine.presets.activate(action.playerId, card.instanceId, cardDef);
+      if (res.success) {
+        this.events.push({
+          type: 'ABILITY_ACTIVATED',
+          playerId: action.playerId,
+          cardInstanceId: card.instanceId,
+          abilityName: `${cardDef.name}【起】动能力`,
+          rulesText: cardDef.rulesText,
+        });
+      }
+      return res;
+    }
+
     // 检查是否有【起】动能力
     if (!cardDef.rulesText.includes('【起】')) {
       return { success: false, error: `卡牌【${cardDef.name}】没有起动能力` };
@@ -961,6 +979,21 @@ export class GameEngine {
     }
   }
 
+  /**
+   * 将战场角色当前的 PP/DP 写入状态，供前端直接展示 (前端不重复实现装备、持续效果与永久能力的计算)
+   */
+  private refreshDisplayedStats(): void {
+    for (const card of Object.values(this.state.cards)) {
+      if (card.zone === 'BATTLEFIELD' && this.fieldMgr.isSlotRole(card.controllerPlayerId, card.instanceId)) {
+        card.effectivePP = this.fieldMgr.calculateRoleEffectivePP(card.instanceId);
+        card.effectiveDP = this.fieldMgr.calculateRoleEffectiveDP(card.instanceId);
+      } else if (card.effectivePP !== undefined || card.effectiveDP !== undefined) {
+        delete card.effectivePP;
+        delete card.effectiveDP;
+      }
+    }
+  }
+
   private getOpponentId(playerId: string): string {
     return playerId === this.state.activePlayerId ? this.state.nonActivePlayerId : this.state.activePlayerId;
   }
@@ -1003,6 +1036,12 @@ export class GameEngine {
       case 'INSTANTS':
         // 6.5.1.b「回合结束时」的触发条件生效后，进入检查时机
         this.state.endPhaseStep = 'TRIGGERS';
+        // 效果赋予的「该回合结束时，将该牌放置到墓地」
+        for (const card of Object.values(this.state.cards)) {
+          if (card.endOfTurnToGraveyard === this.state.turnNumber && card.zone === 'BATTLEFIELD') {
+            this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+          }
+        }
         this.checkTimingMgr.resolveCheckTiming();
         return true;
       case 'TRIGGERS': {

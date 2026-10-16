@@ -199,7 +199,7 @@ describe('轮流使用【瞬时】', () => {
     const use = engine.dispatchAction({ type: 'USE_INSTANT', playerId: p2, cardInstanceId: instant.instanceId });
     expect(use.success).toBe(true);
     const choice = state.currentPendingChoice!;
-    expect(choice.effectType).toBe('RESURRECT_ROLE');
+    expect(choice.effectType).toBe('PRESET_ST02_011_REVIVE');
     engine.dispatchAction({ type: 'SELECT_CHOICE_OPTION', playerId: p2, pendingChoiceId: choice.id, selectedIds: [gyRole.instanceId] });
     expect(state.cards[gyRole.instanceId]!.zone).toBe('BATTLEFIELD');
 

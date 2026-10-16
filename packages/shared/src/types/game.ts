@@ -29,6 +29,19 @@ export type ZoneId =
   | 'EROSION' // 3.9 侵蚀计数区
   | 'REMOVED'; // 游戏外/放逐区
 
+/**
+ * 带期限的持续效果 (8.2.1.b)：「直到回合结束为止」untilTurn = 当前回合，「直到下个回合结束为止」= 当前回合 + 1。
+ * 在该回合的结束阶段 (6.5.1.d) 消失；卡牌移动区域时随之消失 (3.1.4)。
+ */
+export interface CardModifier {
+  pp?: number;
+  dp?: number;
+  charge?: number; // 10.4【充能+X】
+  keywords?: string[];
+  untilTurn: number;
+  source?: string; // 产生该效果的卡牌编号 (用于展示)
+}
+
 export interface CardInstance {
   readonly instanceId: string; // 唯一运行时实体ID
   readonly cardId: string; // 静态数据库Card ID
@@ -44,7 +57,11 @@ export interface CardInstance {
   turnEnteredZone: number; // 进入当前区域的回合编号 (用于出场攻击限制 7.2.1.b.1)
   tempPPBonus?: number; // 临时PP加成
   tempDPBonus?: number; // 临时DP加成
-  grantedKeywords?: string[]; // 临时获得的词条 (如【速攻】、【突进】等)
+  grantedKeywords?: string[]; // 持续存在于该区域期间获得的词条 (如升变获得的【速攻】)
+  modifiers?: CardModifier[]; // 带期限的持续效果 (PP/DP/充能数/词条)
+  endOfTurnToGraveyard?: number; // 「该回合结束时，将该牌放置到墓地」的回合编号
+  effectivePP?: number; // 服务端计算的当前 PP (含装备、持续效果与永久能力；仅战场卡位上的角色)
+  effectiveDP?: number; // 服务端计算的当前 DP
   imageUrl?: string; // 卡面插画链接
 }
 

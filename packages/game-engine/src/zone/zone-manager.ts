@@ -57,6 +57,8 @@ export class ZoneManager {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
       card.grantedKeywords = undefined;
+      card.modifiers = undefined;
+      card.endOfTurnToGraveyard = undefined;
       card.underneathCardIds = [];
       card.attachedEquipmentId = undefined;
       if (toZone !== 'BATTLEFIELD') card.slotIndex = undefined;

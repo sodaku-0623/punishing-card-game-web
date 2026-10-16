@@ -10,6 +10,7 @@ import {
 import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
+import { PresetCardEffects } from './preset-cards.js';
 
 export interface CardEffectContext {
   state: GameState;
@@ -26,7 +27,13 @@ export interface CardEffectContext {
  * 负责识别并处理所有卡牌的登场效果【出】、战术效果、起动能力【起】与决策分支结算
  */
 export class CardEffectEngine {
-  constructor(private ctx: CardEffectContext) {}
+  /** 官方预组 (ST01~ST03) 的逐卡精确实现，优先于下方的通用近似解析 */
+  readonly presets: PresetCardEffects;
+
+  constructor(private ctx: CardEffectContext) {
+    this.presets = new PresetCardEffects(ctx, this);
+    ctx.fieldMgr.setStaticPPProvider((id) => this.presets.staticPP(id));
+  }
 
   private getOpponentPlayerId(playerId: string): string {
     return playerId === this.ctx.state.activePlayerId
@@ -401,69 +408,17 @@ export class CardEffectEngine {
   ): { success: boolean; error?: string } {
     const cardNum = cardDef.cardNumber || cardDef.id;
 
-    // --- 前置条件校验 ---
-    // 重逢 (ST01-011): 需我方战场存在<露西亚>角色
-    if (cardNum === 'ST01-011' || cardDef.name.includes('重逢')) {
-      const hasLucia = this.getFriendlyRoles(playerId).some((c) => {
-        const d = this.getCardDef(c);
-        return d?.traits?.includes('露西亚') || d?.name?.includes('露西亚');
-      });
-      if (!hasLucia) {
-        return { success: false, error: '我方战场不存在<露西亚>角色，无法使用【重逢】' };
-      }
-      const oppRoles = this.getOpponentRoles(playerId).filter(
-        (c) => this.ctx.fieldMgr.calculateRoleEffectivePP(c.instanceId) <= 8000
-      );
-      if (oppRoles.length === 0) {
-        return { success: false, error: '对方战场没有PP为8000及以下的角色' };
-      }
-    }
-
-    // 刹那制裁 (ST02-010): 需我方战场存在《露娜·银冕》
-    if (cardNum === 'ST02-010' || cardDef.name.includes('刹那制裁')) {
-      const hasLuna = this.getFriendlyRoles(playerId).some((c) => {
-        const d = this.getCardDef(c);
-        return d?.name?.includes('露娜');
-      });
-      if (!hasLuna) {
-        return { success: false, error: '我方战场不存在《露娜·银冕》，无法使用【刹那制裁】' };
-      }
-      if (this.getOpponentRoles(playerId).length === 0) {
-        return { success: false, error: '对方战场没有可选择的角色' };
-      }
-    }
-
-    // 筛选开始 (ST02-011): 需我方战场存在《露娜·银冕》
-    if (cardNum === 'ST02-011' || cardDef.name.includes('筛选开始')) {
-      const hasLuna = this.getFriendlyRoles(playerId).some((c) => {
-        const d = this.getCardDef(c);
-        return d?.name?.includes('露娜');
-      });
-      if (!hasLuna) {
-        return { success: false, error: '我方战场不存在《露娜·银冕》，无法使用【筛选开始】' };
-      }
-      const gyRoles = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'GRAVEYARD')
-        .filter((c) => {
-          const d = this.getCardDef(c);
-          return d?.cardType === CardType.ROLE && (d?.cost || 0) <= 3;
-        });
-      if (gyRoles.length === 0) {
-        return { success: false, error: '我方墓地没有费用为3及以下的角色' };
-      }
-      if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
-        return { success: false, error: '战场没有空余卡位' };
-      }
+    if (this.presets.handlesTactics(cardNum)) {
+      this.ctx.zoneMgr.moveCard(cardInstanceId, 'PROCESSING', { isFaceUp: true });
+      return this.presets.playTactics(playerId, cardInstanceId, cardDef);
     }
 
     // --- 分流执行效果 ---
 
     // A. 专武/招式战术牌 (使用后放置到信号球区最上方，抽1张牌)
     // ST01-012/013/014, ST02-012/013/014, ST03-012/013/014
-    if (
-      cardDef.rulesText.includes('放置到我方信号球区最上方') ||
-      cardDef.rulesText.includes('信号球区最上方')
-    ) {
+    // 只有信号球牌 (带信号球颜色) 才在使用后直接放置到信号球区；BP04-032 炽能球等需先执行效果
+    if (cardDef.signalOrb && cardDef.rulesText.includes('信号球区最上方')) {
       // 1. 移动至信号球区最上方 (不进入墓地)
       this.ctx.zoneMgr.moveCard(cardInstanceId, 'SIGNAL_ORB', { isFaceUp: true });
       // 2. 抽1张牌
@@ -498,156 +453,6 @@ export class CardEffectEngine {
     // C. 常规战术牌：先移入处理区，完成效果后送入墓地
     this.ctx.zoneMgr.moveCard(cardInstanceId, 'PROCESSING', { isFaceUp: true });
 
-    // 1. 阿呆蛙与铃铛羊 (ST01-009): 抽1张牌，选择我方战场1张角色PP+2000
-    if (cardNum === 'ST01-009' || cardDef.name.includes('阿呆蛙与铃铛羊')) {
-      this.ctx.zoneMgr.drawCards(playerId, 1);
-      const friendlyRoles = this.getFriendlyRoles(playerId);
-      if (friendlyRoles.length === 0) {
-        this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      } else if (friendlyRoles.length === 1 && friendlyRoles[0]) {
-        friendlyRoles[0].tempPPBonus = (friendlyRoles[0].tempPPBonus || 0) + 2000;
-        this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      } else {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】已抽1张牌，请选择我方战场1张角色获得 PP+2000：`,
-          options: friendlyRoles.map((c) => this.createRoleChoiceOption(c)),
-          effectType: 'BUFF_ROLE_PP',
-          sourceCardInstanceId: cardInstanceId,
-          metadata: { buffPP: 2000 },
-          minSelections: 1,
-          maxSelections: 1,
-        });
-      }
-      return { success: true };
-    }
-
-    // 2. 灰鸦小队，集合！ (ST01-010): 公开牌组顶5张牌，选1张灰鸦小队角色加入手牌，其余牌组底
-    if (cardNum === 'ST01-010' || cardDef.name.includes('灰鸦小队，集合')) {
-      return this.revealTopAndSearch(playerId, {
-        sourceCardInstanceId: cardInstanceId,
-        cardName: cardDef.name,
-        count: 5,
-        prompt: `【${cardDef.name}】已公开牌组顶5张牌，请选择1张<灰鸦小队>角色加入手牌（其余卡牌将放置到牌组底）：`,
-        promptNoEligible: `【${cardDef.name}】已公开牌组顶5张牌，其中没有<灰鸦小队>角色，请确认并将所有公开卡牌放置到牌组底：`,
-        isEligible: (_c, d) => {
-          if (!d || d.cardType !== CardType.ROLE) return false;
-          const traits = d.traits || [];
-          return traits.some((t) => t.includes('灰鸦')) || Boolean(d.name && d.name.includes('灰鸦'));
-        },
-        ineligibleReason: '非<灰鸦小队>角色',
-        destination: 'HAND',
-        remainingDestination: 'DECK_BOTTOM',
-        minSelections: 1,
-        maxSelections: 1,
-        choiceEffectType: 'SEARCH_TOP_CARDS',
-      });
-    }
-
-    // 3. 重逢 (ST01-011): 破坏对方战场1张PP<=8000角色
-    if (cardNum === 'ST01-011' || cardDef.name.includes('重逢')) {
-      const allOppRoles = this.getOpponentRoles(playerId);
-      const eligibleOppRoles = allOppRoles.filter(
-        (c) => this.ctx.fieldMgr.calculateRoleEffectivePP(c.instanceId) <= 8000
-      );
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】发动：请选择对方战场1张PP<=8000的角色进行破坏：`,
-        options: allOppRoles.map((c) => {
-          const pp = this.ctx.fieldMgr.calculateRoleEffectivePP(c.instanceId);
-          const isEligible = pp <= 8000;
-          return this.createRoleChoiceOption(c, {
-            eligible: isEligible,
-            ineligibleReason: !isEligible ? `PP(${pp})超过8000限制` : undefined,
-          });
-        }),
-        effectType: 'DESTROY_ROLE',
-        sourceCardInstanceId: cardInstanceId,
-        metadata: {
-          eligibleCardIds: eligibleOppRoles.map((c) => c.instanceId),
-        },
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
-
-    // 4. 刹那制裁 (ST02-010): 对方1张角色按我方侵蚀计数每有1 PP-2000
-    if (cardNum === 'ST02-010' || cardDef.name.includes('刹那制裁')) {
-      const oppRoles = this.getOpponentRoles(playerId);
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】发动：请选择对方战场1张角色，使其PP减少 (我方侵蚀计数 x 2000)：`,
-        options: oppRoles.map((c) => this.createRoleChoiceOption(c)),
-        effectType: 'REDUCE_PP_BY_EROSION',
-        sourceCardInstanceId: cardInstanceId,
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
-
-    // 5. 筛选开始 (ST02-011): 墓地费用<=3角色出场
-    if (cardNum === 'ST02-011' || cardDef.name.includes('筛选开始')) {
-      const gyRoles = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'GRAVEYARD')
-        .filter((c) => {
-          const d = this.getCardDef(c);
-          return d?.cardType === CardType.ROLE && (d?.cost || 0) <= 3;
-        });
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】发动：请选择我方墓地1张费用<=3的角色出场：`,
-        options: gyRoles.map((c) => this.createGeneralCardChoiceOption(c)),
-        effectType: 'RESURRECT_ROLE',
-        sourceCardInstanceId: cardInstanceId,
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
-
-    // 6. 暗域力场 (ST03-010): 抽2张牌，横置三头犬角色PP+1000
-    if (cardNum === 'ST03-010' || cardDef.name.includes('暗域力场')) {
-      this.ctx.zoneMgr.drawCards(playerId, 2);
-      const friendlyRoles = this.getFriendlyRoles(playerId);
-      for (const r of friendlyRoles) {
-        if (!r.isReady) {
-          r.tempPPBonus = (r.tempPPBonus || 0) + 1000;
-        }
-      }
-      this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      return { success: true };
-    }
-
-    // 7. 三头犬出击 (ST03-011): 选择对方战场1张角色破坏
-    if (cardNum === 'ST03-011' || cardDef.name.includes('三头犬出击')) {
-      const oppRoles = this.getOpponentRoles(playerId);
-      if (oppRoles.length === 0) {
-        return { success: false, error: '对方战场没有可破坏的角色' };
-      }
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】发动：请选择对方战场1张角色进行破坏：`,
-        options: oppRoles.map((c) => this.createRoleChoiceOption(c)),
-        effectType: 'DESTROY_ROLE',
-        sourceCardInstanceId: cardInstanceId,
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
-
     // 通用战术默认处理 (抽牌、削弱、破坏、增益、检索等)
     return this.resolveUniversalTacticsEffect(playerId, cardInstanceId, cardDef);
   }
@@ -663,6 +468,13 @@ export class CardEffectEngine {
     const cardNum = cardDef.cardNumber;
     const roleCard = this.ctx.state.cards[roleInstanceId];
     if (!roleCard) return;
+
+    if (this.presets.handlesEntry(cardNum) || this.presets.isVanillaEntry(cardNum)) {
+      if (this.presets.handlesEntry(cardNum)) this.presets.enter(playerId, roleInstanceId, cardDef);
+      this.presets.onRoleEntered(playerId, roleInstanceId);
+      return;
+    }
+    this.presets.onRoleEntered(playerId, roleInstanceId);
 
     // 1. BP01-001 (露西亚·鸦羽 8费): 【出】消除2同色信号球：公开我方牌组顶5张牌，选择其中任意数量的费用合计为6及以下的<灰鸦小队>角色出场，将剩余的牌按任意顺序放置到牌组底。
     if (cardNum === 'BP01-001' || cardDef.rulesText.includes('费用合计为6及以下的<灰鸦小队>角色出场')) {
@@ -800,123 +612,6 @@ export class CardEffectEngine {
       return;
     }
 
-    // 6. ST01-001 (露西亚·红莲 5费): 丢弃1张手牌，公开牌组顶5张召唤<=3费灰鸦小队角色
-    if (cardNum === 'ST01-001' && cardDef.rulesText.includes('丢弃1张手牌：公开我方牌组顶5张牌')) {
-      const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-      if (handCards.length > 0) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场能力：可选择1张手牌丢弃以公开牌组顶5张召唤角色 (可跳过)：`,
-          options: handCards.map((c) => this.createGeneralCardChoiceOption(c)),
-          effectType: 'ST01_001_DISCARD_RECRUIT',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 0,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
-    // 7. ST02-003 (露娜·银冕 4费): 丢弃1张手牌，公开牌组顶3张选择升格者加入手牌，剩余送墓
-    if (cardNum === 'ST02-003' || (cardDef.rulesText.includes('公开我方牌组顶3张牌') && cardDef.rulesText.includes('升格者'))) {
-      const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-      if (handCards.length > 0) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场能力：可丢弃1张手牌公开牌组顶3张检索<升格者>角色 (可跳过)：`,
-          options: handCards.map((c) => this.createGeneralCardChoiceOption(c)),
-          effectType: 'ST02_003_DISCARD_SEARCH',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 0,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
-    // 8. ST02-007 (不明构造体α 3费): 丢弃1张手牌，选择墓地1张升格者加入手牌
-    if (cardNum === 'ST02-007' || cardDef.rulesText.includes('选择我方墓地1张<升格者>角色，将其加入手牌')) {
-      const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-      const gyRoles = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'GRAVEYARD')
-        .filter((c) => {
-          const d = this.getCardDef(c);
-          return (
-            d?.cardType === CardType.ROLE &&
-            (d?.traits?.some((t) => t.includes('升格者')) ||
-              ['露娜', '罗兰', '加百列', '阿尔法'].some((k) => d.name.includes(k)))
-          );
-        });
-      if (handCards.length > 0 && gyRoles.length > 0) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场能力：可丢弃1张手牌从墓地回收1张<升格者>角色 (可跳过)：`,
-          options: handCards.map((c) => this.createGeneralCardChoiceOption(c)),
-          effectType: 'ST02_007_DISCARD_SALVAGE',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 0,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
-    // 9. ST03-001 (薇拉·瑰丽 8费): 消除2同色信号球，选择三头犬角色竖直且全队PP+2000
-    if (cardNum === 'ST03-001') {
-      const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
-      if (orbs.length >= 2 && orbs[0] && orbs[1]) {
-        this.ctx.zoneMgr.moveCard(orbs[0].instanceId, 'GRAVEYARD', { isFaceUp: true });
-        this.ctx.zoneMgr.moveCard(orbs[1].instanceId, 'GRAVEYARD', { isFaceUp: true });
-        roleCard.isReady = true;
-        for (const r of this.getFriendlyRoles(playerId)) {
-          r.tempPPBonus = (r.tempPPBonus || 0) + 2000;
-        }
-        this.ctx.events.push({
-          type: 'ABILITY_ACTIVATED',
-          playerId,
-          cardInstanceId: roleInstanceId,
-          abilityName: `${cardDef.name} 信号激荡`,
-          rulesText: '消除2信号球，全队PP+2000且竖直就绪',
-        });
-      }
-    }
-
-    // 10. ST03-003 (薇拉·瑰丽 4费): 消除信号球或丢弃手牌，公开牌组顶5张牌，选最多2张加入手牌，剩余送墓
-    if (cardNum === 'ST03-003' || cardDef.rulesText.includes('公开我方牌组顶5张牌。选择其中最多1张<21号>')) {
-      const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-      const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
-      const costOptions = [
-        ...handCards.map((c) => ({
-          ...this.createGeneralCardChoiceOption(c),
-          label: `[丢弃手牌] ${this.getCardDef(c)?.name || c.cardNumber}`,
-        })),
-        ...orbs.map((c) => ({
-          ...this.createGeneralCardChoiceOption(c),
-          label: `[消除信号球] ${this.getCardDef(c)?.name || c.cardNumber}`,
-        })),
-      ];
-      if (costOptions.length > 0) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场能力：消除任意信号球或丢弃1张手牌以公开顶5张牌 (可跳过)：`,
-          options: costOptions,
-          effectType: 'ST03_003_PAY_COST_SEARCH',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 0,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
     // 10b. ST04-003 (库洛姆·荣光 8费): 【出】：公开我方牌组顶7张牌，选择其中最多1张《荣光护盾》加入手牌，将剩余的牌加入牌组并洗切。
     if (cardNum === 'ST04-003' || cardDef.rulesText.includes('选择其中最多1张《荣光护盾》加入手牌')) {
       this.revealTopAndSearch(playerId, {
@@ -984,123 +679,6 @@ export class CardEffectEngine {
     if (!card) return { success: false, error: '未找到来源卡牌' };
 
     const cardNum = cardDef.cardNumber || cardDef.id;
-
-    // 2. ST02-008 (苦刑之女): 【起】[费用1]：可以将我方侵蚀计数+1，直到回合结束DP+1
-    if (cardNum === 'ST02-008' || cardDef.rulesText.includes('侵蚀计数+1。若如此做，直到回合结束为止，该牌DP+1')) {
-      const p = this.ctx.state.players[playerId];
-      if (p) p.erosionCount += 1;
-      card.tempDPBonus = (card.tempDPBonus || 0) + 1;
-      this.ctx.events.push({
-        type: 'ABILITY_ACTIVATED',
-        playerId,
-        cardInstanceId: sourceCardId,
-        abilityName: `${cardDef.name} 苦刑狂化`,
-        rulesText: '侵蚀计数+1，该角色直到回合结束DP+1',
-      });
-      return { success: true };
-    }
-
-    // 3. ST02-001 (露娜·银冕): 【起】[费用2]：选择我方墓地1张费用<=4的<升格者>角色出场
-    if (cardNum === 'ST02-001' || cardDef.rulesText.includes('选择我方墓地1张费用为4及以下的<升格者>角色，将其出场')) {
-      const gyRoles = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'GRAVEYARD')
-        .filter((c) => {
-          const d = this.getCardDef(c);
-          return d?.cardType === CardType.ROLE && (d?.cost || 0) <= 4;
-        });
-      if (gyRoles.length === 0) {
-        return { success: false, error: '我方墓地没有费用为4及以下的角色' };
-      }
-      if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
-        return { success: false, error: '战场没有空余卡位' };
-      }
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】起动能力：请选择我方墓地1张费用<=4的角色特殊出场：`,
-        options: gyRoles.map((c) => this.createGeneralCardChoiceOption(c)),
-        effectType: 'RESURRECT_ROLE',
-        sourceCardInstanceId: sourceCardId,
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
-
-    // 4. ST01-001 (露西亚·红莲): 【起】消除【2蓝色信号球】：选择我方战场1张角色返回手牌。若如此做，选择我方手牌1张费用为4及以下的<灰鸦小队>角色出场
-    if (cardNum === 'ST01-001' && cardDef.rulesText.includes('选择我方战场1张角色返回手牌')) {
-      const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
-      const blueOrbs = orbs.filter((c) => {
-        const d = this.getCardDef(c);
-        return d?.signalOrb === 'BLUE' || c.cardNumber.includes('BLUE') || d?.name?.includes('蓝');
-      });
-      if (blueOrbs.length >= 2) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】起动能力：请选择消除2个蓝色信号球：`,
-          options: blueOrbs.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true })),
-          effectType: 'ST01_001_ACTIVATE_ELIMINATE_ORBS',
-          sourceCardInstanceId: sourceCardId,
-          minSelections: 2,
-          maxSelections: 2,
-        });
-        return { success: true };
-      }
-      return { success: false, error: '蓝色信号球不足2个，无法发动该起动能力' };
-    }
-
-    // 5. ST03-002 (薇拉·瑰丽): 【起】横置该牌：下1张<三头犬小队>角色费用-2
-    if (cardNum === 'ST03-002' || cardDef.rulesText.includes('使用的下1张<三头犬小队>角色的费用-2')) {
-      const player = this.ctx.state.players[playerId];
-      if (player) {
-        if (!player.costModifiers) player.costModifiers = [];
-        player.costModifiers.push({
-          id: `cost-mod-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          amount: 2,
-          targetTrait: '三头犬小队',
-          cardType: CardType.ROLE,
-          excludeAscension: true,
-          remainingCount: 1,
-        });
-      }
-
-      this.ctx.events.push({
-        type: 'ABILITY_ACTIVATED',
-        playerId,
-        cardInstanceId: sourceCardId,
-        abilityName: `${cardDef.name} 狂咲支援`,
-        rulesText: '横置该牌：直到回合结束为止，我方使用的下1张<三头犬小队>角色的费用-2（不包含升变费用）。',
-      });
-      return { success: true };
-    }
-
-    // 6. ST03-008 (21号·XXI): 【起】横置该牌：下1张<薇拉>角色费用-1
-    if (cardNum === 'ST03-008' || cardDef.rulesText.includes('使用的下1张<薇拉>角色的费用-1')) {
-      const player = this.ctx.state.players[playerId];
-      if (player) {
-        if (!player.costModifiers) player.costModifiers = [];
-        player.costModifiers.push({
-          id: `cost-mod-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          amount: 1,
-          targetTrait: '薇拉',
-          cardType: CardType.ROLE,
-          excludeAscension: true,
-          remainingCount: 1,
-        });
-      }
-
-      this.ctx.events.push({
-        type: 'ABILITY_ACTIVATED',
-        playerId,
-        cardInstanceId: sourceCardId,
-        abilityName: `${cardDef.name} 牵引引流`,
-        rulesText: '横置该牌：直到回合结束为止，我方使用的下1张<薇拉>角色的费用-1。',
-      });
-      return { success: true };
-    }
 
     // 6b. ST04-007 (神威·重能 6费): 【起】横置该牌：公开我方牌组顶5张牌，选1张突击鹰小队加入手牌，剩余牌组底，那之后弃1手牌
     if (cardNum === 'ST04-007' || (cardDef.rulesText.includes('公开我方牌组顶5张牌') && cardDef.rulesText.includes('突击鹰小队'))) {
@@ -1242,6 +820,12 @@ export class CardEffectEngine {
     const selectedIds = action.selectedIds || (action as any).selectedOptionIds || [];
     const playerId = action.playerId;
     const player = this.ctx.state.players[playerId];
+
+    if (choice.effectType?.startsWith('PRESET_')) {
+      const result = this.presets.resolveChoice(action, choice);
+      if (!result.success) return result;
+      return this.finishChoiceResolution(choice, playerId, selectedIds);
+    }
 
     switch (choice.effectType) {
       // 专武信号球二选一 / 充能自
@@ -1421,32 +1005,6 @@ export class CardEffectEngine {
         break;
       }
 
-      // 刹那制裁按侵蚀削减PP
-      case 'REDUCE_PP_BY_EROSION': {
-        const erosion = player?.erosionCount || 1;
-        const reduction = Math.max(1, erosion) * 2000;
-        for (const id of selectedIds) {
-          const role = this.ctx.state.cards[id];
-          if (role) {
-            role.tempPPBonus = (role.tempPPBonus || 0) - reduction;
-            const effectivePP = this.ctx.fieldMgr.calculateRoleEffectivePP(id);
-            if (effectivePP <= 0) {
-              this.ctx.fieldMgr.handleCardLeaveField(id);
-              this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-              this.ctx.events.push({
-                type: 'CARD_DESTROYED',
-                cardInstanceId: id,
-                reason: 'PP_ZERO',
-              });
-            }
-          }
-        }
-        if (choice.sourceCardInstanceId) {
-          this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-        }
-        break;
-      }
-
       // 效果伤害角色
       case 'DEAL_DAMAGE_TO_ROLE': {
         const dmg = (choice.metadata?.damage as number) || 1000;
@@ -1593,7 +1151,6 @@ export class CardEffectEngine {
       }
 
       // 公开检索最终卡牌选择结算 (RESOLVE_REVEALED_SELECTION 与 SEARCH_TOP_CARDS 通用处理)
-      case 'RESOLVE_REVEALED_SELECTION':
       case 'SEARCH_TOP_CARDS': {
         const topCardIds = (choice.metadata?.topCardIds as string[]) || [];
         const eligibleCardIds = (choice.metadata?.eligibleCardIds as string[]) || [];
@@ -1684,119 +1241,6 @@ export class CardEffectEngine {
         break;
       }
 
-      // ST01-001 弃牌召唤后续公开检视
-      case 'ST01_001_DISCARD_RECRUIT': {
-        const discardId = selectedIds[0];
-        if (discardId) {
-          this.ctx.zoneMgr.moveCard(discardId, 'GRAVEYARD', { isFaceUp: true });
-          return this.revealTopAndSearch(playerId, {
-            sourceCardInstanceId: choice.sourceCardInstanceId,
-            cardName: '露西亚·红莲',
-            count: 5,
-            prompt: '已弃牌！请选择公开的1张<=3费<灰鸦小队>角色出场：',
-            promptNoEligible: '公开卡牌中未检出符合条件的<=3费灰鸦角色，点击确认放置到牌组底：',
-            isEligible: (_c, d) => {
-              if (!d || d.cardType !== CardType.ROLE || (d.cost ?? 0) > 3) return false;
-              const traits = d.traits || [];
-              return traits.some((t) => t.includes('灰鸦')) || ['露西亚', '里', '丽芙'].some((k) => d.name.includes(k));
-            },
-            ineligibleReason: '非<=3费<灰鸦小队>角色',
-            destination: 'BATTLEFIELD',
-            remainingDestination: 'DECK_BOTTOM',
-            minSelections: 1,
-            maxSelections: 1,
-          });
-        }
-        break;
-      }
-
-      // ST02-003 弃牌检索后续公开检视 (升格者加入手牌，其余入墓)
-      case 'ST02_003_DISCARD_SEARCH': {
-        const discardId = selectedIds[0];
-        if (discardId) {
-          this.ctx.zoneMgr.moveCard(discardId, 'GRAVEYARD', { isFaceUp: true });
-          return this.revealTopAndSearch(playerId, {
-            sourceCardInstanceId: choice.sourceCardInstanceId,
-            cardName: '露娜·银冕',
-            count: 3,
-            prompt: '已弃牌！请选择1张公开的<升格者>角色加入手牌：',
-            promptNoEligible: '未检出<升格者>角色，点击确认将所有公开卡牌送入墓地：',
-            isEligible: (_c, d) => {
-              if (!d || d.cardType !== CardType.ROLE) return false;
-              const traits = d.traits || [];
-              return (
-                traits.some((t) => t.includes('升格者')) ||
-                ['露娜', '罗兰', '加百列', '阿尔法'].some((k) => d.name.includes(k))
-              );
-            },
-            ineligibleReason: '非<升格者>角色',
-            destination: 'HAND',
-            remainingDestination: 'GRAVEYARD',
-            minSelections: 1,
-            maxSelections: 1,
-          });
-        }
-        break;
-      }
-
-      // ST02-007 弃牌回收墓地升格者角色
-      case 'ST02_007_DISCARD_SALVAGE': {
-        const discardId = selectedIds[0];
-        if (discardId) {
-          this.ctx.zoneMgr.moveCard(discardId, 'GRAVEYARD', { isFaceUp: true });
-          const gyRoles = this.ctx.zoneMgr
-            .getCardsInZone(playerId, 'GRAVEYARD')
-            .filter((c) => {
-              const d = this.getCardDef(c);
-              return (
-                d?.cardType === CardType.ROLE &&
-                (d?.traits?.some((t) => t.includes('升格者')) ||
-                  ['露娜', '罗兰', '加百列', '阿尔法'].some((k) => d.name.includes(k)))
-              );
-            });
-          if (gyRoles.length > 0) {
-            this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              playerId,
-              choiceType: 'SELECT_CARDS',
-              prompt: '已弃牌！请选择墓地1张<升格者>角色回收至手牌：',
-              options: gyRoles.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true })),
-              effectType: 'SALVAGE_TO_HAND',
-              sourceCardInstanceId: choice.sourceCardInstanceId,
-              minSelections: 1,
-              maxSelections: 1,
-            });
-            return { success: true };
-          }
-        }
-        break;
-      }
-
-      // ST03-003 支付代价公开检索 (选最多1张21号和1张诺克提加入手牌，其余入墓)
-      case 'ST03_003_PAY_COST_SEARCH': {
-        const costId = selectedIds[0];
-        if (costId) {
-          this.ctx.zoneMgr.moveCard(costId, 'GRAVEYARD', { isFaceUp: true });
-          return this.revealTopAndSearch(playerId, {
-            sourceCardInstanceId: choice.sourceCardInstanceId,
-            cardName: '薇拉·瑰丽',
-            count: 5,
-            prompt: '已支付代价！请选择最多1张<21号>和最多1张<诺克提>加入手牌：',
-            promptNoEligible: '未检出<21号>或<诺克提>角色，点击确认将所有公开卡牌放置到墓地：',
-            isEligible: (_c, d) => {
-              if (!d || d.cardType !== CardType.ROLE) return false;
-              return d.name.includes('21号') || d.name.includes('诺克提');
-            },
-            ineligibleReason: '非<21号>或<诺克提>角色',
-            destination: 'HAND',
-            remainingDestination: 'GRAVEYARD',
-            minSelections: 0,
-            maxSelections: 2,
-          });
-        }
-        break;
-      }
-
       // ST06-005 弃牌召唤 (公开顶5张，选择<=4费亚里莎/塞西莉出场，洗牌)
       case 'ST06_005_DISCARD_RECRUIT': {
         const discardId = selectedIds[0];
@@ -1849,78 +1293,6 @@ export class CardEffectEngine {
         break;
       }
 
-      // ST01-001 起动消除2蓝色信号球后回手己方角色
-      case 'ST01_001_ACTIVATE_ELIMINATE_ORBS': {
-        if (selectedIds.length === 2) {
-          for (const id of selectedIds) {
-            this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-          }
-          const friendlyRoles = this.getFriendlyRoles(playerId);
-          this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            playerId,
-            choiceType: 'SELECT_CARDS',
-            prompt: '已消除2个蓝色信号球！请选择我方战场1张角色返回手牌：',
-            options: friendlyRoles.map((c) => this.createRoleChoiceOption(c)),
-            effectType: 'BOUNCE_FRIENDLY_ROLE',
-            sourceCardInstanceId: choice.sourceCardInstanceId,
-            minSelections: 1,
-            maxSelections: 1,
-          });
-          return { success: true };
-        }
-        break;
-      }
-
-      // BP01-010 消除信号球赋予贯通
-      case 'BP01_010_ELIMINATE_ORBS_PIERCE': {
-        if (selectedIds.length === 2) {
-          for (const id of selectedIds) {
-            this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-          }
-          const targetRoleId = choice.metadata?.targetRoleId as string;
-          const target = this.ctx.state.cards[targetRoleId];
-          if (target) {
-            target.grantedKeywords = target.grantedKeywords || [];
-            if (!target.grantedKeywords.includes('贯通')) {
-              target.grantedKeywords.push('贯通');
-            }
-            this.ctx.events.push({
-              type: 'ABILITY_ACTIVATED',
-              playerId,
-              cardInstanceId: choice.sourceCardInstanceId || '',
-              abilityName: '【罗兰·戏炎】赋予贯通',
-              rulesText: '已消除2个信号球，《露娜·银冕》获得【贯通】！',
-            });
-          }
-        }
-        break;
-      }
-
-      // BP01-010 起动弃牌代价
-      case 'BP01_010_DISCARD_COST': {
-        const discardId = selectedIds[0];
-        if (discardId) {
-          this.ctx.zoneMgr.moveCard(discardId, 'GRAVEYARD', { isFaceUp: true });
-          const costCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'COST');
-          if (costCards.length > 0) {
-            this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              playerId,
-              choiceType: 'SELECT_CARDS',
-              prompt: '已弃牌！请选择我方费用区1张牌送入墓地以补充牌组顶费用：',
-              options: costCards.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true })),
-              effectType: 'DISCARD_FROM_COST_AND_REPLENISH',
-              sourceCardInstanceId: choice.sourceCardInstanceId,
-              minSelections: 1,
-              maxSelections: 1,
-            });
-            return { success: true };
-          }
-        }
-        break;
-      }
-
       // 费用送入墓地并补充牌组顶费用
       case 'DISCARD_FROM_COST_AND_REPLENISH': {
         for (const id of selectedIds) {
@@ -1956,37 +1328,6 @@ export class CardEffectEngine {
             });
             return { success: true };
           }
-        }
-        break;
-      }
-
-      // BP01-007 刹那冰华 PP+1500 并可选追加弃牌
-      case 'BP01_007_BUFF_AND_DISCARD': {
-        const targetId = selectedIds[0];
-        if (targetId) {
-          const targetCard = this.ctx.state.cards[targetId];
-          if (targetCard) {
-            targetCard.tempPPBonus = (targetCard.tempPPBonus || 0) + 1500;
-          }
-          const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-          if (handCards.length > 0) {
-            this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              playerId,
-              choiceType: 'SELECT_CARDS',
-              prompt: '【刹那冰华】基础PP+1500生效！可追加丢弃手牌（每丢弃1张PP再+1000，可跳过）：',
-              options: handCards.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true })),
-              effectType: 'BP01_007_EXTRA_DISCARD',
-              sourceCardInstanceId: choice.sourceCardInstanceId,
-              metadata: { targetRoleId: targetId },
-              minSelections: 0,
-              maxSelections: handCards.length,
-            });
-            return { success: true };
-          }
-        }
-        if (choice.sourceCardInstanceId) {
-          this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
         }
         break;
       }
@@ -2134,36 +1475,6 @@ export class CardEffectEngine {
         break;
       }
 
-      // 角色回手
-      case 'BOUNCE_FRIENDLY_ROLE': {
-        for (const id of selectedIds) {
-          this.ctx.fieldMgr.handleCardLeaveField(id);
-          this.ctx.zoneMgr.moveCard(id, 'HAND', { isFaceUp: true, isReady: true });
-        }
-        // ST01-001 连携后续：选择手牌中费用<=4的<灰鸦小队>角色出场
-        const handRoles = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND').filter((c) => {
-          const d = this.getCardDef(c);
-          return d?.cardType === CardType.ROLE && (d?.cost || 0) <= 4 && (d?.traits?.some((t) => t.includes('灰鸦')) || !d?.traits?.length);
-        });
-        if (handRoles.length > 0 && this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined) {
-          this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            playerId,
-            choiceType: 'SELECT_CARDS',
-            prompt: '已回手角色！请选择手牌中1张<=4费的<灰鸦小队>角色特殊出场：',
-            options: handRoles.map((c) => {
-              const d = this.getCardDef(c);
-              return { id: c.instanceId, label: `【${d?.name}】费用:${d?.cost} PP:${d?.basePP}` };
-            }),
-            effectType: 'RESURRECT_ROLE',
-            minSelections: 0,
-            maxSelections: 1,
-          });
-          return { success: true };
-        }
-        break;
-      }
-
       // BP01-003 回手两段式结算
       case 'BP01_003_BOUNCE_STEP1': {
         const bounceId = selectedIds[0];
@@ -2234,26 +1545,6 @@ export class CardEffectEngine {
         break;
       }
 
-      // 从费用区丢弃至墓地
-      case 'DISCARD_FROM_COST': {
-        for (const id of selectedIds) {
-          this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-        }
-        break;
-      }
-
-      // 费用区卡牌竖直
-      case 'READY_COST': {
-        for (const id of selectedIds) {
-          const card = this.ctx.state.cards[id];
-          if (card) {
-            card.isReady = true;
-            card.isFaceUp = true;
-          }
-        }
-        break;
-      }
-
       // 角色以横置状态放置到对方费用区 (BP01-008 等)
       case 'SEND_ROLE_TO_COST': {
         for (const id of selectedIds) {
@@ -2284,28 +1575,11 @@ export class CardEffectEngine {
         break;
       }
 
-      // 角色横置
-      case 'REST_ROLE': {
-        for (const id of selectedIds) {
-          const card = this.ctx.state.cards[id];
-          if (card) card.isReady = false;
-        }
-        break;
-      }
-
       // 通用角色返回手牌
       case 'BOUNCE_ROLE': {
         for (const id of selectedIds) {
           this.ctx.fieldMgr.handleCardLeaveField(id);
           this.ctx.zoneMgr.moveCard(id, 'HAND', { isFaceUp: true, isReady: true });
-        }
-        break;
-      }
-
-      // 墓地信号球回收至信号球区
-      case 'RECOVER_ORB_TO_ZONE': {
-        for (const id of selectedIds) {
-          this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: true });
         }
         break;
       }
@@ -2388,6 +1662,14 @@ export class CardEffectEngine {
       }
     }
 
+    return this.finishChoiceResolution(choice, playerId, selectedIds);
+  }
+
+  private finishChoiceResolution(
+    choice: PendingChoice,
+    playerId: string,
+    selectedIds: string[]
+  ): { success: boolean; error?: string } {
     // 若当前决策衍生出了下一阶段的目标选择决策 (如 SELECT_ROLE_FOR_CHARGE_BUFF)，予以保留
     if (this.ctx.state.currentPendingChoice && this.ctx.state.currentPendingChoice.id !== choice.id) {
       // 保持派生的二级目标选择决策激活状态
@@ -2428,26 +1710,24 @@ export class CardEffectEngine {
     cardDef: CardVersionData
   ): boolean {
     const rules = cardDef.rulesText || '';
-    if (!rules.includes('【充能自】') && !rules.includes('充能自')) return false;
+    const index = rules.indexOf('【充能自】');
+    if (index < 0) return false;
+    // 只解析【充能自】能力本身的文本，避免把同一张卡其他能力的字样当成选项
+    const segment = rules.slice(index).split(/\n(?=【)/)[0]!;
+    // 信号球牌的标准【充能自】为「从以下2项选择1项」；带条件或代价的【充能自】(如 BP03/BP04 的部分卡牌) 尚未实现
+    if (!/^【充能自】[:：]\s*从以下2项选择1项/.test(segment)) return false;
 
     const options: { id: string; label: string }[] = [];
-
-    if (rules.includes('DP+1')) {
+    if (segment.includes('DP+1')) {
       options.push({ id: 'opt_dp_plus_1', label: '选择我方战场最多1张角色，直到回合结束 DP+1' });
     }
-    if (rules.includes('抽1张牌')) {
-      options.push({ id: 'opt_draw_1', label: '额外抽 1 张牌' });
+    if (segment.includes('抽1张牌')) {
+      options.push({ id: 'opt_draw_1', label: '抽 1 张牌' });
     }
-    if (rules.includes('侵蚀计数')) {
+    if (segment.includes('侵蚀计数-1')) {
       options.push({ id: 'opt_erosion_minus_1', label: '若我方侵蚀计数不小于对方，我方侵蚀计数 -1' });
     }
-    if (rules.includes('《里·超刻》') && rules.includes('【速攻】')) {
-      options.push({ id: 'opt_grant_sugong_chaoke', label: '选择我方战场1张《里·超刻》，直到回合结束获得【速攻】' });
-    }
-    if (rules.includes('《里·超刻》') && rules.includes('将其竖直')) {
-      options.push({ id: 'opt_ready_chaoke', label: '选择我方战场1张《里·超刻》，该回合结束时将其竖直' });
-    }
-    if (rules.includes('PP+2000') || options.length < 2) {
+    if (segment.includes('PP+2000')) {
       options.push({ id: 'opt_pp_plus_2000', label: '选择我方战场最多1张角色，直到回合结束 PP+2000' });
     }
 
