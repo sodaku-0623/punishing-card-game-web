@@ -648,38 +648,6 @@ export class CardEffectEngine {
       return { success: true };
     }
 
-    // 8. 闪避充能 (BP01-012): 我方角色PP+1500
-    if (cardNum === 'BP01-012' || cardDef.name.includes('闪避充能')) {
-      const friendlyRoles = this.getFriendlyRoles(playerId);
-      if (friendlyRoles.length === 0) {
-        this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      } else if (friendlyRoles.length === 1 && friendlyRoles[0]) {
-        friendlyRoles[0].tempPPBonus = (friendlyRoles[0].tempPPBonus || 0) + 1500;
-        this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      } else {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】发动：请选择我方战场1张角色获得 PP+1500：`,
-          options: friendlyRoles.map((c) => this.createRoleChoiceOption(c)),
-          effectType: 'BUFF_ROLE_PP',
-          sourceCardInstanceId: cardInstanceId,
-          metadata: { buffPP: 1500 },
-          minSelections: 1,
-          maxSelections: 1,
-        });
-      }
-      return { success: true };
-    }
-
-    // 9. 超算空间 (BP01-013): 抽2张牌
-    if (cardNum === 'BP01-013' || cardDef.name.includes('超算空间')) {
-      this.ctx.zoneMgr.drawCards(playerId, 2);
-      this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      return { success: true };
-    }
-
     // 通用战术默认处理 (抽牌、削弱、破坏、增益、检索等)
     return this.resolveUniversalTacticsEffect(playerId, cardInstanceId, cardDef);
   }
@@ -712,23 +680,6 @@ export class CardEffectEngine {
           maxSelections: 2,
         });
         return;
-      }
-    }
-
-    // 1b. Mock模式兼容：若规则文本包含“3张以上明费”，且明费达标，PP+500
-    if (cardDef.rulesText.includes('3张以上明费')) {
-      const openCostCount = this.ctx.zoneMgr
-        .getCardsInZone(playerId, 'COST')
-        .filter((c) => c.isFaceUp).length;
-      if (openCostCount >= 3) {
-        roleCard.tempPPBonus = (roleCard.tempPPBonus || 0) + 500;
-        this.ctx.events.push({
-          type: 'ABILITY_ACTIVATED',
-          playerId,
-          cardInstanceId: roleInstanceId,
-          abilityName: `${cardDef.name} 明费加成`,
-          rulesText: '出场时明费达标，PP+500',
-        });
       }
     }
 
@@ -790,66 +741,6 @@ export class CardEffectEngine {
           maxSelections: 1,
         });
         return;
-      }
-    }
-
-    // 2d. BP01-008 (露娜·银冕 7费): 【出】消除2同色信号球：选择对方战场1张角色，将其以横置状态放置到对方费用区。
-    if (cardNum === 'BP01-008' || cardDef.rulesText.includes('将其以横置状态放置到对方费用区')) {
-      const oppRoles = this.getOpponentRoles(playerId);
-      if (oppRoles.length > 0) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场：请选择对方战场1张角色，以横置状态放置到对方费用区：`,
-          options: oppRoles.map((c) => this.createRoleChoiceOption(c)),
-          effectType: 'SEND_ROLE_TO_COST',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 1,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
-    // 2e. BP01-011 (露娜·银冕 6费): 【出】消除2同色信号球：选择我方墓地1张费用为4及以下的<升格者>角色，将其出场。
-    if (cardNum === 'BP01-011' || cardDef.rulesText.includes('选择我方墓地1张费用为4及以下的<升格者>角色，将其出场')) {
-      const gyRoles = this.ctx.zoneMgr.getCardsInZone(playerId, 'GRAVEYARD').filter((c) => {
-        const d = this.getCardDef(c);
-        return (
-          d?.cardType === CardType.ROLE &&
-          (d?.cost || 0) <= 4 &&
-          (d?.traits?.some((t) => t.includes('升格')) || d?.name?.includes('露娜'))
-        );
-      });
-      if (gyRoles.length > 0 && this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined) {
-        this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          playerId,
-          choiceType: 'SELECT_CARDS',
-          prompt: `【${cardDef.name}】登场：请选择我方墓地1张<=4费的<升格者>角色出场：`,
-          options: gyRoles.map((c) => this.createGeneralCardChoiceOption(c)),
-          effectType: 'RESURRECT_ROLE',
-          sourceCardInstanceId: roleInstanceId,
-          minSelections: 1,
-          maxSelections: 1,
-        });
-        return;
-      }
-    }
-
-    // 2f. BP01-007 (比安卡·零度): 出场时若我方战场角色为3张以上，抽1张牌
-    if (cardDef.rulesText.includes('角色为3张以上，抽1张牌')) {
-      const roles = this.getFriendlyRoles(playerId);
-      if (roles.length >= 3) {
-        this.ctx.zoneMgr.drawCards(playerId, 1);
-        this.ctx.events.push({
-          type: 'ABILITY_ACTIVATED',
-          playerId,
-          cardInstanceId: roleInstanceId,
-          abilityName: `${cardDef.name} 阵列抽牌`,
-          rulesText: '出场时战场角色达到3张，抽1张牌',
-        });
       }
     }
 
@@ -977,7 +868,7 @@ export class CardEffectEngine {
     }
 
     // 9. ST03-001 (薇拉·瑰丽 8费): 消除2同色信号球，选择三头犬角色竖直且全队PP+2000
-    if (cardNum === 'ST03-001' || cardDef.rulesText.includes('消除2同色信号球')) {
+    if (cardNum === 'ST03-001') {
       const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
       if (orbs.length >= 2 && orbs[0] && orbs[1]) {
         this.ctx.zoneMgr.moveCard(orbs[0].instanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -1063,24 +954,6 @@ export class CardEffectEngine {
       }
     }
 
-    // 11. BP01-003 (丽芙·蚀暗 2费): 查看牌组顶3张牌，选1张道具牌加入手牌
-    if (cardNum === 'BP01-003' || cardDef.rulesText.includes('查看我方牌组顶3张卡牌，可将其中的1张道具牌加入手牌')) {
-      this.revealTopAndSearch(playerId, {
-        sourceCardInstanceId: roleInstanceId,
-        cardName: cardDef.name,
-        count: 3,
-        prompt: `【${cardDef.name}】出场：请选择1张战术/道具牌加入手牌：`,
-        promptNoEligible: `公开卡牌中未检出战术/道具牌，点击确认放置到牌组底：`,
-        isEligible: (_c, d) => Boolean(d?.cardType === CardType.TACTICS || d?.cardType === CardType.EQUIPMENT),
-        ineligibleReason: '非战术/道具牌',
-        destination: 'HAND',
-        remainingDestination: 'DECK_BOTTOM',
-        minSelections: 0,
-        maxSelections: 1,
-      });
-      return;
-    }
-
     // 通用【出】效果解析与自动触发
     this.resolveUniversalEntryEffect(playerId, roleInstanceId, cardDef);
   }
@@ -1088,33 +961,16 @@ export class CardEffectEngine {
   // =========================================================================
   // 3. 装备卡与辅助机生效处理
   // =========================================================================
-  handleEquipmentBuff(targetRoleId: string, equipDef: CardVersionData): void {
-    const roleCard = this.ctx.state.cards[targetRoleId];
-    if (!roleCard) return;
+  /**
+   * 装备出场后的处理。4.18.2 装备角色的 PP 增加装备牌的基本 PP 由 calculateRoleEffectivePP 计入；
+   * 装备牌文本中的能力 (如「装备角色为《…》时获得…」) 尚未实现，不再按文本中的「PP+X」近似追加加成。
+   */
+  handleEquipmentBuff(_targetRoleId: string, _equipDef: CardVersionData): void {}
 
-    // 动态提取装备卡的 PP/DP 增益 (20张装备卡自适应)
-    const ppMatch = equipDef.rulesText.match(/PP\+(\d+)/);
-    if (ppMatch && ppMatch[1]) {
-      roleCard.tempPPBonus = (roleCard.tempPPBonus || 0) + parseInt(ppMatch[1], 10);
-    }
-    const dpMatch = equipDef.rulesText.match(/DP\+(\d+)/);
-    if (dpMatch && dpMatch[1]) {
-      roleCard.tempDPBonus = (roleCard.tempDPBonus || 0) + parseInt(dpMatch[1], 10);
-    }
-
-    if (equipDef.cardNumber === 'BP01-010' || equipDef.name.includes('红莲狂士')) {
-      if (!ppMatch) roleCard.tempPPBonus = (roleCard.tempPPBonus || 0) + 500;
-    }
-  }
-
-  handleAssistBuff(playerId: string, assistDef: CardVersionData): void {
-    if (assistDef.cardNumber === 'BP01-011' || assistDef.name.includes('辅助机·凌鹤')) {
-      const friendlyRoles = this.getFriendlyRoles(playerId);
-      for (const r of friendlyRoles) {
-        r.tempPPBonus = (r.tempPPBonus || 0) + 500;
-      }
-    }
-  }
+  /**
+   * 辅助机出场后的处理。辅助机的能力尚未实现。
+   */
+  handleAssistBuff(_playerId: string, _assistDef: CardVersionData): void {}
 
   // =========================================================================
   // 4. 起动能力【起】处理
@@ -1128,27 +984,6 @@ export class CardEffectEngine {
     if (!card) return { success: false, error: '未找到来源卡牌' };
 
     const cardNum = cardDef.cardNumber || cardDef.id;
-
-    // 1. BP01-004 (里·异火): 【起】【1费】: 对对方战场的1张角色造成1000点效果伤害
-    if (cardNum === 'BP01-004' || cardDef.rulesText.includes('造成1000点效果伤害')) {
-      const oppRoles = this.getOpponentRoles(playerId);
-      if (oppRoles.length === 0) {
-        return { success: false, error: '对方战场没有可指定的目标角色' };
-      }
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】起动能力：请选择对方战场1张角色造成1000点效果伤害：`,
-        options: oppRoles.map((c) => this.createRoleChoiceOption(c)),
-        effectType: 'DEAL_DAMAGE_TO_ROLE',
-        sourceCardInstanceId: sourceCardId,
-        metadata: { damage: 1000 },
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
-    }
 
     // 2. ST02-008 (苦刑之女): 【起】[费用1]：可以将我方侵蚀计数+1，直到回合结束DP+1
     if (cardNum === 'ST02-008' || cardDef.rulesText.includes('侵蚀计数+1。若如此做，直到回合结束为止，该牌DP+1')) {
@@ -1286,26 +1121,6 @@ export class CardEffectEngine {
         minSelections: 1,
         maxSelections: 1,
       });
-    }
-
-    // 7. BP01-010 (露娜·银冕 5费): 【起】【回合1】丢弃1张手牌：选择我方费用区1张牌放置到墓地，将我方牌组顶1张牌放置到费用区
-    if (cardNum === 'BP01-010' || cardDef.rulesText.includes('选择我方费用区1张牌放置到墓地，将我方牌组顶1张牌放置到费用区')) {
-      const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
-      if (handCards.length === 0) {
-        return { success: false, error: '手牌不足，无法支付弃牌代价' };
-      }
-      this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        playerId,
-        choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】起动能力：请选择1张手牌丢弃作为代价：`,
-        options: handCards.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true })),
-        effectType: 'BP01_010_DISCARD_COST',
-        sourceCardInstanceId: sourceCardId,
-        minSelections: 1,
-        maxSelections: 1,
-      });
-      return { success: true };
     }
 
     // 8. BP01-014 / BP01-016 (露西亚·深红囚影): 【起】【回合1】：选择我方墓地1张<封刃太刀>或<大太刀>装备，将其装备
@@ -2502,9 +2317,28 @@ export class CardEffectEngine {
           if (target && choice.sourceCardInstanceId) {
             target.underneathCardIds = target.underneathCardIds || [];
             target.underneathCardIds.push(choice.sourceCardInstanceId);
+            // 放置到其他卡牌下方：离开原卡位 (9.6 其原本下方的卡牌送墓)，作为下方的牌留在该卡位 (3.2.6)
             this.ctx.fieldMgr.handleCardLeaveField(choice.sourceCardInstanceId);
-            this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'PROCESSING', { isFaceUp: true });
+            this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'BATTLEFIELD', { slotIndex: target.slotIndex, isFaceUp: true });
           }
+        }
+        break;
+      }
+
+      // 10.16 同命：攻击结束时可以破坏该角色；若如此做，破坏与其发生战斗的角色
+      case 'MUTUAL_DESTINY': {
+        if (selectedIds[0] !== 'opt_yes') break;
+        const attackerId = choice.metadata?.attackerCardId as string | undefined;
+        const battledId = choice.metadata?.battledCardId as string | undefined;
+        const attacker = attackerId ? this.ctx.state.cards[attackerId] : undefined;
+        // 10.16.2.2 无法将该角色破坏时，不执行后续效果
+        if (!attacker || !this.ctx.fieldMgr.isSlotRole(playerId, attacker.instanceId)) break;
+        this.ctx.zoneMgr.moveCard(attacker.instanceId, 'GRAVEYARD', { isFaceUp: true });
+        this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: attacker.instanceId, reason: 'EFFECT' });
+        const battled = battledId ? this.ctx.state.cards[battledId] : undefined;
+        if (battled && this.ctx.fieldMgr.isSlotRole(battled.controllerPlayerId, battled.instanceId)) {
+          this.ctx.zoneMgr.moveCard(battled.instanceId, 'GRAVEYARD', { isFaceUp: true });
+          this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: battled.instanceId, reason: 'EFFECT' });
         }
         break;
       }

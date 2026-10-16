@@ -43,17 +43,43 @@ export interface AbilityDefinition {
   payload?: Record<string, unknown>; // 结构化效果数据
 }
 
+/**
+ * 8.11.2.a.2 升变条件中「&」右侧的限制条件
+ */
+export type AscensionRestriction =
+  | { kind: 'MIN_COST_LIMIT'; value: number } // 费用上限X及以上 (3.6.6)
+  | { kind: 'MIN_OPEN_COST_LIMIT'; value: number } // 明费上限X及以上 (3.6.6.a)
+  | { kind: 'MIN_ORB_ZONE_CARDS'; value: number; cardName?: string } // 信号球区的(《卡名》)牌X张及以上
+  | { kind: 'MAX_FIELD_ROLES'; value: number } // 我方战场的角色为X张及以下
+  | { kind: 'COST_ZONE_ROLES_ATTRIBUTE'; attribute: string }; // 费用区所有角色牌为X属性
+
 export interface AscensionRuleConfig {
+  /** 8.11.2.a.1 升变对象 */
   targetFilter: {
+    /** 升变对象费用的上限 (含)。「费用8以下」按 10.12 为「小于8」，即 maxCost = 7 */
     maxCost?: number;
+    /** 「费用为X的」：费用必须恰好为 X */
+    exactCost?: number;
+    /** 以 <特征> 指定的升变对象 */
     traits?: string[];
+    /** 以《卡名》指定的升变对象 (卡名完全一致，2.1.3) */
+    exactName?: string;
+    /** 对象的特征或卡名关键字 (兼容旧数据) */
     nameIncludes?: string;
+    /** 升变对象须为竖直状态 */
+    requireReady?: boolean;
   };
   restrictionFilter?: {
     minCostLimit?: number;
+    conditions?: AscensionRestriction[];
   };
+  /** 升变条件或代价中包含引擎尚未支持的内容时记录原因，此时不允许使用升变机制 */
+  unsupportedReason?: string;
   ascensionCost: number;
+  /** 8.11.2.c 升变能力赋予的关键字 (如 速攻、突进) */
   grantKeywords: string[];
+  /** 可以从哪些区域使用升变机制 (默认手牌) */
+  sourceZones?: ('HAND' | 'GRAVEYARD')[];
 }
 
 export interface CardVersionData {

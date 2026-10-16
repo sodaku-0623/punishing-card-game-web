@@ -129,6 +129,14 @@ export class BattlefieldManager {
     const ascensionCard = this.state.cards[ascensionCardId];
     if (!ascensionCard) return false;
 
+    // 先将升变卡放置到卡位 (移动区域会重置卡牌状态，下方卡牌与装备须在移动之后再挂接)
+    slot.roleCardId = ascensionCardId;
+    this.zoneMgr.moveCard(ascensionCardId, 'BATTLEFIELD', {
+      slotIndex,
+      isFaceUp: true,
+      isReady: true,
+    });
+
     // 8.11.3.f.1 升变对象及其下方原本的卡牌将保留在升变出场的卡牌下方
     const stackedCardIds = [...targetCard.underneathCardIds, targetRoleCardId];
     ascensionCard.underneathCardIds = stackedCardIds;
@@ -139,25 +147,18 @@ export class BattlefieldManager {
       targetCard.attachedEquipmentId = undefined;
     }
 
-    // 转移战场宿主
-    slot.roleCardId = ascensionCardId;
-    this.zoneMgr.moveCard(ascensionCardId, 'BATTLEFIELD', {
-      slotIndex,
-      isFaceUp: true,
-      isReady: true,
-    });
+    // 8.11.4.c 升变对象原本的卡牌状态不继承；作为下方的牌，其临时效果也不再适用 (3.2.6)
+    targetCard.tempPPBonus = undefined;
+    targetCard.tempDPBonus = undefined;
+    targetCard.grantedKeywords = undefined;
 
-    // 8.11.3.f.3 升变出场获得《速攻》等词条处理
+    // 8.11.2.c 执行升变能力：获得升变能力中记述的关键字 (如【速攻】、【突进】)
     const ascensionDef =
-      (ascensionCard.cardId ? this.cardDb.getCard(ascensionCard.cardId) : undefined) ||
-      this.cardDb.getCard(ascensionCard.cardNumber);
-    if (ascensionDef?.rulesText?.includes('速攻')) {
-      if (!ascensionCard.grantedKeywords) {
-        ascensionCard.grantedKeywords = [];
-      }
-      if (!ascensionCard.grantedKeywords.includes('速攻')) {
-        ascensionCard.grantedKeywords.push('速攻');
-      }
+      this.cardDb.getCard(ascensionCard.cardNumber) ||
+      (ascensionCard.cardId ? this.cardDb.getCard(ascensionCard.cardId) : undefined);
+    const grantKeywords = ascensionDef?.ascensionConfig?.grantKeywords ?? [];
+    if (grantKeywords.length > 0) {
+      ascensionCard.grantedKeywords = [...new Set([...(ascensionCard.grantedKeywords ?? []), ...grantKeywords])];
     }
 
     // 被升变的原卡不再单独计为顶层角色
