@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
 import { CardType, ElementAttribute } from '@zhanshuang/shared';
-import { fillCostZone } from './helpers.js';
+import { endTurn, fillCostZone } from './helpers.js';
 
 function createST03Deck(): string[] {
   return [
@@ -346,8 +346,8 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     const p2Card = engine.zoneMgr.getCardsInZone(p2, 'DECK')[0]!;
     engine.zoneMgr.moveCard(p2Card.instanceId, 'COST', { isFaceUp: false, isReady: true });
 
-    // p1 结束回合，触发 startEndPhase
-    engine.phaseMachine.startEndPhase();
+    // p1 结束回合 (6.5)
+    endTurn(engine);
 
     // p1 的未使用暗费被送入墓地
     expect(unusedHiddenCard.zone).toBe('GRAVEYARD');

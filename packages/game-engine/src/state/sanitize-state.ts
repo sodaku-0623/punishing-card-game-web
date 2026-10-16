@@ -52,6 +52,8 @@ export function sanitizeGameStateForPlayer(state: GameState, forPlayerId: string
     players: state.players,
     battlefields: state.battlefields,
     currentCombat: state.currentCombat,
+    timingWindow: state.timingWindow,
+    endPhaseStep: state.endPhaseStep,
     currentPendingChoice:
       state.currentPendingChoice?.playerId === forPlayerId
         ? state.currentPendingChoice

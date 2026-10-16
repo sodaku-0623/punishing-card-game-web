@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useRouteId } from '@/lib/route-id';
+import { getTimingStatus } from '@/lib/timing';
 import { useGameStore } from '@/stores/game-store';
 import { useAuth } from '@/lib/auth-context';
 import { getSocket, getSocketUserId, getSocketUsername } from '@/lib/socket';
@@ -319,6 +320,11 @@ export default function GameTabletopPage() {
   }, [gameState, playerIds, resolvedMyUserId, effectiveUserId]);
 
   const isMyTurn = gameState ? gameState.activePlayerId === resolvedMyUserId : false;
+  // 当前时机下己方可执行的操作 (瞬时轮流 / 阻挡宣言 / 主要阶段行动)
+  const timing = useMemo(
+    () => (gameState ? getTimingStatus(gameState, resolvedMyUserId) : null),
+    [gameState, resolvedMyUserId]
+  );
 
   // 是否正在拉取攻击指示箭头 (我方准备就绪的角色被选中且处于主要阶段)
   const isAttackTargeting = useMemo(() => {
@@ -392,23 +398,23 @@ export default function GameTabletopPage() {
 
   // 时点让渡 / 阶段推进 / 放弃阻挡
   const handlePassTiming = useCallback(() => {
-    if (!gameState) return;
+    if (!gameState || !timing?.canPass) return;
     sfx.playPhaseChange();
-    if (gameState.phase === 'MAIN_PHASE') {
+    if (timing.canDeclareBlock) {
+      // 7.3.1.c 放弃阻挡
+      sendAction({
+        type: 'DECLARE_BLOCK',
+        playerId: resolvedMyUserId,
+        blockerCardId: undefined,
+      });
+    } else {
+      // 不使用【瞬时】(7.3.1.b / 6.5.1.a) 或结束主要阶段 (6.4.1.c)
       sendAction({
         type: 'PASS_ACTION_TIMING',
         playerId: resolvedMyUserId,
       });
-    } else if (gameState.phase === 'COMBAT_FREE_TIMING') {
-      if (gameState.activePlayerId !== resolvedMyUserId) {
-        sendAction({
-          type: 'DECLARE_BLOCK',
-          playerId: resolvedMyUserId,
-          blockerCardId: undefined, // pass blocking
-        });
-      }
     }
-  }, [gameState, resolvedMyUserId, sendAction]);
+  }, [gameState, timing, resolvedMyUserId, sendAction]);
 
   // 充能为明费 (6.3.1.c)
   const handleChargeCostFromHand = useCallback(
@@ -1070,14 +1076,14 @@ export default function GameTabletopPage() {
             </span>
 
             {/* 空格快捷键提示 */}
-            {isMyTurn && gameState.phase === 'MAIN_PHASE' && (
+            {timing?.canPass && (
               <button
                 type="button"
                 onClick={handlePassTiming}
                 className="hidden md:flex items-center gap-1 px-2.5 py-0.5 rounded bg-terminalCyan/10 hover:bg-terminalCyan/30 border border-terminalCyan/40 text-terminalCyan text-[11px] font-bold transition-all shadow cursor-pointer active:scale-95"
                 title="推进至结束阶段 (快捷键: Space)"
               >
-                <span>时点让渡 [Space]</span>
+                <span>{timing.passLabel} [Space]</span>
                 <ChevronRight className="w-3 h-3" />
               </button>
             )}
@@ -1498,10 +1504,9 @@ export default function GameTabletopPage() {
             <TurnFlowView
               currentPhase={gameState.phase}
               isMyTurn={isMyTurn}
-              canPassTiming={
-                (isMyTurn && gameState.phase === 'MAIN_PHASE') ||
-                (!isMyTurn && gameState.phase === 'COMBAT_FREE_TIMING')
-              }
+              canPassTiming={!!timing?.canPass}
+              passLabel={timing?.passLabel}
+              waitingHint={timing?.waitingHint}
               onPassTiming={handlePassTiming}
             />
 
@@ -1626,7 +1631,8 @@ export default function GameTabletopPage() {
           card={contextMenu.card}
           isMyTurn={isMyTurn}
           phase={gameState.phase}
-          myAvailableCost={myPlayerState.availableOpenCostCount}
+          myAvailableCost={myPlayerState.availableOpenCostCount + myPlayerState.hiddenCostCount}
+          canUseInstant={!!timing?.hasInstantPriority}
           effectiveCost={contextMenu.card.zone === 'HAND' ? getCardEffectiveCost(contextMenu.card) : undefined}
           isFriendlyRole={
             contextMenu.card.controllerPlayerId === resolvedMyUserId &&
@@ -1659,8 +1665,7 @@ export default function GameTabletopPage() {
               ))
           }
           canBlock={
-            !isMyTurn &&
-            gameState.phase === 'COMBAT_FREE_TIMING' &&
+            !!timing?.canDeclareBlock &&
             contextMenu.card.controllerPlayerId === resolvedMyUserId &&
             contextMenu.card.zone === 'BATTLEFIELD' &&
             !!contextMenu.card.isReady
