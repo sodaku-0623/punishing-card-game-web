@@ -65,6 +65,11 @@ flowchart TD
   npx wrangler login
   ```
   在弹出的浏览器窗口中点击授权即可。
+- **获取卡牌素材（自建部署 / 本地运行必备）**：
+  新克隆的代码仓库如需进行自建 Node 部署或本地预览，需先运行卡图同步脚本（通过 R2 CDN 下载官方卡图与缩略图到本地）：
+  ```bash
+  npm run cards:download -- --card-cdn https://card.ikemiyasouta.site
+  ```
 
 ---
 
