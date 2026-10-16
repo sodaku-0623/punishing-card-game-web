@@ -35,6 +35,10 @@ export function passInstantWindows(engine: GameEngine): void {
  */
 export function endTurn(engine: GameEngine): void {
   const state = engine.getState();
+  if (state.phase === 'DRAW_CHARGE_PHASE') {
+    // 6.3.1.c 不放置明费，进入主要阶段
+    engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: state.activePlayerId });
+  }
   const turn = state.turnNumber;
   const res = engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: state.activePlayerId });
   if (!res.success) throw new Error(`结束主要阶段失败: ${res.error}`);

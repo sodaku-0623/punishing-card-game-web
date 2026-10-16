@@ -643,7 +643,7 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     // 8. 战术卡进入结算并弹出破坏对方角色的决策窗口
     const pendingChoice = engine.getState().currentPendingChoice;
     expect(pendingChoice).toBeDefined();
-    expect(pendingChoice?.effectType).toBe('DESTROY_ROLE');
+    expect(pendingChoice?.effectType).toBe('PRESET_DESTROY');
     expect(pendingChoice?.options.some((o) => o.id === oppRole.instanceId)).toBe(true);
   });
 });

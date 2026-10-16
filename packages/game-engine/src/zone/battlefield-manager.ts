@@ -7,6 +7,13 @@ import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from './zone-manager.js';
 
 export class BattlefieldManager {
+  /** 永久能力带来的 PP 增减 (8.9.1.c)，由卡牌效果引擎提供 */
+  private staticPPProvider?: (cardInstanceId: string) => number;
+
+  setStaticPPProvider(provider: (cardInstanceId: string) => number): void {
+    this.staticPPProvider = provider;
+  }
+
   constructor(
     private state: GameState,
     private zoneMgr: ZoneManager,
@@ -304,10 +311,14 @@ export class BattlefieldManager {
       }
     }
 
-    // 临时加成 (8.9.1.c)
+    // 临时加成与带期限的持续效果 (8.9.1.c)
     if (card.tempPPBonus) {
       pp += card.tempPPBonus;
     }
+    for (const m of card.modifiers ?? []) {
+      pp += m.pp ?? 0;
+    }
+    pp += this.staticPPProvider?.(cardInstanceId) ?? 0;
 
     return pp;
   }
@@ -323,6 +334,9 @@ export class BattlefieldManager {
     let dp = cardDef?.baseDP ?? 0;
     if (card.tempDPBonus) {
       dp += card.tempDPBonus;
+    }
+    for (const m of card.modifiers ?? []) {
+      dp += m.dp ?? 0;
     }
     return Math.max(0, dp);
   }
