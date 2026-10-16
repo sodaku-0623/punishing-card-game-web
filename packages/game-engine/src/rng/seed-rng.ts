@@ -44,4 +44,11 @@ export class SeedRng {
   getSeed(): number {
     return this.state;
   }
+
+  /**
+   * 恢复到 getSeed() 返回的内部状态 (行动失败回滚时使用)
+   */
+  setState(state: number): void {
+    this.state = state >>> 0;
+  }
 }
