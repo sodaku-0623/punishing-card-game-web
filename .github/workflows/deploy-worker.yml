@@ -1,0 +1,51 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-cf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # 使用 blob-less + 稀疏检出，跳过 3GB 卡图以大幅提升拉取与导出构建速度
+      - uses: actions/checkout@v4
+        with:
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/apps/web/public/cards/
+            !/战双帕弥什对战卡牌卡表/
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build all packages
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+      - name: Export frontend for Worker
+        run: npm run build:cf-static
+        env:
+          NEXT_PUBLIC_CARD_CDN: https://card.ikemiyasouta.site
+          NEXT_TELEMETRY_DISABLED: 1
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: 'apps/worker'
+          command: deploy
