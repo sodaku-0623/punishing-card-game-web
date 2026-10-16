@@ -729,7 +729,8 @@ export async function createServerApp(options?: {
   fastify.get('/api/history', async (req) => {
     const query = (req.query as any) || {};
     const limit = clampTake(query.limit, 50, 200);
-    const games = await gameRepo.listGames(limit);
+    // 只列出已结束的对局：进行中对局的随机种子可用于复现洗牌、推算双方牌序与手牌 (与 Cloudflare 版一致)
+    const games = (await gameRepo.listGames(limit)).filter((g) => g.finishedAt);
     return {
       success: true,
       data: games.map((g) => ({
@@ -748,7 +749,8 @@ export async function createServerApp(options?: {
   fastify.get('/api/replay/:gameId', async (req, reply) => {
     const { gameId } = req.params as { gameId: string };
     const replay = await gameRepo.getReplayData(gameId);
-    if (!replay) {
+    // 进行中的对局不提供回放：种子与行动记录会泄露隐藏信息 (与 Cloudflare 版一致，按不存在处理)
+    if (!replay || !replay.game.finishedAt) {
       return reply.code(404).send({ success: false, error: 'Replay not found' });
     }
     return {
