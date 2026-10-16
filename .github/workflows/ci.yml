@@ -18,11 +18,75 @@ jobs:
       - uses: actions/checkout@v4
         with:
           filter: blob:none
+          fetch-depth: 0
           sparse-checkout: |
             /*
             !/apps/web/public/cards/
             !/战双帕弥什对战卡牌卡表/
           sparse-checkout-cone-mode: false
+
+      - name: Block large files and images in PR
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then
+            echo "未获取到 base commit，跳过大文件检查"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+            echo "正在获取 base 引用..."
+            git fetch origin "${{ github.base_ref }}" --depth=100 || true
+          fi
+
+          if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+            echo "警告：无法定位 base commit ($BASE)，跳过大文件检查"
+            exit 0
+          fi
+
+          echo "正在检查从 $BASE 到 HEAD 的文件变更..."
+          CHANGED_FILES=$(git -c core.quotepath=false diff --name-only --diff-filter=AM "$BASE...HEAD")
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "无新增或修改的文件"
+            exit 0
+          fi
+
+          MAX_BYTES=1048576 # 1 MB
+          ERRORS=0
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            # 使用 git cat-file -s 获取对象大小，避免下载未检出的 blob
+            if ! size=$(git cat-file -s "HEAD:$file" 2>/dev/null); then
+              continue
+            fi
+
+            # 1. 检查单文件大小是否超过 1 MB
+            if [ "$size" -gt "$MAX_BYTES" ]; then
+              echo "::error file=$file::文件大小为 $size 字节 (> 1 MB)，禁止提交大文件到 Git 仓库！请将资产上传至 R2 对象存储。"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # 2. 检查是否为禁止提交的图片格式 (png/jpg/jpeg/webp/gif)
+            case "$(echo "$file" | tr '[:upper:]' '[:lower:]')" in
+              *.png|*.jpg|*.jpeg|*.webp|*.gif)
+                echo "::error file=$file::禁止将图片资产直接提交至 Git 仓库！卡图及素材请上传至 R2 对象存储（卡图请使用 scripts/upload-cards-to-r2.mjs）。"
+                ERRORS=$((ERRORS + 1))
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "--------------------------------------------------------"
+            echo "CI 校验失败：检测到 $ERRORS 处不合规的大文件或图片提交！"
+            echo "请从 Git 中移除并改用 R2 存储（参考 docs/deploy/cloudflare.md 第四节）。"
+            echo "--------------------------------------------------------"
+            exit 1
+          fi
+
+          echo "大文件与图片检查通过！"
 
       - uses: actions/setup-node@v4
         with:
