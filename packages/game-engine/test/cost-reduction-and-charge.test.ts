@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
 import { CardType, ElementAttribute } from '@zhanshuang/shared';
+import { fillCostZone } from './helpers.js';
 
 function createST03Deck(): string[] {
   return [
@@ -56,9 +57,6 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     const player = engine.getState().players[activeId]!;
 
     // 确保费用区有匹配暗属性的明费 (8.6.2.a.1)，但让所有可用费用为 0
-    player.availableOpenCostCount = 0;
-    player.exhaustedOpenCostCount = 2;
-    player.hiddenCostCount = 0;
     // 将费用区两张明费设为横置状态 (isReady = false)
     const costCards = engine.zoneMgr.getCardsInZone(activeId, 'COST');
     for (const c of costCards) {
@@ -326,14 +324,11 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     for (const c of engine.zoneMgr.getCardsInZone(p1, 'COST')) {
       c.isReady = false;
     }
-    p1Player.availableOpenCostCount = 0;
-    p1Player.exhaustedOpenCostCount = p1Player.openCostCount;
+    engine.zoneMgr.syncCostStats(p1);
 
     // 1. 给 p1 增加 1 张暗费
     const cardFromDeck = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
     engine.zoneMgr.moveCard(cardFromDeck.instanceId, 'COST', { isFaceUp: false, isReady: true });
-    p1Player.hiddenCostCount += 1;
-    p1Player.totalCostCount += 1;
 
     // 使用暗费支付费用
     const paid = engine.payCost(p1, 1);
@@ -345,15 +340,11 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     // 2. 给 p1 再次增加 1 张暗费，但在回合结束阶段未被使用
     const unusedHiddenCard = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
     engine.zoneMgr.moveCard(unusedHiddenCard.instanceId, 'COST', { isFaceUp: false, isReady: true });
-    p1Player.hiddenCostCount += 1;
-    p1Player.totalCostCount += 1;
 
     // 同时给 p2 (非当前回合玩家) 也加 1 张暗费 (验证 p2 的暗费不会在 p1 的回合结束时被丢弃)
     const p2Player = engine.getState().players[p2]!;
     const p2Card = engine.zoneMgr.getCardsInZone(p2, 'DECK')[0]!;
     engine.zoneMgr.moveCard(p2Card.instanceId, 'COST', { isFaceUp: false, isReady: true });
-    p2Player.hiddenCostCount += 1;
-    p2Player.totalCostCount += 1;
 
     // p1 结束回合，触发 startEndPhase
     engine.phaseMachine.startEndPhase();
@@ -459,12 +450,17 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     expect(st01Def?.ascensionConfig).toBeDefined();
     // 关键：升变代价必须是 2 费，不能被“费用5以下”误匹配为 5 费！
     expect(st01Def?.ascensionConfig?.ascensionCost).toBe(2);
-    expect(st01Def?.ascensionConfig?.targetFilter.maxCost).toBe(5);
-    expect(st01Def?.ascensionConfig?.targetFilter.nameIncludes).toBe('露西亚');
+    // 10.12「费用5以下」= 费用小于 5；升变对象以 <露西亚> 特征指定
+    expect(st01Def?.ascensionConfig?.targetFilter.maxCost).toBe(4);
+    expect(st01Def?.ascensionConfig?.targetFilter.traits).toEqual(['露西亚']);
+    expect(st01Def?.ascensionConfig?.restrictionFilter?.conditions).toEqual([{ kind: 'MIN_COST_LIMIT', value: 5 }]);
 
     const player = engine.getState().players[p1]!;
-    player.availableOpenCostCount = 2;
-    player.totalCostCount = 5;
+    // 费用上限 5 (满足升变限制条件)，其中只有 2 张竖直明费可用
+    fillCostZone(engine, player, 5);
+    for (const c of engine.zoneMgr.getCardsInZone(p1, 'COST').slice(2)) c.isReady = false;
+    engine.zoneMgr.syncCostStats(p1);
+    expect(player.availableOpenCostCount).toBe(2);
 
     // 寻找一张 2 费的露西亚 (ST01-004) 放置在战场 0 号位
     const luciaCard = Object.values(engine.getState().cards).find(
@@ -623,11 +619,10 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     for (let i = 0; i < 3; i++) {
       engine.zoneMgr.moveCard(physDeckCards[i].instanceId, 'COST', { isFaceUp: true, isReady: true });
     }
-    player.availableOpenCostCount = 3;
-    player.openCostCount = 3;
+    fillCostZone(engine, player, 3);
     player.exhaustedOpenCostCount = 0;
     player.hiddenCostCount = 0;
-    player.totalCostCount = 3;
+    fillCostZone(engine, player, 3);
 
     // 5. 验证静态减费计算：基础 8 费 - 5 张三头犬角色 = 3 费
     const { costToPay } = engine.calculateCardCost(activeId, tacticsCard.instanceId);

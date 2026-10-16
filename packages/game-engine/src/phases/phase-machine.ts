@@ -42,9 +42,7 @@ export class PhaseMachine {
     }
 
     // 更新费用统计
-    const player = this.state.players[activePlayerId]!;
-    player.availableOpenCostCount = player.openCostCount;
-    player.exhaustedOpenCostCount = 0;
+    this.zoneMgr.syncCostStats(activePlayerId);
 
     // 10.1 重置回合【回合1】能力发动次数统计
     for (const p of Object.values(this.state.players)) {
@@ -100,9 +98,6 @@ export class PhaseMachine {
       } else {
         // 放置到费用区成为明费 (正面竖直)
         this.zoneMgr.moveCard(cardInstanceId, 'COST', { isFaceUp: true, isReady: true });
-        player.openCostCount++;
-        player.availableOpenCostCount++;
-        player.totalCostCount++;
       }
     }
 
@@ -127,7 +122,6 @@ export class PhaseMachine {
   startEndPhase(): void {
     this.transitionTo('END_PHASE');
     const activePlayerId = this.state.activePlayerId;
-    const player = this.state.players[activePlayerId]!;
 
     // 6.5.1.a 瞬时时点轮转已结束 (由玩家Pass触发进入本阶段)
     // 6.5.1.b 回合结束触发检查时机
@@ -148,11 +142,8 @@ export class PhaseMachine {
     for (const c of costCards) {
       if (!c.isFaceUp) {
         this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true });
-        player.hiddenCostCount--;
-        player.totalCostCount--;
       }
     }
-    player.hiddenCostCount = Math.max(0, player.hiddenCostCount);
 
     // 6.5.1.d 清理“该回合中”的临时加成与词条
     for (const card of Object.values(this.state.cards)) {

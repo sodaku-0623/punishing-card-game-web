@@ -38,27 +38,97 @@ export class ZoneManager {
     if (!card) return;
 
     const fromZone = card.zone;
+    const fromSlot = card.slotIndex;
+
+    // 9.6 战场卡位上的卡牌离开战场：清空卡位，其下方的卡牌 (升变对象、装备等) 因规则放置到墓地
+    if (fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD') {
+      this.detachFromBattlefield(card);
+    }
+
     card.zone = toZone;
 
     // 区域内顺序以 state.cards 的键顺序表示：新放置的卡牌排在最后，即该区域的「最上方」
     // (墓地 3.5.2、信号球区 3.7.2、处理区 3.8.2；牌组中最后一张为牌组底)
     delete this.state.cards[cardInstanceId];
     this.state.cards[cardInstanceId] = card;
+
+    // 3.1.4 移动到其他区域的卡牌视为新卡牌，原区域适用的效果与状态不延续
+    if (fromZone !== toZone) {
+      card.tempPPBonus = undefined;
+      card.tempDPBonus = undefined;
+      card.grantedKeywords = undefined;
+      card.underneathCardIds = [];
+      card.attachedEquipmentId = undefined;
+      if (toZone !== 'BATTLEFIELD') card.slotIndex = undefined;
+      // 10.1.2.a 回合次数限制只对同一区域中的同一张卡牌计数
+      delete this.state.players[card.controllerPlayerId]?.turnAbilityUsage[cardInstanceId];
+    }
+
     if (options?.slotIndex !== undefined) card.slotIndex = options.slotIndex;
     if (options?.isFaceUp !== undefined) card.isFaceUp = options.isFaceUp;
     if (options?.isReady !== undefined) card.isReady = options.isReady;
     card.turnEnteredZone = this.state.turnNumber;
+
+    if (fromZone === 'COST' || toZone === 'COST') {
+      this.syncCostStats(card.controllerPlayerId);
+    }
 
     this.events.push({
       type: 'CARD_MOVED',
       cardInstanceId,
       fromZone,
       toZone,
-      fromSlot: card.slotIndex,
+      fromSlot,
       toSlot: options?.slotIndex,
       isFaceUp: card.isFaceUp,
       isReady: card.isReady,
     });
+  }
+
+  /**
+   * 卡牌离开战场时解除其与卡位、上下方卡牌的关系 (9.6 无所属卡牌的卡牌处理，中断型规则处理)
+   */
+  private detachFromBattlefield(card: CardInstance): void {
+    const playerId = card.controllerPlayerId;
+    for (const slot of this.state.battlefields[playerId] ?? []) {
+      if (slot.roleCardId === card.instanceId) slot.roleCardId = undefined;
+      if (slot.assistCardId === card.instanceId) slot.assistCardId = undefined;
+      if (slot.standaloneEquipmentId === card.instanceId) slot.standaloneEquipmentId = undefined;
+    }
+
+    // 若该卡牌本身是其他卡牌的装备或下方的牌，解除关系
+    for (const other of Object.values(this.state.cards)) {
+      if (other.attachedEquipmentId === card.instanceId) other.attachedEquipmentId = undefined;
+      if (other.underneathCardIds?.includes(card.instanceId)) {
+        other.underneathCardIds = other.underneathCardIds.filter((id) => id !== card.instanceId);
+      }
+    }
+
+    const orphanIds = [...(card.underneathCardIds ?? [])];
+    if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
+    card.underneathCardIds = [];
+    card.attachedEquipmentId = undefined;
+    for (const orphanId of orphanIds) {
+      const orphan = this.state.cards[orphanId];
+      if (orphan && orphan.zone === 'BATTLEFIELD') {
+        this.moveCard(orphanId, 'GRAVEYARD', { isFaceUp: true });
+      }
+    }
+  }
+
+  /**
+   * 3.6 费用统计由费用区中的实际卡牌派生 (明费 = 正面，暗费 = 背面竖直)
+   */
+  syncCostStats(playerId: string): void {
+    const player = this.state.players[playerId];
+    if (!player) return;
+    const costCards = this.getCardsInZone(playerId, 'COST');
+    const openCards = costCards.filter((c) => c.isFaceUp);
+    player.totalCostCount = costCards.length;
+    player.openCostCount = openCards.length;
+    player.availableOpenCostCount = openCards.filter((c) => c.isReady).length;
+    player.exhaustedOpenCostCount = openCards.length - player.availableOpenCostCount;
+    player.hiddenCostCount = costCards.length - openCards.length;
   }
 
   /**
@@ -112,10 +182,6 @@ export class ZoneManager {
       placedCards.push(card);
     }
 
-    player.openCostCount = (player.openCostCount || 0) + placedCards.length;
-    player.availableOpenCostCount = (player.availableOpenCostCount || 0) + placedCards.length;
-    player.totalCostCount = (player.totalCostCount || 0) + placedCards.length;
-
     return placedCards;
   }
 
@@ -167,70 +233,65 @@ export class ZoneManager {
   }
 
   /**
-   * 抽牌 (4.7 抽牌 & 3.3.3 & 9.2 牌组更新处理)
+   * 9.2 牌组更新处理 (中断型规则处理)：牌组没有卡牌时，将墓地所有卡牌移动到牌组并洗切，侵蚀计数+1。
+   * 墓地也没有卡牌时该玩家立即败北 (9.2.2.a)。返回牌组中是否有卡牌可供继续处理。
+   */
+  refreshDeckIfEmpty(playerId: string): boolean {
+    const player = this.state.players[playerId];
+    if (!player || this.state.status === 'FINISHED') return false;
+    if (this.getCardsInZone(playerId, 'DECK').length > 0) return true;
+
+    const graveyardCards = this.getCardsInZone(playerId, 'GRAVEYARD');
+    if (graveyardCards.length === 0) {
+      this.state.winnerId =
+        this.state.activePlayerId === playerId ? this.state.nonActivePlayerId : this.state.activePlayerId;
+      this.state.status = 'FINISHED';
+      this.state.isDraw = false;
+      this.state.finishReason = `${playerId} 的牌组与墓地均没有卡牌，立即败北 (9.2.2.a)`;
+      this.events.push({
+        type: 'GAME_OVER',
+        winnerPlayerId: this.state.winnerId,
+        isDraw: false,
+        reason: this.state.finishReason,
+      });
+      return false;
+    }
+
+    for (const card of graveyardCards) {
+      this.moveCard(card.instanceId, 'DECK', { isFaceUp: false, isReady: true });
+    }
+    this.shuffleDeck(playerId);
+
+    const oldErosion = player.erosionCount;
+    player.erosionCount += 1;
+    this.events.push({
+      type: 'DECK_REFRESHED',
+      playerId,
+      cardsShuffledCount: graveyardCards.length,
+      newErosionCount: player.erosionCount,
+    });
+    this.events.push({
+      type: 'EROSION_INCREASED',
+      playerId,
+      previousValue: oldErosion,
+      newValue: player.erosionCount,
+      reason: 'DECK_REFRESH',
+    });
+    return true;
+  }
+
+  /**
+   * 抽牌 (4.7 抽牌；3.3.3.b 中途牌组耗尽时先执行牌组更新再继续)
    */
   drawCards(playerId: string, count: number): string[] {
     const drawnIds: string[] = [];
-    const player = this.state.players[playerId];
-    if (!player) return drawnIds;
+    if (!this.state.players[playerId]) return drawnIds;
 
     for (let i = 0; i < count; i++) {
-      let deckCards = this.getCardsInZone(playerId, 'DECK');
-
-      // 9.2.1 牌组更新处理 (中断型规则处理)
-      if (deckCards.length === 0) {
-        const graveyardCards = this.getCardsInZone(playerId, 'GRAVEYARD');
-        if (graveyardCards.length === 0) {
-          // 9.2.2.a 牌组与墓地均没有卡牌，立即败北
-          player.erosionCount = RULE_CONSTANTS.EROSION_LOSS_THRESHOLD;
-          this.state.winnerId =
-            this.state.activePlayerId === playerId
-              ? this.state.nonActivePlayerId
-              : this.state.activePlayerId;
-          this.state.status = 'FINISHED';
-          this.state.finishReason = 'DECK_AND_GRAVEYARD_EMPTY';
-          this.events.push({
-            type: 'GAME_OVER',
-            winnerPlayerId: this.state.winnerId,
-            isDraw: false,
-            reason: '牌组与墓地均耗尽败北 (1.2.2.b & 9.3.1.b)',
-          });
-          break;
-        }
-
-        // 9.2.2 将墓地所有卡牌移动到牌组并洗切
-        const gyCardIds = graveyardCards.map((c) => c.instanceId);
-        for (const cid of gyCardIds) {
-          this.moveCard(cid, 'DECK', { isFaceUp: false, isReady: true });
-        }
-        this.rng.shuffle(gyCardIds);
-
-        // 侵蚀计数+1
-        const oldErosion = player.erosionCount;
-        player.erosionCount += 1;
-        this.events.push({
-          type: 'DECK_REFRESHED',
-          playerId,
-          cardsShuffledCount: gyCardIds.length,
-          newErosionCount: player.erosionCount,
-        });
-        this.events.push({
-          type: 'EROSION_INCREASED',
-          playerId,
-          previousValue: oldErosion,
-          newValue: player.erosionCount,
-          reason: 'DECK_REFRESH',
-        });
-
-        // 刷新当前牌组
-        deckCards = this.getCardsInZone(playerId, 'DECK');
-      }
-
-      if (deckCards.length > 0) {
-        const topCard = deckCards[0]!;
-        this.moveCard(topCard.instanceId, 'HAND', { isFaceUp: true });
-        drawnIds.push(topCard.instanceId);
-      }
+      if (!this.refreshDeckIfEmpty(playerId)) break;
+      const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
+      this.moveCard(topCard.instanceId, 'HAND', { isFaceUp: true });
+      drawnIds.push(topCard.instanceId);
     }
 
     if (drawnIds.length > 0) {
@@ -247,9 +308,9 @@ export class ZoneManager {
 
   /**
    * 4.12.2 攻击充能处理
-   * 将牌组顶卡牌翻开至处理区：
-   * - 若为信号球牌，处理完毕后放置到信号球区最上方 (4.12.2.a)
-   * - 若不为信号球牌，处理完毕后将该卡牌加入手牌 (4.12.2.b)
+   * 将牌组顶卡牌翻开至处理区，相关能力处理完毕后：
+   * - 若为信号球牌，放置到信号球区最上方 (4.12.2.a)
+   * - 若不为信号球牌，加入手牌 (4.12.2.b)
    */
   performAttackCharge(attackerCardId: string, chargeCount: number = 1): void {
     const attacker = this.state.cards[attackerCardId];
@@ -257,21 +318,19 @@ export class ZoneManager {
     const playerId = attacker.controllerPlayerId;
 
     for (let i = 0; i < chargeCount; i++) {
-      const deckCards = this.getCardsInZone(playerId, 'DECK');
-      if (deckCards.length === 0) {
-        this.drawCards(playerId, 0); // 触发潜在的牌组更新
-      }
-      const currentDeck = this.getCardsInZone(playerId, 'DECK');
-      if (currentDeck.length === 0) break;
-
-      const topCard = currentDeck[0]!;
-      // 临时翻开到处理区 (3.8)
+      if (!this.refreshDeckIfEmpty(playerId)) break;
+      const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
+      // 临时翻开到处理区 (3.8.1.b)
       this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
 
       const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
       const isSignalOrb = !!cardDef?.signalOrb;
 
       if (isSignalOrb) {
+        // 10.2.1.b 充能时自动能力在充能过程中处理
+        if (cardDef && cardDef.rulesText.includes('充能自')) {
+          this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef);
+        }
         // 4.12.2.a 放置到信号球区最上方 (3.7)
         this.moveCard(topCard.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
         this.events.push({
@@ -281,10 +340,6 @@ export class ZoneManager {
           revealedCardId: topCard.instanceId,
           resultDestination: 'SIGNAL_ORB',
         });
-        // 信号球牌执行其 <充能自> 效果
-        if (cardDef && (cardDef.rulesText.includes('【充能自】') || cardDef.rulesText.includes('充能自'))) {
-          this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef);
-        }
       } else {
         // 4.12.2.b 加入手牌
         this.moveCard(topCard.instanceId, 'HAND', { isFaceUp: true });
@@ -310,23 +365,19 @@ export class ZoneManager {
     if (!player || damageAmount <= 0) return;
 
     for (let i = 0; i < damageAmount; i++) {
-      const deckCards = this.getCardsInZone(defenderPlayerId, 'DECK');
-      if (deckCards.length === 0) {
-        this.drawCards(defenderPlayerId, 0); // 触发潜在牌组更新
-      }
-      const currentDeck = this.getCardsInZone(defenderPlayerId, 'DECK');
-      if (currentDeck.length > 0) {
-        const topCard = currentDeck[0]!;
+      if (this.state.status === 'FINISHED') return;
+      if (this.refreshDeckIfEmpty(defenderPlayerId)) {
+        const topCard = this.getCardsInZone(defenderPlayerId, 'DECK')[0]!;
         // 翻开至处理区
         this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
 
         const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
         // 执行其<充能自>效果
-        if (cardDef && (cardDef.rulesText.includes('【充能自】') || cardDef.rulesText.includes('充能自'))) {
+        if (cardDef && cardDef.signalOrb && cardDef.rulesText.includes('充能自')) {
           this.onChargeAutoEffectCallback?.(defenderPlayerId, topCard.instanceId, cardDef);
         }
 
-        // 3.6.4 费用区达到上限10张时，原本放置到费用区的卡牌改为放置到墓地
+        // 3.6.4 费用区达到上限时，原本放置到费用区的卡牌改为放置到墓地
         if (player.totalCostCount >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY) {
           this.moveCard(topCard.instanceId, 'GRAVEYARD', { isFaceUp: true });
           this.events.push({
@@ -338,8 +389,6 @@ export class ZoneManager {
         } else {
           // 4.12.3.a 以背面竖直状态放置到费用区成为暗费
           this.moveCard(topCard.instanceId, 'COST', { isFaceUp: false, isReady: true });
-          player.hiddenCostCount += 1;
-          player.totalCostCount += 1;
           this.events.push({
             type: 'DAMAGE_CHARGE_PERFORMED',
             defenderPlayerId,
