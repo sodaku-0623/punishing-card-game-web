@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
+import { fillCostZone } from './helpers.js';
 
 function create50CardDeck(): string[] {
   // 12张信号球 + 38张卡牌 = 恰好50张
@@ -233,9 +234,7 @@ describe('GameEngine 核心规则引擎测试套件', () => {
       isReady: true,
       turnEnteredZone: 1,
     };
-    state.players[p1]!.openCostCount = 5;
-    state.players[p1]!.availableOpenCostCount = 5;
-    state.players[p1]!.totalCostCount = 5;
+    fillCostZone(engine, state.players[p1]!, 5);
 
     // 场上已存在角色 露西亚·红莲 (ST01-005)，带装备 红莲狂士 (BP01-006)
     const baseRoleId = 'base-lucia';

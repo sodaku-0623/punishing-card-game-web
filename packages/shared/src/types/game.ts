@@ -111,6 +111,7 @@ export interface CombatState {
   targetType: 'PLAYER' | 'CHARACTER';
   targetCardId?: string;
   blockerCardId?: string;
+  battledCardId?: string; // 7.6.1 角色战斗步骤中与攻击角色发生战斗的角色 (【同命】参照)
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 
@@ -132,6 +133,7 @@ export interface GameState {
   currentCombat?: CombatState;
   pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
   currentPendingChoice?: PendingChoice; // 待决玩家决策
+  pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)
   
   winnerId?: string;
   isDraw: boolean;

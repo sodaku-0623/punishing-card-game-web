@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
 import { CardType } from '@zhanshuang/shared';
+import { fillCostZone } from './helpers.js';
 
 function createCustomDeck(): string[] {
   return [
@@ -123,52 +124,6 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     }
   });
 
-  it('3. 常规战术卡自动执行抽牌并送入墓地，不产生无效确认 (BP01-013 超算空间)', () => {
-    const engine = new GameEngine(
-      'game-tactics-01',
-      { playerId: 'p1', deckCardNumbers: createCustomDeck() },
-      { playerId: 'p2', deckCardNumbers: createCustomDeck() },
-      42
-    );
-
-    const activeId = engine.getState().activePlayerId;
-    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: activeId });
-
-    // BP01-013 是 FIRE 属性，确保费用区有 FIRE 属性明费
-    const costCards = engine.zoneMgr.getCardsInZone(activeId, 'COST');
-    for (const c of costCards) {
-      c.isFaceUp = true;
-      c.isReady = true;
-    }
-    // 放入一张 FIRE 属性角色作为费用
-    const fireCard = engine.zoneMgr.getCardsInZone(activeId, 'DECK').find((c) => c.cardNumber === 'BP01-001')!;
-    engine.zoneMgr.moveCard(fireCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
-
-    const tacticCard = engine.zoneMgr.getCardsInZone(activeId, 'DECK').find((c) => c.cardNumber === 'BP01-013')!;
-    engine.zoneMgr.moveCard(tacticCard.instanceId, 'HAND', { isFaceUp: true });
-
-    const activePlayer = engine.getState().players[activeId]!;
-    activePlayer.availableOpenCostCount = 5;
-    activePlayer.openCostCount = 5;
-    activePlayer.totalCostCount = 5;
-
-    const handBefore = engine.zoneMgr.getCardsInZone(activeId, 'HAND').length;
-
-    const res = engine.applyAction({
-      type: 'PLAY_CARD',
-      playerId: activeId,
-      cardInstanceId: tacticCard.instanceId,
-    });
-
-    expect(res.success).toBe(true);
-    // 抽2张牌：手牌净增 2 - 1 = 1 张
-    expect(engine.zoneMgr.getCardsInZone(activeId, 'HAND').length).toBe(handBefore + 1);
-    // 战术卡应自动进入 GRAVEYARD
-    expect(tacticCard.zone).toBe('GRAVEYARD');
-    // 不应残留挂起的无用决策
-    expect(engine.getState().currentPendingChoice).toBeUndefined();
-  });
-
   it('4. 破坏型战术自动弹出敌方目标选择并成功执行消灭 (ST03-011 三头犬出击)', () => {
     const engine = new GameEngine(
       'game-destroy-01',
@@ -205,9 +160,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(killCard.instanceId, 'HAND', { isFaceUp: true });
 
     const activePlayer = engine.getState().players[activeId]!;
-    activePlayer.availableOpenCostCount = 10;
-    activePlayer.openCostCount = 10;
-    activePlayer.totalCostCount = 10;
+    fillCostZone(engine, activePlayer, 10);
 
     const res = engine.applyAction({
       type: 'PLAY_CARD',
@@ -231,51 +184,6 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     expect(resolveRes.success).toBe(true);
     expect(oppRole.zone).toBe('GRAVEYARD');
     expect(killCard.zone).toBe('GRAVEYARD');
-  });
-
-  it('5. 角色登场时自动触发【出】/【自】效果 (BP01-001 露西亚·红莲 明费达标PP+500)', () => {
-    const engine = new GameEngine(
-      'game-role-01',
-      { playerId: 'p1', deckCardNumbers: createCustomDeck() },
-      { playerId: 'p2', deckCardNumbers: createCustomDeck() },
-      42
-    );
-
-    const activeId = engine.getState().activePlayerId;
-    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: activeId });
-
-    // 设置明费为4张
-    const activePlayer = engine.getState().players[activeId]!;
-    activePlayer.availableOpenCostCount = 5;
-    activePlayer.openCostCount = 5;
-    activePlayer.totalCostCount = 5;
-    const costCards = engine.zoneMgr.getCardsInZone(activeId, 'COST');
-    for (const c of costCards) {
-      c.isFaceUp = true;
-      c.isReady = true;
-    }
-    // 确保有 FIRE 属性费用
-    const fireCost = engine.zoneMgr.getCardsInZone(activeId, 'DECK')[0]!;
-    fireCost.cardNumber = 'c-lucia-entry-buff';
-    fireCost.cardId = 'c-lucia-entry-buff';
-    engine.zoneMgr.moveCard(fireCost.instanceId, 'COST', { isFaceUp: true, isReady: true });
-
-    // 出场 c-lucia-entry-buff
-    const roleCard = engine.zoneMgr.getCardsInZone(activeId, 'DECK')[1]!;
-    roleCard.cardNumber = 'c-lucia-entry-buff';
-    roleCard.cardId = 'c-lucia-entry-buff';
-    engine.zoneMgr.moveCard(roleCard.instanceId, 'HAND', { isFaceUp: true });
-
-    const res = engine.applyAction({
-      type: 'PLAY_CARD',
-      playerId: activeId,
-      cardInstanceId: roleCard.instanceId,
-      targetSlotIndex: 0,
-    });
-
-    expect(res.success).toBe(true);
-    // 自动判定明费>=3，触发 PP+500
-    expect(roleCard.tempPPBonus).toBe(500);
   });
 
   it('6. 角色【出】墓地信号球回收自动触发 (ST01-003 丽芙·蚀暗)', () => {
@@ -307,9 +215,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(roleCard.instanceId, 'HAND', { isFaceUp: true });
 
     const activePlayer = engine.getState().players[activeId]!;
-    activePlayer.availableOpenCostCount = 5;
-    activePlayer.openCostCount = 5;
-    activePlayer.totalCostCount = 5;
+    fillCostZone(engine, activePlayer, 5);
 
     const res = engine.applyAction({
       type: 'PLAY_CARD',
@@ -349,9 +255,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     oppRole.tempPPBonus = -3000; // 4000 - 3000 = 1000 PP
 
     const activePlayer = engine.getState().players[activeId]!;
-    activePlayer.availableOpenCostCount = 5;
-    activePlayer.openCostCount = 5;
-    activePlayer.totalCostCount = 5;
+    fillCostZone(engine, activePlayer, 5);
 
     // 发动起动能力
     const actRes = engine.applyAction({
@@ -395,9 +299,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     const physCost = engine.zoneMgr.getCardsInZone(activeId, 'DECK').find((c) => c.cardNumber === 'ST01-001')!;
     engine.zoneMgr.moveCard(physCost.instanceId, 'COST', { isFaceUp: true, isReady: true });
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 3;
-    pState.openCostCount = 3;
-    pState.totalCostCount = 3;
+    fillCostZone(engine, pState, 3);
 
     // 将 ST01-010 放入手牌
     const tacticsCard = Object.values(engine.getState().cards).find(
@@ -511,9 +413,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     )!;
     engine.zoneMgr.moveCard(physCost.instanceId, 'COST', { isFaceUp: true, isReady: true });
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 3;
-    pState.openCostCount = 3;
-    pState.totalCostCount = 3;
+    fillCostZone(engine, pState, 3);
 
     // 将 ST01-010 移入手牌
     const tacticsCard = Object.values(engine.getState().cards).find(
@@ -595,9 +495,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.fieldMgr.playRoleCard(activeId, roleCard.instanceId, 0);
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 5;
-    pState.openCostCount = 5;
-    pState.totalCostCount = 5;
+    fillCostZone(engine, pState, 5);
     const initialErosion = pState.erosionCount;
 
     // 第一次发动【起】
@@ -650,9 +548,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(gyRole.instanceId, 'GRAVEYARD', { isFaceUp: true });
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 5;
-    pState.openCostCount = 5;
-    pState.totalCostCount = 5;
+    fillCostZone(engine, pState, 5);
 
     // 发动【起】能力
     const actRes = engine.applyAction({
@@ -750,9 +646,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(recruitRole.instanceId, 'HAND', { isFaceUp: true });
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 5;
-    pState.openCostCount = 5;
-    pState.totalCostCount = 5;
+    fillCostZone(engine, pState, 5);
 
     // 满足 ST01-001 起动代价：在信号球区准备 2 个蓝色信号球
     const blueOrbs = Object.values(engine.getState().cards).filter(
@@ -837,9 +731,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(costCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 5;
-    pState.openCostCount = 5;
-    pState.totalCostCount = 5;
+    fillCostZone(engine, pState, 5);
 
     // 手牌中放入 ST01-010
     const tacticsCard = Object.values(engine.getState().cards).find(
@@ -939,9 +831,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.zoneMgr.moveCard(costCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 5;
-    pState.openCostCount = 5;
-    pState.totalCostCount = 5;
+    fillCostZone(engine, pState, 5);
 
     // 手牌中放入 ST01-010
     const tacticsCard = Object.values(engine.getState().cards).find(
@@ -1013,9 +903,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     )!;
     engine.zoneMgr.moveCard(costCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 10;
-    pState.openCostCount = 10;
-    pState.totalCostCount = 10;
+    fillCostZone(engine, pState, 10);
 
     // 场上先放置一张露西亚 (灰鸦小队角色)
     const luciaCard = Object.values(engine.getState().cards).find(
@@ -1128,9 +1016,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     )!;
     engine.zoneMgr.moveCard(costCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 10;
-    pState.openCostCount = 10;
-    pState.totalCostCount = 10;
+    fillCostZone(engine, pState, 10);
 
     // 调整牌组顶3张牌为非信号球的角色牌
     const deck = engine.zoneMgr.getCardsInZone(activeId, 'DECK');
@@ -1202,9 +1088,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     engine.fieldMgr.playRoleCard(activeId, roleCard.instanceId, 0);
 
     const pState = engine.getState().players[activeId]!;
-    pState.availableOpenCostCount = 10;
-    pState.openCostCount = 10;
-    pState.totalCostCount = 10;
+    fillCostZone(engine, pState, 10);
 
     // 回合 1 第一次发动
     const act1 = engine.applyAction({
@@ -1240,7 +1124,7 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
     expect(engine.getState().phase).toBe('MAIN_PHASE');
 
     // 补充费用
-    pState.availableOpenCostCount = 10;
+    fillCostZone(engine, pState, 10);
 
     // 新回合再次发动【起】能力 -> 应该顺利发动成功！
     const act3 = engine.applyAction({

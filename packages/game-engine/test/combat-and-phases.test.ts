@@ -59,12 +59,12 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
     expect(failAttack.success).toBe(false);
     expect(failAttack.error).toContain('出场的回合不可以进行攻击');
 
-    // 速攻角色本回合出场 (BP01-004 持有【速攻】)
+    // 速攻角色本回合出场 (BP02-041 含英·檀心「【永】：【速攻】」)
     const rushRoleId = 'rush-role';
     state.cards[rushRoleId] = {
       instanceId: rushRoleId,
-      cardId: 'c-nanami-rush',
-      cardNumber: 'BP01-004',
+      cardId: 'c-bp02-041',
+      cardNumber: 'BP02-041',
       ownerPlayerId: p1,
       controllerPlayerId: p1,
       zone: 'BATTLEFIELD',
@@ -176,8 +176,6 @@ describe('GameEngine 战斗、充能、伤害与回合轮转全流程测试', ()
       isReady: true,
       turnEnteredZone: 1,
     };
-    state.players[p1]!.hiddenCostCount = 1;
-    state.players[p1]!.totalCostCount += 1;
 
     // p1 主要阶段选择 Pass -> 进入结束阶段
     engine.dispatchAction({

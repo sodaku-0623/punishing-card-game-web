@@ -9,4 +9,6 @@ export * from './priority/check-timing.js';
 export * from './combat/combat-manager.js';
 export * from './phases/phase-machine.js';
 export * from './effects/card-effects.js';
+export * from './state/pending-choice.js';
+export * from './rules/keywords.js';
 export * from './engine.js';

@@ -99,9 +99,6 @@ export class SbaEngine {
         for (let i = 0; i < excess; i++) {
           const cardToDiscard = costCards[costCards.length - 1 - i]!;
           this.zoneMgr.moveCard(cardToDiscard.instanceId, 'GRAVEYARD', { isFaceUp: true });
-          if (!cardToDiscard.isFaceUp) p.hiddenCostCount--;
-          else p.openCostCount--;
-          p.totalCostCount--;
         }
         executedAny = true;
       }

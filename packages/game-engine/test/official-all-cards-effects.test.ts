@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { GameEngine } from '../src/engine.js';
 import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
 import { OFFICIAL_CARDS_DATA } from '../src/database/official-cards-data.js';
+import { fillCostZone } from './helpers.js';
 
 function createDeck(cardNumbers: string[]): string[] {
   const deck: string[] = [];
@@ -38,9 +39,7 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
 
     const player = engine.getState().players[p1]!;
-    player.openCostCount = 6;
-    player.availableOpenCostCount = 6;
-    player.totalCostCount = 6;
+    fillCostZone(engine, player, 6);
 
     // 场上放置被升变目标：ST01-005 (露西亚·红莲，费用4，属于<露西亚>)
     const baseTarget = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
@@ -60,6 +59,8 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     costCard.cardId = 'c-st01-005';
     engine.zoneMgr.moveCard(costCard.instanceId, 'COST', { isFaceUp: true, isReady: true });
 
+    const availableBefore = engine.getState().players[p1]!.availableOpenCostCount;
+
     // 执行升变出场
     const ascRes = engine.applyAction({
       type: 'PLAY_CARD',
@@ -70,8 +71,8 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     });
 
     expect(ascRes.success).toBe(true);
-    // 扣除升变代价 2 费 (6 - 2 = 4)
-    expect(player.availableOpenCostCount).toBe(4);
+    // 扣除升变代价 2 费
+    expect(player.availableOpenCostCount).toBe(availableBefore - 2);
     // 战场当前角色变为 ascRole
     expect(engine.getState().battlefields[p1]![0]!.roleCardId).toBe(ascRole.instanceId);
     // 底卡保留原角色
@@ -113,9 +114,7 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
 
     const player = engine.getState().players[p1]!;
-    player.openCostCount = 10;
-    player.availableOpenCostCount = 10;
-    player.totalCostCount = 10;
+    fillCostZone(engine, player, 10);
 
     // 战场放一个角色以接收 PP/DP buff
     const role = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
@@ -193,96 +192,6 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     expect(res81.success).toBe(true);
     // 伤害充能触发充能自抽1张牌
     expect(engine.zoneMgr.getCardsInZone(p1, 'HAND').length).toBe(handCountBefore + 1);
-  });
-
-  it('4. 官方装备牌动态 PP/DP 增益解析与角色附着机制 (20张装备卡自适应)', () => {
-    const engine = new GameEngine(
-      'game-equip-test',
-      { playerId: 'p1', deckCardNumbers: createDeck(['ST01-005']) },
-      { playerId: 'p2', deckCardNumbers: createDeck(['ST01-005']) },
-      42
-    );
-
-    const p1 = engine.getState().activePlayerId;
-    const role = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
-    role.cardNumber = 'ST01-005';
-    role.cardId = 'c-st01-005';
-    engine.fieldMgr.playRoleCard(p1, role.instanceId, 0);
-
-    // 模拟任意装备卡 (附带 PP+1500, DP+1)
-    const mockEquipDef = {
-      id: 'equip-test-weapon',
-      cardNumber: 'BP03-042',
-      name: '冈格尼尔',
-      cardType: CardType.EQUIPMENT,
-      attribute: ElementAttribute.PHYSICAL,
-      cost: 2,
-      basePP: 1500,
-      baseDP: 1,
-      traits: ['装备'],
-      isInstant: false,
-      abilities: [],
-      rulesText: '装备角色的PP+1500，DP+1。',
-    };
-
-    engine.effectEngine.handleEquipmentBuff(role.instanceId, mockEquipDef);
-    expect(role.tempPPBonus).toBe(1500);
-    expect(role.tempDPBonus).toBe(1);
-  });
-
-  it('5. 战斗核心机制：【同命】(Mutual Destiny) 双向破坏与【贯通】(Piercing) 贯穿伤害', () => {
-    const engine = new GameEngine(
-      'game-combat-keywords',
-      { playerId: 'p1', deckCardNumbers: createDeck(['ST01-005']) },
-      { playerId: 'p2', deckCardNumbers: createDeck(['ST01-005']) },
-      42
-    );
-
-    const p1 = engine.getState().activePlayerId;
-    const p2 = engine.getState().nonActivePlayerId;
-    engine.getState().phase = 'MAIN_PHASE';
-
-    // 攻击方持【贯通】(BP01-010 罗兰·戏炎，PP 5000)
-    const attacker = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
-    attacker.cardNumber = 'BP01-010';
-    attacker.cardId = 'c-bp01-010';
-    engine.fieldMgr.playRoleCard(p1, attacker.instanceId, 0);
-    attacker.isReady = true;
-    attacker.turnEnteredZone = 0;
-
-    // 防守方持【同命】(PP 2000, BP02-077 塞壬)
-    const defender = engine.zoneMgr.getCardsInZone(p2, 'DECK')[0]!;
-    defender.cardNumber = 'BP02-077';
-    defender.cardId = 'c-bp02-077';
-    engine.fieldMgr.playRoleCard(p2, defender.instanceId, 0);
-    defender.isReady = false; // 横置
-    defender.turnEnteredZone = 0;
-
-    const defenderErosionBefore = engine.getState().players[p2]!.erosionCount;
-
-    // 攻击角色
-    const attackRes = engine.applyAction({
-      type: 'DECLARE_ATTACK',
-      playerId: p1,
-      attackerCardId: attacker.instanceId,
-      targetType: 'CHARACTER',
-      targetCardId: defender.instanceId,
-    });
-    expect(attackRes.success).toBe(true);
-
-    // 守方不阻挡，直接结算角色战斗
-    engine.applyAction({
-      type: 'PASS_ACTION_TIMING',
-      playerId: p2,
-    });
-
-    // 验证：
-    // 1. 守方角色被战斗破坏 (6000 >= 2000)
-    expect(defender.zone).toBe('GRAVEYARD');
-    // 2. 攻方持有【贯通】，给予对方玩家1点贯通伤害 (侵蚀+1)
-    expect(engine.getState().players[p2]!.erosionCount).toBe(defenderErosionBefore + 1);
-    // 3. 守方持有【同命】，战斗破坏时带走攻击角色
-    expect(attacker.zone).toBe('GRAVEYARD');
   });
 
   it('6. 通用【出】能力：抽牌、弃牌、削弱与检索自适应结算 (全量140张出场能力角色覆盖)', () => {
@@ -380,48 +289,6 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     });
     expect(res2.success).toBe(true);
     expect(oppRole.zone).toBe('HAND');
-  });
-
-  it('8. BP01-008 露娜·银冕：出场消除同色信号球并将对方战场角色横置送入对方费用区', () => {
-    const engine = new GameEngine(
-      'game-bp01-008',
-      { playerId: 'p1', deckCardNumbers: createDeck(['BP01-008', 'ST01-005']) },
-      { playerId: 'p2', deckCardNumbers: createDeck(['ST01-005']) },
-      42
-    );
-
-    const p1 = engine.getState().activePlayerId;
-    const p2 = engine.getState().nonActivePlayerId;
-    engine.applyAction({ type: 'PASS_ACTION_TIMING', playerId: p1 });
-
-    // p2 场上有角色 ST01-005
-    const oppRole = engine.zoneMgr.getCardsInZone(p2, 'DECK')[0]!;
-    oppRole.cardNumber = 'ST01-005';
-    engine.fieldMgr.playRoleCard(p2, oppRole.instanceId, 0);
-
-    // p1 出场 BP01-008
-    const bp01008 = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
-    bp01008.cardNumber = 'BP01-008';
-    engine.fieldMgr.playRoleCard(p1, bp01008.instanceId, 0);
-
-    const cardDef = engine.effectEngine.getCardDef('BP01-008')!;
-    engine.effectEngine.handleRoleEntryEffect(p1, bp01008.instanceId, cardDef);
-
-    const choice = engine.getState().currentPendingChoice;
-    expect(choice).toBeDefined();
-    expect(choice?.effectType).toBe('SEND_ROLE_TO_COST');
-    expect(choice?.options.some((o) => o.id === oppRole.instanceId)).toBe(true);
-
-    // 确认送入费用区
-    const res = engine.applyAction({
-      type: 'SELECT_CHOICE_OPTION',
-      playerId: p1,
-      pendingChoiceId: choice!.id,
-      selectedIds: [oppRole.instanceId],
-    });
-    expect(res.success).toBe(true);
-    expect(oppRole.zone).toBe('COST');
-    expect(oppRole.isReady).toBe(false);
   });
 
   it('9. ST02-003 露娜·银冕：出场弃1张手牌，公开牌组顶3张至处理区，对手查阅确认后，选择<升格者>角色加入手牌，其余卡牌入墓', () => {

@@ -8,6 +8,8 @@ import {
   CardInstance,
   CostModifier,
   PendingChoice,
+  CardVersionData,
+  AscensionRestriction,
 } from '@zhanshuang/shared';
 import { SeedRng } from './rng/seed-rng.js';
 import { ICardDatabase, BASE_TEST_CARDS, MemoryCardDatabase } from './database/card-registry.js';
@@ -20,6 +22,7 @@ import { CheckTimingManager } from './priority/check-timing.js';
 import { CombatManager } from './combat/combat-manager.js';
 import { PhaseMachine } from './phases/phase-machine.js';
 import { CardEffectEngine } from './effects/card-effects.js';
+import { advancePendingChoice, enqueuePendingChoice } from './state/pending-choice.js';
 
 export interface ActionResult {
   success: boolean;
@@ -102,8 +105,10 @@ export class GameEngine {
       cardDb: this.cardDb,
       events: this.events,
       payCost: (p, c) => this.payCost(p, c),
+      // 设置决策时排队，避免覆盖尚未处理的决策；传入 undefined 表示当前决策处理完毕，进入下一个
       setPendingChoice: (ch) => {
-        this.state.currentPendingChoice = ch;
+        if (ch) enqueuePendingChoice(this.state, ch);
+        else advancePendingChoice(this.state);
       },
     });
 
@@ -365,6 +370,11 @@ export class GameEngine {
     // 执行规则处理确认
     this.checkTimingMgr.resolveCheckTiming();
 
+    // 卡牌效果可能直接改变费用区卡牌的竖直/横置状态，统一从实际卡牌重新统计费用
+    for (const pid of Object.keys(this.state.players)) {
+      this.zoneMgr.syncCostStats(pid);
+    }
+
     const newEvents = this.events.slice(startEventIndex);
     return {
       success,
@@ -385,35 +395,31 @@ export class GameEngine {
     const player = this.state.players[playerId];
     if (!player) return false;
     if (costToPay <= 0) return true;
-    const available = player.availableOpenCostCount + player.hiddenCostCount;
-    if (available < costToPay) return false;
+
+    // 3.6.5.a 用竖直状态的明费与暗费支付，数量须与费用相同
+    const costZoneCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
+    const readyOpenCosts = costZoneCards.filter((c) => c.isFaceUp && c.isReady);
+    const hiddenCosts = costZoneCards.filter((c) => !c.isFaceUp);
+    if (readyOpenCosts.length + hiddenCosts.length < costToPay) return false;
 
     let costRemaining = costToPay;
     const tappedOpenIds: string[] = [];
     const discardedHiddenIds: string[] = [];
 
-    const costZoneCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
-    for (const c of costZoneCards) {
+    for (const c of readyOpenCosts) {
       if (costRemaining <= 0) break;
-      if (c.isFaceUp && c.isReady) {
-        c.isReady = false;
-        player.availableOpenCostCount--;
-        player.exhaustedOpenCostCount++;
-        tappedOpenIds.push(c.instanceId);
-        costRemaining--;
-      }
+      c.isReady = false; // 3.6.5.a.1 横置明费
+      tappedOpenIds.push(c.instanceId);
+      costRemaining--;
     }
 
-    for (const c of costZoneCards) {
+    for (const c of hiddenCosts) {
       if (costRemaining <= 0) break;
-      if (!c.isFaceUp) {
-        this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true });
-        player.hiddenCostCount--;
-        player.totalCostCount--;
-        discardedHiddenIds.push(c.instanceId);
-        costRemaining--;
-      }
+      this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true }); // 3.6.5.a.2 暗费正面放置到墓地
+      discardedHiddenIds.push(c.instanceId);
+      costRemaining--;
     }
+    this.zoneMgr.syncCostStats(playerId);
 
     this.events.push({
       type: 'COST_PAID',
@@ -486,24 +492,6 @@ export class GameEngine {
       discount += cerberusRoleCount;
     }
 
-    // 2.2 BP01-016: 我方战场存在《露西亚》角色或《阿尔法》角色时，手牌和墓地的该牌的费用-3
-    if (
-      cardDef.cardNumber === 'BP01-016' ||
-      cardDef.rulesText.includes('我方战场存在《露西亚》角色或《阿尔法》角色时，手牌和墓地的该牌的费用-3')
-    ) {
-      const myBattlefieldSlots = this.state.battlefields[playerId] || [];
-      const hasLuciaOrAlpha = myBattlefieldSlots.some((s) => {
-        if (!s.roleCardId) return false;
-        const roleCard = this.state.cards[s.roleCardId];
-        if (!roleCard) return false;
-        const rDef = this.cardDb.getCard(roleCard.cardNumber) || (roleCard.cardId ? this.cardDb.getCard(roleCard.cardId) : undefined);
-        return rDef && (rDef.name.includes('露西亚') || rDef.name.includes('阿尔法') || rDef.traits?.some((t) => t.includes('露西亚') || t.includes('阿尔法')));
-      });
-      if (hasLuciaOrAlpha) {
-        discount += 3;
-      }
-    }
-
     const costToPay = Math.max(0, baseCost - discount);
     return { costToPay, appliedModifiers };
   }
@@ -548,49 +536,10 @@ export class GameEngine {
       }
     }
 
-    // 智能识别升变目标 (若指定的目标卡位已有角色且卡牌具备升变能力，或己方仅有单一合法升变角色)
-    if (cardDef.ascensionConfig) {
-      if (!action.isAscension && action.targetSlotIndex !== undefined) {
-        const targetSlot = this.fieldMgr.getSlots(action.playerId)[action.targetSlotIndex];
-        if (targetSlot && targetSlot.roleCardId) {
-          action.isAscension = true;
-          action.targetAscensionCardId = targetSlot.roleCardId;
-        }
-      }
-      if (action.isAscension && !action.targetAscensionCardId) {
-        const friendlyRoles = this.fieldMgr
-          .getSlots(action.playerId)
-          .map((s) => (s.roleCardId ? this.state.cards[s.roleCardId] : null))
-          .filter(Boolean) as CardInstance[];
-        const matchingRoles = friendlyRoles.filter((r) => {
-          const rDef = this.cardDb.getCard(r.cardNumber) || (r.cardId ? this.cardDb.getCard(r.cardId) : undefined);
-          const tf = cardDef.ascensionConfig!.targetFilter;
-          if (tf.nameIncludes && !rDef?.name.includes(tf.nameIncludes)) return false;
-          if (tf.maxCost && (rDef?.cost ?? 0) > tf.maxCost) return false;
-          return true;
-        });
-        if (matchingRoles.length === 1 && matchingRoles[0]) {
-          action.targetAscensionCardId = matchingRoles[0].instanceId;
-        }
-      }
-    }
-
-    // 预检升变合法性 (8.11)
-    if (action.isAscension && action.targetAscensionCardId) {
-      const targetCard = this.state.cards[action.targetAscensionCardId];
-      if (!targetCard || targetCard.controllerPlayerId !== action.playerId || targetCard.zone !== 'BATTLEFIELD') {
-        return { success: false, error: '升变目标角色不存在或不在己方战场' };
-      }
-      const targetDef = this.cardDb.getCard(targetCard.cardNumber) || (targetCard.cardId ? this.cardDb.getCard(targetCard.cardId) : undefined);
-      if (cardDef.ascensionConfig?.targetFilter) {
-        const tf = cardDef.ascensionConfig.targetFilter;
-        if (tf.nameIncludes && !targetDef?.name.includes(tf.nameIncludes)) {
-          return { success: false, error: `升变目标必须包含【${tf.nameIncludes}】(当前目标: ${targetDef?.name})` };
-        }
-        if (tf.maxCost && (targetDef?.cost ?? 0) > tf.maxCost) {
-          return { success: false, error: `升变目标费用不能超过 ${tf.maxCost} (当前目标: ${targetDef?.cost}费)` };
-        }
-      }
+    // 8.11 升变：检查升变对象、限制条件 (8.11.3.b~d)，升变代价在下方与费用一并支付 (8.11.3.e)
+    if (action.isAscension) {
+      const ascensionError = this.validateAscension(action.playerId, cardDef, action.targetAscensionCardId);
+      if (ascensionError) return { success: false, error: ascensionError };
     }
 
     // 8.6.2.c 支付费用 (计算动态费用减免与固有静态减费)
@@ -663,7 +612,7 @@ export class GameEngine {
       } else {
         // 未指定放置方式：移动到处理区，由玩家选择要装备的角色
         this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true });
-        this.state.currentPendingChoice = {
+        enqueuePendingChoice(this.state, {
           id: `choice-equip-${action.cardInstanceId}-${this.events.length}`,
           playerId: action.playerId,
           choiceType: 'SELECT_CARDS',
@@ -673,7 +622,7 @@ export class GameEngine {
           sourceCardInstanceId: action.cardInstanceId,
           minSelections: 1,
           maxSelections: 1,
-        };
+        });
       }
     } else if (cardDef.cardType === CardType.ASSIST) {
       // 8.6.2.b.2 需要存在空余卡位或已有辅助机 (替换其所占卡位)
@@ -695,6 +644,96 @@ export class GameEngine {
     }
 
     return { success: true };
+  }
+
+  /**
+   * 8.11.3 检查能否以升变机制使用该卡牌，返回错误原因；可以使用时返回 undefined
+   */
+  private validateAscension(
+    playerId: string,
+    cardDef: CardVersionData,
+    targetCardId: string | undefined
+  ): string | undefined {
+    const config = cardDef.ascensionConfig;
+    if (!config) return `【${cardDef.name}】没有升变机制 (8.11.1.a)`;
+    if (config.unsupportedReason) return `【${cardDef.name}】的升变机制${config.unsupportedReason}`;
+
+    // 8.11.3.b / 8.11.3.c.1 升变对象须为我方战场卡位上的角色
+    const target = targetCardId ? this.state.cards[targetCardId] : undefined;
+    if (!target || !this.fieldMgr.isSlotRole(playerId, target.instanceId)) {
+      return '升变对象必须是我方战场上的角色 (8.11.2.a.1)';
+    }
+    const targetDef =
+      this.cardDb.getCard(target.cardNumber) || (target.cardId ? this.cardDb.getCard(target.cardId) : undefined);
+    if (!targetDef) return '升变对象的卡牌数据不存在';
+
+    const tf = config.targetFilter;
+    const normalize = (name: string) => name.replace(/\s+/g, '');
+    if (tf.exactName && normalize(targetDef.name) !== normalize(tf.exactName)) {
+      return `升变对象必须是《${tf.exactName}》 (8.11.2.a.1)`;
+    }
+    if (tf.traits && !tf.traits.every((t) => targetDef.traits?.includes(t))) {
+      return `升变对象必须是<${tf.traits.join('、')}> (8.11.2.a.1)`;
+    }
+    if (tf.exactCost !== undefined && targetDef.cost !== tf.exactCost) {
+      return `升变对象的费用必须为 ${tf.exactCost} (8.11.2.a.1)`;
+    }
+    if (tf.maxCost !== undefined && targetDef.cost > tf.maxCost) {
+      return `升变对象的费用必须小于 ${tf.maxCost + 1} (8.11.2.a.1、10.12)`;
+    }
+    if (tf.requireReady && !target.isReady) {
+      return '升变对象必须为竖直状态 (8.11.2.a.1)';
+    }
+
+    // 8.11.2.a.2 / 8.11.3.d 限制条件
+    for (const condition of config.restrictionFilter?.conditions ?? []) {
+      const error = this.checkAscensionRestriction(playerId, condition);
+      if (error) return error;
+    }
+    return undefined;
+  }
+
+  private checkAscensionRestriction(playerId: string, condition: AscensionRestriction): string | undefined {
+    const costCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
+    switch (condition.kind) {
+      case 'MIN_COST_LIMIT':
+        return costCards.length >= condition.value
+          ? undefined
+          : `升变限制条件：费用上限需达到 ${condition.value} (当前 ${costCards.length}) (3.6.6)`;
+      case 'MIN_OPEN_COST_LIMIT': {
+        const openCount = costCards.filter((c) => c.isFaceUp).length;
+        return openCount >= condition.value
+          ? undefined
+          : `升变限制条件：明费上限需达到 ${condition.value} (当前 ${openCount}) (3.6.6.a)`;
+      }
+      case 'MIN_ORB_ZONE_CARDS': {
+        const orbZone = this.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB').filter((c) => {
+          if (!condition.cardName) return true;
+          if (!c.isFaceUp) return false;
+          const def = this.cardDb.getCard(c.cardNumber);
+          return def?.name.replace(/\s+/g, '') === condition.cardName.replace(/\s+/g, '');
+        });
+        return orbZone.length >= condition.value
+          ? undefined
+          : `升变限制条件：信号球区的${condition.cardName ? `《${condition.cardName}》` : '牌'}需达到 ${condition.value} 张`;
+      }
+      case 'MAX_FIELD_ROLES': {
+        const roleCount = this.fieldMgr.getSlots(playerId).filter((s) => s.roleCardId).length;
+        return roleCount <= condition.value
+          ? undefined
+          : `升变限制条件：我方战场的角色需为 ${condition.value} 张及以下`;
+      }
+      case 'COST_ZONE_ROLES_ATTRIBUTE': {
+        // 3.6.3.b.2 暗费不能被参照，只检查明费中的角色牌
+        const allMatch = costCards
+          .filter((c) => c.isFaceUp)
+          .every((c) => {
+            const def = this.cardDb.getCard(c.cardNumber);
+            return def?.cardType !== CardType.ROLE || def.attribute === condition.attribute;
+          });
+        return allMatch ? undefined : '升变限制条件：费用区所有角色牌的属性不满足要求';
+      }
+    }
   }
 
   /**
@@ -805,7 +844,13 @@ export class GameEngine {
       return { success: false, error: validationError };
     }
 
-    return this.effectEngine.handleChoiceResolution(action, choice);
+    // 先摘下当前决策再结算：结算中产生的后续决策直接成为当前决策，排队中的决策随后进行
+    this.state.currentPendingChoice = undefined;
+    const result = this.effectEngine.handleChoiceResolution(action, choice);
+    if (result.success && !this.state.currentPendingChoice) {
+      advancePendingChoice(this.state);
+    }
+    return result;
   }
 
   /**
