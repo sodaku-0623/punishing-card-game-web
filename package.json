@@ -26,6 +26,7 @@
     "test:stress": "node scripts/stress-test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build:cf-static": "node scripts/build-cf-static.mjs",
+    "build:worker": "npm run build && node scripts/build-cf-static.mjs",
     "deploy:cf": "node scripts/deploy-cf.mjs",
     "cards:download": "node scripts/download-cards.mjs"
   },
