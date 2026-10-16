@@ -94,6 +94,15 @@ cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev
 - 下发给客户端的对局状态必须经 `sanitizeGameStateForPlayer` 脱敏 (对手手牌、牌库顺序、对手暗费不可泄露)。新增 `GameState` 字段时同步检查脱敏逻辑。
 - 开局卡表以服务端为准：官方预组用 `@zhanshuang/game-rules` 的 `OFFICIAL_STARTER_DECKS`，卡牌定义用引擎的 `OFFICIAL_CARDS_DATA`；**绝不使用引擎的 `BASE_TEST_CARDS` 或任何占位卡组开局**。
 
+### 规则引擎结构 (`packages/game-engine`)
+- **事务性行动**：`dispatchAction` 在执行前备份状态与随机数状态，行动失败时整体回滚 (`restoreState` 原地恢复，卡牌对象会被替换，测试中断言失败行动之后的状态要按 ID 重新读取)。处理器返回 `{ success: false }` 即可，不需要手动撤销已做的修改。
+- **可挂起的流程**：攻击流程由 `CombatState.step` (FREE_TIMING → BLOCK → CHARGE → DAMAGE/BATTLE → END) 驱动，结束阶段由 `endPhaseStep` 驱动；`state.timingWindow` 表示轮流使用【瞬时】的时机 (7.3.1.b / 6.5.1.a)。每个行动后 `continueFlow()` 推进不需要玩家行动的步骤，遇到待决策 (`currentPendingChoice`) 或需要玩家选择时停下。没有可用瞬时的玩家自动放弃 (`hasUsableInstant`)。
+- **决策队列**：效果通过 `setPendingChoice` 排队 (`state/pending-choice.ts`)，不会覆盖尚未处理的决策。决策结算后续步骤所需的数据放在 `metadata` 中且必须可 JSON 序列化 (不能放函数)，以便随快照恢复。提交的选择由 `validateChoiceSelection` 校验 (数量、选项 ID、`payload.eligible`)。
+- **派生数据**：费用区统计 (`openCostCount` 等) 由 `syncCostStats` 从实际卡牌派生，不要直接改写；战场角色的 `effectivePP` / `effectiveDP` 在每次行动后由引擎写入，前端直接展示 (`apps/web/src/lib/card-stats.ts`)，不要在前端重复实现 PP 计算。
+- **持续效果**：「直到回合结束为止」等带期限的效果用 `CardInstance.modifiers` (`CardModifier.untilTurn`) 表示，结束阶段与卡牌移动区域时自动消失；不要再新增 `tempPPBonus` 式的字段。永久能力 (【永】) 经 `BattlefieldManager.setStaticPPProvider` 计入 PP。
+- **卡牌效果**：官方预组 ST01~ST03 在 `effects/preset-cards.ts` 中按卡牌文本逐卡精确实现，优先于 `card-effects.ts` 中按关键字匹配的通用解析。**其余卡包的效果仍是近似实现**，修改或新增卡牌效果时参照预组模块的写法逐卡实现并补测试。升变条件由 `database/ascension-parser.ts` 解析 (无法解析的设置 `unsupportedReason` 并拒绝升变)，固有词条由 `rules/keywords.ts` 解析。
+- **尚未实现**：协战、浮空、通用的自动能力触发框架 (`pendingTriggers` 未使用)、非战术牌上的【瞬时】能力、带条件或代价的【充能自】(BP03/BP04 部分卡牌)、玩家自选支付费用的卡牌。详见 `docs/review/` 下的审查报告。
+
 ### 两套后端必须保持协议一致
 前端同一套代码对接两种后端，因此：
 - WebSocket 事件名与负载以 `packages/shared/src/types/socket.ts` 为准，`apps/server/src/socket/gateway.ts` 与 `apps/worker/src/room-do.ts` 必须同步实现。修改协议时两边一起改，并同时更新两边的测试。
@@ -143,7 +152,7 @@ cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev
 
 ## 测试
 
-- 引擎规则：`packages/game-engine/test`，新增卡牌效果或规则分支时补充用例。
+- 引擎规则：`packages/game-engine/test`，新增卡牌效果或规则分支时补充用例。用 `test/helpers.ts` 的 `fillCostZone` (费用区放真实卡牌)、`passInstantWindows`、`endTurn`、`resolvePendingChoices` 推进流程，不要直接改写派生字段；预组卡牌的逐卡用例见 `test/preset-cards.test.ts`。
 - Node 版服务端：`apps/server/test`，使用 `createServerApp()` + `fastify.inject` / `socket.io-client`；安全相关回归见 `security-hardening.test.ts`。
 - Cloudflare 版：`apps/worker/test/e2e.workerd.test.ts` 通过 wrangler 的 `unstable_dev` 在本地真实 workerd 运行时 (含 Durable Objects 与本地 D1) 中按前端协议跑完整流程。**新增或修改 Worker 行为时在这里补测试，不要只写 mock 测试。**
 - 前端：`apps/web/test` 使用 `react-dom/server` 的 `renderToString` 做渲染冒烟测试。zustand v5 在服务端渲染时读取 store 的初始状态，需要注入状态时参考 `game-page.test.tsx` 中 `vi.doMock` 的写法。
