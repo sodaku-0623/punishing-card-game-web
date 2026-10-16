@@ -17,12 +17,12 @@ const webDir = path.join(repoRoot, 'apps/web');
 const outDir = path.join(webDir, 'out');
 const staticDir = path.join(repoRoot, 'apps/worker/static');
 const KEEP_FILES = new Set(['.gitkeep', '.assetsignore']);
-const cardCdn = process.env.NEXT_PUBLIC_CARD_CDN?.trim();
+const cardCdn = (process.env.NEXT_PUBLIC_CARD_CDN || 'https://card.ikemiyasouta.site').trim();
 
 execSync('npx next build', {
   cwd: webDir,
   stdio: 'inherit',
-  env: { ...process.env, OUTPUT_EXPORT: 'true', NEXT_PUBLIC_WS_TRANSPORT: 'native' },
+  env: { ...process.env, OUTPUT_EXPORT: 'true', NEXT_PUBLIC_WS_TRANSPORT: 'native', NEXT_PUBLIC_CARD_CDN: cardCdn },
 });
 
 for (const entry of fs.readdirSync(staticDir)) {
