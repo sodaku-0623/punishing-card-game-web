@@ -38,6 +38,8 @@ database_id = "136e6810-ce7d-4fe9-8965-c288c9de0755"
 # ==========================================
 # Worker Previews 预览环境专属绑定 (PR 分支独立 DO 与 D1 存储)
 # ==========================================
+[previews]
+
 [[previews.durable_objects.bindings]]
 name = "ECHO_DO"
 class_name = "EchoDO"
