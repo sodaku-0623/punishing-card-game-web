@@ -14,8 +14,7 @@
 html, body {
   color: var(--foreground);
   background: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  font-family: theme('fontFamily.sans');
   overflow-x: hidden;
   overflow-y: auto;
   user-select: none;
@@ -52,7 +51,42 @@ select,
   }
 }
 
-/* 战双末世科幻高光与全息光效 Design Tokens */
+/* ================= 设计规范工具类 (docs/design/design-spec.md) ================= */
+/* 颜色等取值来自 tailwind.config.ts，这里只用 theme() 引用 */
+@layer utilities {
+  /* 45° 切角，代替圆角 (4. 空间、形状、层级)：只切右上与左下 */
+  .clip-corner-sm {
+    clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  }
+  .clip-corner-md {
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+
+  /* HUD 斜线条纹 (5.9 HudStripes) */
+  .hud-stripes {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      theme('colors.line.strong') 0 1px,
+      transparent 1px 5px
+    );
+  }
+
+  /* 卡牌对战子品牌底：钢灰蓝 + 24px 网格 (5.3) */
+  .bg-steel-grid {
+    background-color: theme('colors.steel.700');
+    background-image:
+      linear-gradient(theme('colors.steel.500 / 15%') 1px, transparent 1px),
+      linear-gradient(90deg, theme('colors.steel.500 / 15%') 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* 子品牌大标题：钢蓝错位投影 (5.3) */
+  .title-offset {
+    text-shadow: 2px 2px 0 theme('colors.steel.300');
+  }
+}
+
+/* 战双末世科幻高光与全息光效 Design Tokens (旧样式，迁移完成后删除) */
 .terminal-glow-cyan {
   box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
 }
