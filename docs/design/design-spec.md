@@ -92,11 +92,11 @@
 
 | 角色 | 字体栈 | 说明 |
 | --- | --- | --- |
-| 中文 / 正文 | `"Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif` | 官网正文用思源黑体，选开源的同族字体 |
-| 英文展示 | `"Montserrat", "Avenir", "Helvetica Neue", Arial, sans-serif` | 几何无衬线，替代官网的 Avenir / AvantGarde，用于英文副标题、HUD 文字，全大写 + 字距 |
-| 数字 / 数据 | `"JetBrains Mono", ui-monospace, Consolas, monospace` | PP、DP、费用、计时、ID，必须 `tabular-nums` |
+| 正文 (`font-sans`) | 系统西文字体 → `"Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei"` | 官网正文用思源黑体；中文字体体积太大，不打包，使用系统已安装的黑体 |
+| 英文展示 (`font-display`) | `"Montserrat Variable", Avenir, "Helvetica Neue", Arial, sans-serif` | 几何无衬线，替代官网的 Avenir / AvantGarde，用于英文副标题、HUD 文字，全大写 + 字距 |
+| 数字 / 数据 (`font-num`) | `"JetBrains Mono Variable", ui-monospace, Consolas, monospace` | PP、DP、费用、计时、ID，必须 `tabular-nums` |
 
-字体文件自托管在 `public/fonts` (woff2，中文用子集)，**不要用 `next/font/google`**：便携版和内网环境构建时可能连不上 Google。
+Montserrat 与 JetBrains Mono 通过 `@fontsource-variable/*` 依赖随前端打包 (在 `layout.tsx` 引入)，**不要用 `next/font/google` 或 Google Fonts 链接**：便携版和内网环境可能连不上 Google。
 
 ### 字号阶梯
 

@@ -1,4 +1,7 @@
 import type { Metadata } from 'next';
+// 字体随依赖打包自托管，不依赖 Google Fonts (便携版与内网环境可离线使用)
+import '@fontsource-variable/montserrat';
+import '@fontsource-variable/jetbrains-mono';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
 
