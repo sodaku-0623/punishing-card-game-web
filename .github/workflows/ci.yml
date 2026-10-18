@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      # 仓库包含约 2GB 卡图，CI 只需源码：使用 blob-less + 稀疏检出，跳过卡图与卡表原始素材
+      # 卡图已从仓库与历史中移除；保留 blob-less + 稀疏检出，防止误提交的素材拖慢 CI
       - uses: actions/checkout@v4
         with:
           filter: blob:none
