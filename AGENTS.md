@@ -139,6 +139,7 @@ cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev
 
 ## 前端约定
 
+- 视觉与交互以 `docs/design/design-spec.md` 为准：只用其中定义的颜色、字号、间距 Token，不写裸色值与 `text-[Npx]` 之类的任意值。
 - **`NEXT_PUBLIC_*` 在构建时写入前端代码**，运行时修改无效。自建部署不应设置任何 `NEXT_PUBLIC_*` (前端自动连接当前访问地址)；启动脚本 (`scripts/start.mjs`、便携版启动器) 不得把 `.env` 中的 `NEXT_PUBLIC_*` 注入前端进程，否则外网穿透访问的玩家会被指向自己电脑上的 `localhost`。
 - `getSocket()` 默认使用 Socket.IO，只有 `NEXT_PUBLIC_WS_TRANSPORT=native` 时才使用原生 WebSocket。原生客户端按房间建立连接 (每个房间是一个 Durable Object)，`room:join` / `game:reconnect` 会自动切换到对应房间的连接。
 - **动态路由 (`[id]` 目录) 不要用 `useParams()` 读 ID**。Cloudflare 版静态导出时每个动态路由只生成一个占位页面 (由 `generateStaticParams` 返回的 `lobby`、`room` 等)，Worker 把其余 ID 改写到占位页面，此时 `useParams()` 拿到的是占位 ID。页面一律用 `src/lib/route-id.tsx` 的 `useRouteId()` 读取 (已解码)，并在 `page.tsx` 中用 `RouteIdProvider` 包裹客户端组件。新增或修改动态路由时，同步更新 `apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`。
