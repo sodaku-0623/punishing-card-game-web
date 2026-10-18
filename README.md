@@ -47,7 +47,7 @@ npm start                                                             # 启动�
 
 - 首次启动会生成 `.env`，其中的 `JWT_SECRET` 与管理员账号 `admin` 的初始密码 `ADMIN_PASSWORD` 均为随机生成，初始密码会打印在控制台。
 - 本机运行时，账号、卡组与对局记录保存在内存中，重启后清空。需要持久化存储时请使用 Cloudflare 部署。
-- 卡图目前仍存放在仓库中（约 2~3 GB，正在迁移至对象存储），完整克隆耗时较长。迁移完成后，需要通过上述下载脚本获取卡图。
+- 卡图不在仓库中（`apps/web/public/cards` 已加入 `.gitignore`），新克隆后需要先通过上述下载脚本获取卡图，否则界面没有卡面。
 - 想在本机体验一局：分别用普通窗口与无痕窗口打开 `http://localhost:3000`，两个窗口是不同的游客身份，可以互相对战。
 
 ### 与朋友联机
@@ -70,7 +70,7 @@ npm run package:portable
 npm run deploy:cf -- --card-cdn <R2 卡图域名>
 ```
 
-本仓库还配置了 GitHub Actions 工作流（`.github/workflows/deploy-worker.yml`）：推送到 `main` 后自动构建并部署，需要在仓库 Secrets 中配置 `CLOUDFLARE_API_TOKEN` 与 `CLOUDFLARE_ACCOUNT_ID`。
+线上 Worker 由 Cloudflare 控制台直接绑定本仓库自动构建：推送到 `main` 后自动构建并部署，构建命令为 `npm run build:worker`。卡图 CDN 由构建环境变量 `NEXT_PUBLIC_CARD_CDN` 指定，未设置时使用 `scripts/build-cf-static.mjs` 中的默认域名。
 
 完整步骤、在本地以 Cloudflare 运行时调试的方法及注意事项，见 [Cloudflare 部署指南](docs/deploy/cloudflare.md)。在中国大陆访问需要绑定自定义域名。
 

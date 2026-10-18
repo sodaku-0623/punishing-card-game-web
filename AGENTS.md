@@ -160,7 +160,9 @@ cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev
 ## 仓库注意事项
 
 - `apps/worker/static/` 是 `build:cf-static` 生成的前端产物，不要提交 (只保留 `.gitkeep` 与 `.assetsignore`)。卡图在 `cards/` 目录下与 `/cards/[id]` 的占位页面混在一起，排除卡图时只能删图片文件，不能删整个目录。
-- `apps/web/public/cards` 约 3 GB 卡图直接存于 Git 中，克隆很慢。CI 使用 blob-less + 稀疏检出跳过卡图。不要再向仓库提交大型二进制文件，新增素材应考虑 Git LFS 或对象存储。
+- 卡图 (约 3 GB) 已从仓库及其历史中移除，`apps/web/public/cards/` 在 `.gitignore` 中；新克隆后用 `npm run cards:download -- --card-cdn <卡图域名>` 下载到本地。CI 会拦截 PR 中的图片与超过 1 MB 的文件，新增素材上传 R2，不要提交到 Git。
+- 2026-10-16 为移除卡图重写过 `main` 的历史，此前的克隆与分支和现在的 `main` 没有共同祖先。旧克隆不要直接 `git pull` (Git 会把本地卡图当作已删除文件删掉)，也不要把旧历史的分支推送或合并回来；先备份或保留卡图，再用 `git fetch` + `git reset --mixed origin/main` 迁到新历史，或者重新克隆后下载卡图。
+- 线上 Cloudflare Worker 由 Cloudflare 控制台绑定本仓库自动构建 (构建命令 `npm run build:worker`)，仓库中没有部署用的 GitHub Actions；`npm run deploy:cf` 仍可用于手动部署。
 - `scripts/` 根目录为正式流程脚本 (启动、打包、压测、卡表生成、R2 上传)；`scripts/dev/` 为一次性排查脚本，不参与构建。脚本中不要硬编码个人本地路径，改用命令行参数或环境变量。
 - 便携版启动器的网关端口只读 `GATEWAY_PORT` (默认 3000)，不要读 `PORT`——`.env` 里的 `PORT` 是后端端口 4000。
 - 卡牌插画与商标权利归库洛游戏所有，本项目仅限非商业交流用途。
