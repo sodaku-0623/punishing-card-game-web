@@ -232,7 +232,40 @@ npm run deploy -w @zhanshuang/worker
 - `NEXT_PUBLIC_*` 在构建时写入前端代码，修改后必须重新执行 `build:cf-static` 并发布。
 - 动态路由只生成一个占位页面 (`/rooms/lobby`、`/game/room`、`/cards/BP01-001`、`/decks/default`、`/replay/demo`)，其余 ID 由 Worker 改写到占位页面 (`apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`)，页面再从地址栏读取真实 ID (`apps/web/src/lib/route-id.tsx`)。修改占位 ID 时两边必须同步。
 
-### 3. 绑定自定义域名（国内访问的关键步骤）
+### 3. 控制台自动构建（Worker Builds）与分支预览（Worker Previews）
+
+线上 Worker 由 Cloudflare 控制台绑定本仓库自动构建，仓库里没有部署工作流。生产分支与预览分支走的是**两条不同的命令**，配置错任何一条都会出现「生产能发、预览必失败」。
+
+控制台 **Workers & Pages ➔ zhanshuang-worker ➔ Settings ➔ Build** 应配置为：
+
+| 配置项 | 值 |
+| --- | --- |
+| 根目录 (Root directory) | `/`（仓库根目录，不要填 `apps/worker`） |
+| 构建命令 (Build command) | `npm run build:worker` |
+| 部署命令 (Deploy command) | `npx wrangler deploy` |
+| 预览命令 (Preview command) | `npx wrangler preview` |
+| 生产分支 (Production branch) | `main`；并勾选 **Enable Preview Builds** |
+
+说明：
+- `apps/worker/wrangler.toml` **必须**有 `[previews]` 块（可以是空的 `[previews]`）。缺失时预览构建会在部署阶段直接失败，wrangler 的报错原文是：
+
+  ```text
+  Your Wrangler configuration is missing a `previews` block to run this command.
+  ```
+
+  新建分支只要从 `main` 拉出就会自带这段配置；2026-10 之前拉出的旧分支需要手动补上。
+- 预览不继承生产配置。`[previews]` 里目前显式声明了两类绑定：D1 指向独立的预览库 `zhanshuang_tcg_preview`（`f9edd7b8-…`），Durable Objects 按绑定名声明（每个预览自动获得自己的命名空间与存储）。`assets`、`compatibility_date`、`migrations` 仍然留在顶层，不要复制进 `[previews]`。
+- 预览库与生产库是两套数据，预览库上也要建表，否则预览站点能打开但注册/登录会报 D1 错误：
+  `npx wrangler d1 execute zhanshuang_tcg_preview --remote --file apps/worker/schema.sql`（脚本幂等）。
+- 本地预演预览构建（会用当前分支名作为预览名，可加 `--name` 覆盖）：
+  ```bash
+  npm run build:worker
+  npm run preview:worker     # 等价于 wrangler preview -c apps/worker/wrangler.toml
+  ```
+  成功时打印 `Preview: <分支名> (new)`、预览 URL 与 Unique Deployment URL。
+- 排错顺序：生产分支成功、所有预览分支失败时，先确认上表的**预览命令**不是旧预览模型遗留的值（早期接入 Builds 的 Worker 默认走旧模型，需要按控制台 Worker Previews 的提示做一次性切换，并把预览命令改为 `npx wrangler preview`）；再看构建日志里 `Deploy` 步骤的报错原文。
+
+### 4. 绑定自定义域名（国内访问的关键步骤）
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
 2. **设置 (Settings)** ➔ **域与路由 (Domains & Routes)** ➔ **添加 (Add)** ➔ **自定义域 (Custom Domain)**。
 3. 输入 `game.example.com` 并添加，Cloudflare 会自动配置 DNS 与 TLS 证书。
