@@ -232,7 +232,45 @@ npm run deploy -w @zhanshuang/worker
 - `NEXT_PUBLIC_*` 在构建时写入前端代码，修改后必须重新执行 `build:cf-static` 并发布。
 - 动态路由只生成一个占位页面 (`/rooms/lobby`、`/game/room`、`/cards/BP01-001`、`/decks/default`、`/replay/demo`)，其余 ID 由 Worker 改写到占位页面 (`apps/worker/src/index.ts` 的 `DYNAMIC_ROUTE_PLACEHOLDERS`)，页面再从地址栏读取真实 ID (`apps/web/src/lib/route-id.tsx`)。修改占位 ID 时两边必须同步。
 
-### 3. 绑定自定义域名（国内访问的关键步骤）
+### 3. 控制台自动构建（Worker Builds）与分支预览（Worker Previews）
+
+线上 Worker 由 Cloudflare 控制台绑定本仓库自动构建，仓库里没有部署工作流。生产分支与预览分支走的是**两条不同的命令**，配置错任何一条都会出现「生产能发、预览必失败」。
+
+控制台 **Workers & Pages ➔ zhanshuang-worker ➔ Settings ➔ Build** 应配置为：
+
+| 配置项 | 值 |
+| --- | --- |
+| 根目录 (Root directory) | `/`（仓库根目录，不要填 `apps/worker`） |
+| 构建命令 (Build command) | `npm run build:worker` |
+| 部署命令 (Deploy command) | `npm run deploy -w @zhanshuang/worker` |
+| 预览命令 (Preview command) | `npm run preview:worker` |
+| 生产分支 (Production branch) | `main`；并勾选 **Enable Preview Builds** |
+
+说明：
+- 权威配置只有 `apps/worker/wrangler.toml` 一份。`npm run build:worker` 的最后一步会用 `scripts/generate-root-wrangler.mjs` 在**仓库根目录**生成一份 `wrangler.toml`（路径改写为 `apps/worker/…`，文件在 `.gitignore` 中、不进 Git），这样在根目录运行的 wrangler 命令也能读到同一份配置。
+- 没有根配置时（例如没跑过 `build:worker`），在根目录直接运行 wrangler 会读不到配置：
+  - `npx wrangler deploy` 报 `The Cloudflare application detection logic has been run in the root of a workspace instead of targeting a specific project...`；
+  - `npx wrangler preview` 退化成一份空配置，报下面这句——**这个报错有误导性，它不代表 `[previews]` 没写，而是根本没读到 `apps/worker/wrangler.toml`**：
+
+  ```text
+  ✘ [ERROR] Your Wrangler configuration is missing a `previews` block to run this command.
+  ```
+
+- 2026-10-18 三个分支（`feat/cf-stage-3-frontend-r2`、`chore/cf-native-build-setup`、`refactor/web-design-tokens`）的预览构建失败，以及 10-21 的两次复现构建，都是这个原因：控制台预览命令是裸的 `npx wrangler preview`，而当时仓库根目录没有配置。**看到上面这句报错，先确认根目录有没有 `wrangler.toml`、命令有没有带 `-c`，再去查 `[previews]` 块。**
+- 即使已有根配置，控制台也建议写显式命令，少一层「构建先生成文件」的依赖：部署用 `npm run deploy -w @zhanshuang/worker`，预览用 `npm run preview:worker`（等价于 `npx wrangler deploy -c apps/worker/wrangler.toml` / `npx wrangler preview -c apps/worker/wrangler.toml`）。
+- `apps/worker/wrangler.toml` **仍然必须**有 `[previews]` 块（可以是空的 `[previews]`），否则构建命令正确时同样会报上一句。新建分支只要从 `main` 拉出就会自带这段配置。
+- 预览不继承生产配置。`[previews]` 里目前显式声明了两类绑定：D1 指向独立的预览库 `zhanshuang_tcg_preview`（`f9edd7b8-…`），Durable Objects 按绑定名声明（每个预览自动获得自己的命名空间与存储）。`assets`、`compatibility_date`、`migrations` 仍然留在顶层，不要复制进 `[previews]`。
+- 预览库与生产库是两套数据，预览库上也要建表，否则预览站点能打开但注册/登录会报 D1 错误：
+  `npx wrangler d1 execute zhanshuang_tcg_preview --remote --file apps/worker/schema.sql`（脚本幂等）。
+- 本地预演预览构建（会用当前分支名作为预览名，可加 `--name` 覆盖）：
+  ```bash
+  npm run build:worker
+  npm run preview:worker     # 等价于 wrangler preview -c apps/worker/wrangler.toml
+  ```
+  成功时打印 `Preview: <分支名> (new)`、预览 URL 与 Unique Deployment URL。
+- 排错顺序：先看 `Deploy` 步骤的报错原文。若是上面那句 `missing a previews block`，先确认预览命令带了 `-c apps/worker/wrangler.toml`（最常见），再确认 `[previews]` 块存在；若报的是认证/权限类错误（`Authentication error`、`code: 10000`），则是构建令牌没有 Worker Previews 权限，需要在控制台的 Worker Previews 设置里完成一次性切换或重新生成构建令牌。
+
+### 4. 绑定自定义域名（国内访问的关键步骤）
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
 2. **设置 (Settings)** ➔ **域与路由 (Domains & Routes)** ➔ **添加 (Add)** ➔ **自定义域 (Custom Domain)**。
 3. 输入 `game.example.com` 并添加，Cloudflare 会自动配置 DNS 与 TLS 证书。
