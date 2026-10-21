@@ -247,16 +247,17 @@ npm run deploy -w @zhanshuang/worker
 | 生产分支 (Production branch) | `main`；并勾选 **Enable Preview Builds** |
 
 说明：
-- **仓库根目录没有 `wrangler.toml`**，配置只在 `apps/worker/wrangler.toml`。控制台里的部署/预览命令必须指到子包，否则 wrangler 读不到配置：
-  - 在根目录直接跑 `npx wrangler deploy` 会报 `The Cloudflare application detection logic has been run in the root of a workspace instead of targeting a specific project...`；
-  - 在根目录直接跑 `npx wrangler preview` 会退化成一份空配置，报下面这句——**这个报错有误导性，它不代表 `[previews]` 没写，而是根本没读到 `apps/worker/wrangler.toml`**：
+- 权威配置只有 `apps/worker/wrangler.toml` 一份。`npm run build:worker` 的最后一步会用 `scripts/generate-root-wrangler.mjs` 在**仓库根目录**生成一份 `wrangler.toml`（路径改写为 `apps/worker/…`，文件在 `.gitignore` 中、不进 Git），这样在根目录运行的 wrangler 命令也能读到同一份配置。
+- 没有根配置时（例如没跑过 `build:worker`），在根目录直接运行 wrangler 会读不到配置：
+  - `npx wrangler deploy` 报 `The Cloudflare application detection logic has been run in the root of a workspace instead of targeting a specific project...`；
+  - `npx wrangler preview` 退化成一份空配置，报下面这句——**这个报错有误导性，它不代表 `[previews]` 没写，而是根本没读到 `apps/worker/wrangler.toml`**：
 
   ```text
   ✘ [ERROR] Your Wrangler configuration is missing a `previews` block to run this command.
   ```
 
-  等价写法：`npx wrangler deploy -c apps/worker/wrangler.toml`、`npx wrangler preview -c apps/worker/wrangler.toml`（`npm run deploy -w @zhanshuang/worker` 与 `npm run preview:worker` 内部已经这样做了）。
-  2026-10-18 三个分支（`feat/cf-stage-3-frontend-r2`、`chore/cf-native-build-setup`、`refactor/web-design-tokens`）的预览构建失败，以及 10-21 的复现构建，都是这一个原因：控制台预览命令是裸的 `npx wrangler preview`。**看到上面这句报错，先查预览命令有没有带 `-c`，再去查 `[previews]` 块。**
+- 2026-10-18 三个分支（`feat/cf-stage-3-frontend-r2`、`chore/cf-native-build-setup`、`refactor/web-design-tokens`）的预览构建失败，以及 10-21 的两次复现构建，都是这个原因：控制台预览命令是裸的 `npx wrangler preview`，而当时仓库根目录没有配置。**看到上面这句报错，先确认根目录有没有 `wrangler.toml`、命令有没有带 `-c`，再去查 `[previews]` 块。**
+- 即使已有根配置，控制台也建议写显式命令，少一层「构建先生成文件」的依赖：部署用 `npm run deploy -w @zhanshuang/worker`，预览用 `npm run preview:worker`（等价于 `npx wrangler deploy -c apps/worker/wrangler.toml` / `npx wrangler preview -c apps/worker/wrangler.toml`）。
 - `apps/worker/wrangler.toml` **仍然必须**有 `[previews]` 块（可以是空的 `[previews]`），否则构建命令正确时同样会报上一句。新建分支只要从 `main` 拉出就会自带这段配置。
 - 预览不继承生产配置。`[previews]` 里目前显式声明了两类绑定：D1 指向独立的预览库 `zhanshuang_tcg_preview`（`f9edd7b8-…`），Durable Objects 按绑定名声明（每个预览自动获得自己的命名空间与存储）。`assets`、`compatibility_date`、`migrations` 仍然留在顶层，不要复制进 `[previews]`。
 - 预览库与生产库是两套数据，预览库上也要建表，否则预览站点能打开但注册/登录会报 D1 错误：

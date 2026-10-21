@@ -64,6 +64,9 @@ apps/worker/static/*
 !apps/worker/static/.gitkeep
 !apps/worker/static/.assetsignore
 
+# 根目录 wrangler 配置：由 scripts/generate-root-wrangler.mjs 生成，权威配置在 apps/worker/wrangler.toml
+/wrangler.toml
+
 # AI Agent Local Drafts
 .claude/
 SOUL.md
