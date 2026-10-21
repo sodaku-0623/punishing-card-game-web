@@ -242,18 +242,22 @@ npm run deploy -w @zhanshuang/worker
 | --- | --- |
 | 根目录 (Root directory) | `/`（仓库根目录，不要填 `apps/worker`） |
 | 构建命令 (Build command) | `npm run build:worker` |
-| 部署命令 (Deploy command) | `npx wrangler deploy` |
-| 预览命令 (Preview command) | `npx wrangler preview` |
+| 部署命令 (Deploy command) | `npm run deploy -w @zhanshuang/worker` |
+| 预览命令 (Preview command) | `npm run preview:worker` |
 | 生产分支 (Production branch) | `main`；并勾选 **Enable Preview Builds** |
 
 说明：
-- `apps/worker/wrangler.toml` **必须**有 `[previews]` 块（可以是空的 `[previews]`）。缺失时预览构建会在部署阶段直接失败，wrangler 的报错原文是：
+- **仓库根目录没有 `wrangler.toml`**，配置只在 `apps/worker/wrangler.toml`。控制台里的部署/预览命令必须指到子包，否则 wrangler 读不到配置：
+  - 在根目录直接跑 `npx wrangler deploy` 会报 `The Cloudflare application detection logic has been run in the root of a workspace instead of targeting a specific project...`；
+  - 在根目录直接跑 `npx wrangler preview` 会退化成一份空配置，报下面这句——**这个报错有误导性，它不代表 `[previews]` 没写，而是根本没读到 `apps/worker/wrangler.toml`**：
 
   ```text
-  Your Wrangler configuration is missing a `previews` block to run this command.
+  ✘ [ERROR] Your Wrangler configuration is missing a `previews` block to run this command.
   ```
 
-  新建分支只要从 `main` 拉出就会自带这段配置；2026-10 之前拉出的旧分支需要手动补上。
+  等价写法：`npx wrangler deploy -c apps/worker/wrangler.toml`、`npx wrangler preview -c apps/worker/wrangler.toml`（`npm run deploy -w @zhanshuang/worker` 与 `npm run preview:worker` 内部已经这样做了）。
+  2026-10-18 三个分支（`feat/cf-stage-3-frontend-r2`、`chore/cf-native-build-setup`、`refactor/web-design-tokens`）的预览构建失败，以及 10-21 的复现构建，都是这一个原因：控制台预览命令是裸的 `npx wrangler preview`。**看到上面这句报错，先查预览命令有没有带 `-c`，再去查 `[previews]` 块。**
+- `apps/worker/wrangler.toml` **仍然必须**有 `[previews]` 块（可以是空的 `[previews]`），否则构建命令正确时同样会报上一句。新建分支只要从 `main` 拉出就会自带这段配置。
 - 预览不继承生产配置。`[previews]` 里目前显式声明了两类绑定：D1 指向独立的预览库 `zhanshuang_tcg_preview`（`f9edd7b8-…`），Durable Objects 按绑定名声明（每个预览自动获得自己的命名空间与存储）。`assets`、`compatibility_date`、`migrations` 仍然留在顶层，不要复制进 `[previews]`。
 - 预览库与生产库是两套数据，预览库上也要建表，否则预览站点能打开但注册/登录会报 D1 错误：
   `npx wrangler d1 execute zhanshuang_tcg_preview --remote --file apps/worker/schema.sql`（脚本幂等）。
@@ -263,7 +267,7 @@ npm run deploy -w @zhanshuang/worker
   npm run preview:worker     # 等价于 wrangler preview -c apps/worker/wrangler.toml
   ```
   成功时打印 `Preview: <分支名> (new)`、预览 URL 与 Unique Deployment URL。
-- 排错顺序：生产分支成功、所有预览分支失败时，先确认上表的**预览命令**不是旧预览模型遗留的值（早期接入 Builds 的 Worker 默认走旧模型，需要按控制台 Worker Previews 的提示做一次性切换，并把预览命令改为 `npx wrangler preview`）；再看构建日志里 `Deploy` 步骤的报错原文。
+- 排错顺序：先看 `Deploy` 步骤的报错原文。若是上面那句 `missing a previews block`，先确认预览命令带了 `-c apps/worker/wrangler.toml`（最常见），再确认 `[previews]` 块存在；若报的是认证/权限类错误（`Authentication error`、`code: 10000`），则是构建令牌没有 Worker Previews 权限，需要在控制台的 Worker Previews 设置里完成一次性切换或重新生成构建令牌。
 
 ### 4. 绑定自定义域名（国内访问的关键步骤）
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) ➔ **Workers & Pages** ➔ 点击 **zhanshuang-worker**。
