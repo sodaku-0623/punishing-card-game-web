@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { CardType, ElementAttribute } from '@zhanshuang/shared';
+import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { CardData, findCardByNumberOrId, getCardVariants, getCardSeries, CardVariant } from '@/lib/cards-data';
 import { getCardFullImageUrl } from '@/lib/card-image';
 import { X, Sparkles, Shield, Flame, Zap, Moon, Snowflake, Star } from 'lucide-react';
@@ -295,9 +296,21 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
             {/* 卡牌效果规则说明 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-hud font-display uppercase tracking-widest text-fg-muted">
-                RULES TEXT · 卡牌效果
-              </span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-hud font-display uppercase tracking-widest text-fg-muted">
+                  RULES TEXT · 卡牌效果
+                </span>
+                {isCardApproximatelyImplemented(resolvedCard.cardNumber, resolvedCard.rulesText) && (
+                  <span className="px-2 py-0.5 text-hud font-sans font-semibold bg-gold-300/15 border border-gold-300/50 text-gold-300">
+                    近似效果 · 待逐卡精确转换
+                  </span>
+                )}
+              </div>
+              {isCardApproximatelyImplemented(resolvedCard.cardNumber, resolvedCard.rulesText) && (
+                <div className="px-3 py-2 bg-gold-300/10 border border-gold-300/35 text-hud text-gold-300 leading-relaxed">
+                  提示：该卡尚未完成按官方文本的声明式逐卡转换，当前在线对局按关键字近似结算。官方预组 ST01~ST03 已全部精确实现。
+                </div>
+              )}
               <div className="p-4 bg-ink-950 border border-line text-body-sm leading-relaxed text-fg whitespace-pre-wrap">
                 {resolvedCard.rulesText || '此卡牌无特殊规则文本。'}
               </div>

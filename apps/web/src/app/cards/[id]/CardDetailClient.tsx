@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useRouteId } from '@/lib/route-id';
+import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import {
   ALL_OFFICIAL_CARDS,
   findCardByNumberOrId,
@@ -328,6 +329,11 @@ export default function CardDetailPage() {
               {card.isInstant && <Badge variant="gold">瞬时 INSTANT</Badge>}
               {card.signalOrb && (
                 <Badge variant="neutral">{card.signalOrb} 信号球</Badge>
+              )}
+              {isCardApproximatelyImplemented(card.cardNumber, card.rulesText) ? (
+                <Badge variant="gold">近似效果 · 待逐卡精确转换</Badge>
+              ) : (
+                <Badge variant="teal">精确规则实现</Badge>
               )}
             </div>
 
