@@ -8,7 +8,6 @@ import { useGameStore } from '@/stores/game-store';
 import { useAuth } from '@/lib/auth-context';
 import { getSocket, getSocketUserId, getSocketUsername } from '@/lib/socket';
 import { ErosionBar } from '@/components/game/ErosionBar';
-import { BattlefieldSlotView } from '@/components/game/BattlefieldSlotView';
 import { BattlefieldArenaView, AttackAnimInfo } from '@/components/game/BattlefieldArenaView';
 import { TargetingArrowOverlay } from '@/components/game/TargetingArrowOverlay';
 import { PhaseBannerView } from '@/components/game/PhaseBannerView';
@@ -21,23 +20,19 @@ import { CardDetailModal } from '@/components/game/CardDetailModal';
 import { CardContextMenu } from '@/components/game/CardContextMenu';
 import { CardHoverTooltip } from '@/components/game/CardHoverTooltip';
 import { KeyboardShortcutsModal } from '@/components/game/KeyboardShortcutsModal';
-import { ProcessingZoneView } from '@/components/game/ProcessingZoneView';
 import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { MulliganModal } from '@/components/game/MulliganModal';
 import { GraveyardModal } from '@/components/game/GraveyardModal';
-import { GraveyardZoneView } from '@/components/game/GraveyardZoneView';
-import { DeckZoneView } from '@/components/game/DeckZoneView';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { RuleGuideModal } from '@/components/game/RuleGuideModal';
+import { Button, HudBrackets } from '@/components/ui';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { sfx } from '@/lib/audio';
 import {
   CardInstance,
-  GamePhase,
   GameAction,
   CardType,
   PendingChoice,
-  ErrorCode,
 } from '@zhanshuang/shared';
 import {
   Swords,
@@ -49,16 +44,11 @@ import {
   Shield,
   Layers,
   Zap,
-  Archive,
-  Sparkles,
   Info,
   Volume2,
   VolumeX,
   Keyboard as KeyboardIcon,
   ChevronRight,
-  ChevronLeft,
-  Crosshair,
-  HelpCircle,
   PanelRightClose,
   PanelRightOpen,
   ArrowUpRight,
@@ -193,11 +183,13 @@ export default function GameTabletopPage() {
     }
   }, []);
 
-  const toggleSound = () => {
-    const next = !isMuted;
-    sfx.setMuted(next);
-    setIsMuted(next);
-  };
+  const toggleSound = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      sfx.setMuted(next);
+      return next;
+    });
+  }, []);
 
   // 初始化 Socket 连接并同步重连状态
   useEffect(() => {
@@ -301,8 +293,8 @@ export default function GameTabletopPage() {
 
   // 稳定解析玩家角色与阵营
   const effectiveUserId = user?.id || getSocketUserId();
-  const playerIds = gameState ? Object.keys(gameState.players) : [];
-  const myHandCards = gameState?.myHandCards || [];
+  const playerIds = useMemo(() => (gameState ? Object.keys(gameState.players) : []), [gameState]);
+  const myHandCards = useMemo(() => gameState?.myHandCards || [], [gameState]);
   const deducedFromHand = myHandCards.length > 0 ? myHandCards[0].controllerPlayerId : undefined;
 
   const resolvedMyUserId = useMemo(() => {
@@ -514,38 +506,43 @@ export default function GameTabletopPage() {
     setSelectedHandCard,
     toggleOrbSelection,
     clearOrbSelection,
+    toggleSound,
   ]);
 
   if (!gameState) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-neutral-400 font-mono p-4">
-        <div className="flex flex-col items-center gap-4 max-w-md text-center">
+      <div className="flex min-h-screen items-center justify-center bg-ink-950 bg-tactical-grid text-fg-secondary p-4">
+        <div className="relative flex flex-col items-center gap-4 max-w-md w-full text-center p-8 bg-ink-900 border border-line-strong clip-corner-md shadow-overlay">
+          <HudBrackets size="sm" color={lastError ? 'crimson' : 'teal'} />
           {lastError ? (
             <>
-              <div className="w-12 h-12 rounded-full bg-erosionRed/20 border border-erosionRed/60 flex items-center justify-center text-erosionRed">
+              <div className="w-12 h-12 bg-crimson-500/15 border border-crimson-500/60 flex items-center justify-center text-crimson-400">
                 <AlertCircle className="w-6 h-6" />
               </div>
-              <div className="text-white font-bold text-sm">未能连入对局作战终端</div>
-              <div className="text-xs text-erosionRed bg-erosionRed/10 border border-erosionRed/30 px-3 py-2 rounded-lg">
+              <div className="text-fg font-bold text-title-sm">未能连入对局作战终端</div>
+              <div className="text-caption text-crimson-400 bg-crimson-500/10 border border-crimson-500/40 px-3 py-2 w-full">
                 {lastError}
               </div>
-              <div className="text-[11px] text-neutral-500">
+              <div className="text-caption text-fg-muted">
                 对局可能已结束或您未参与此对局。
               </div>
-              <button
-                onClick={() => router.push('/rooms')}
-                className="mt-2 px-4 py-2 rounded-lg bg-terminalCyan text-neutral-950 font-bold text-xs font-mono hover:scale-105 transition-transform"
-              >
+              <Button variant="primary" size="md" onClick={() => router.push('/rooms')} className="mt-2">
                 返回房间大厅
-              </button>
+              </Button>
             </>
           ) : (
             <>
-              <Clock className="w-8 h-8 text-terminalCyan animate-spin" />
-              <span>正在连接作战终端并同步游戏状态... (Game ID: {gameId})</span>
+              <Clock className="w-8 h-8 text-teal-400 animate-spin" />
+              <div className="text-body-sm text-fg font-medium">
+                正在连接作战终端并同步游戏状态...
+              </div>
+              <div className="text-hud font-num text-fg-muted">
+                GAME ID · {gameId}
+              </div>
               <button
+                type="button"
                 onClick={() => router.push('/rooms')}
-                className="mt-4 text-xs text-neutral-500 hover:text-neutral-300 underline"
+                className="mt-2 text-caption text-fg-muted hover:text-teal-400 underline cursor-pointer transition-colors"
               >
                 连接超时？点击返回大厅
               </button>
@@ -952,12 +949,12 @@ export default function GameTabletopPage() {
 
   return (
     <div
-      className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans relative select-none"
+      className="flex h-screen w-screen overflow-hidden bg-ink-950 text-fg font-sans relative select-none"
       onClick={() => {
         if (contextMenu) setContextMenu(null);
       }}
       onContextMenu={(e) => {
-        // YGOPro 核心交互逻辑：全局右键取消 / 撤回
+        // 全局右键取消 / 撤回
         if (contextMenu) {
           e.preventDefault();
           setContextMenu(null);
@@ -973,7 +970,7 @@ export default function GameTabletopPage() {
         }
       }}
     >
-      {/* 战术全息交战指示流光箭头 (YGOPro 风格目标锁定指示系统) */}
+      {/* 战术交战弹道指示线 */}
       {isAttackTargeting && (
         <TargetingArrowOverlay
           attackerCardId={selectedBattlefieldCardId}
@@ -987,22 +984,23 @@ export default function GameTabletopPage() {
           onCancel={() => setSelectedBattlefieldCardId(null)}
         />
       )}
+
       {/* 顶部全局错误通知 */}
       {lastError && (
         <div
           role="alert"
-          className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-erosionRed/95 text-white font-mono text-xs flex items-center gap-2 shadow-2xl border border-white/20 animate-in fade-in slide-in-from-top-2 duration-200"
+          className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-crimson-500 text-fg text-caption font-medium flex items-center gap-2 shadow-overlay border border-fg/20 clip-corner-sm animate-in fade-in slide-in-from-top-2 duration-fast"
         >
-          <AlertCircle className="w-4 h-4" />
+          <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{lastError}</span>
         </div>
       )}
 
-      {/* 本机网络断开提示 (socket.io 会自动重连，重连成功后自动重新同步对局) */}
+      {/* 本机网络断开提示 */}
       {!socketConnected && (
         <div
           role="status"
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-xl bg-neutral-950/95 border border-erosionRed/70 text-erosionRed shadow-2xl flex items-center gap-2 font-mono text-xs"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 bg-ink-950/95 border border-crimson-500/80 text-crimson-400 shadow-overlay flex items-center gap-2 text-caption"
         >
           <RefreshCw className="w-4 h-4 animate-spin" />
           <span>与服务器的连接已断开，正在自动重连…</span>
@@ -1011,40 +1009,40 @@ export default function GameTabletopPage() {
 
       {/* 对手掉线提示浮条 */}
       {isOpponentDisconnected && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-6 py-3.5 rounded-2xl bg-neutral-950/95 border-2 border-terminalGold text-terminalGold shadow-[0_0_30px_rgba(255,200,0,0.35)] flex items-center gap-3 font-mono animate-pulse">
-          <AlertCircle className="w-5 h-5 text-terminalGold flex-shrink-0" />
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-ink-950/95 border border-gold-300 text-gold-300 shadow-overlay flex items-center gap-3 clip-corner-sm">
+          <AlertCircle className="w-5 h-5 text-gold-300 flex-shrink-0" />
           <div>
-            <div className="font-bold text-white text-sm">对手已暂时掉线 / 失去连接</div>
-            <div className="text-neutral-300 text-xs mt-0.5">
+            <div className="font-semibold text-fg text-body-sm">对手已暂时掉线 / 失去连接</div>
+            <div className="text-fg-secondary text-caption mt-0.5">
               对战房间已保留，正在等待对手重新接入... 对手重连后将无缝继续推演
             </div>
           </div>
         </div>
       )}
 
-      {/* 鼠标悬停卡牌实时全息小窗浮窗 (随鼠标智能停靠，移开即自动隐去) */}
+      {/* 鼠标悬停卡牌实时详情浮窗 */}
       <CardHoverTooltip card={hoveredCard} />
 
-      {/* 2. 主对战桌面区域 (100vh 零滚动布局，彻底对齐 YGOPro 竞技桌面) */}
-      <div className="flex-1 flex flex-col justify-between p-2 lg:p-3 overflow-hidden h-screen relative">
-        {/* ================= 极简顶部控制条 (Top Utility Bar) ================= */}
-        <header className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-surface/40 border border-terminalBorder/40 backdrop-blur-md z-20 flex-shrink-0 text-xs font-mono">
+      {/* 主对战桌面区域 (100vh 零滚动布局) */}
+      <div className="flex-1 flex flex-col justify-between p-2 lg:p-2.5 overflow-hidden h-screen relative">
+        {/* ================= 顶部控制条 ================= */}
+        <header className="flex items-center justify-between px-3 py-1.5 bg-ink-900/90 border border-line backdrop-blur-sm z-20 flex-shrink-0 text-caption">
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => {
                 if (gameState?.status === 'PLAYING') {
                   const choice = confirm(
                     '您正在对战中：\n【确定】投降认输并结束推演对决\n【取消】留在战场继续对战\n\n提示：若因网络异常断开或临时离开，房间将持续为您保留，随时可重新接入。'
                   );
                   if (choice) {
-                    // 服务端在 game:leave(isSurrender) 中统一结算投降，无需重复提交 SURRENDER
                     handleExitGame(true);
                   }
                 } else {
                   handleExitGame(false);
                 }
               }}
-              className="p-1 rounded bg-neutral-900/80 hover:bg-neutral-800 text-neutral-400 hover:text-erosionRed transition-colors border border-terminalBorder/50 flex items-center gap-1 px-2"
+              className="py-1 px-2 bg-ink-950 hover:bg-crimson-500/15 text-fg-muted hover:text-crimson-400 transition-colors border border-line hover:border-crimson-500/50 flex items-center gap-1 cursor-pointer"
               title="投降或返回大厅"
               aria-label="投降或返回大厅"
             >
@@ -1052,36 +1050,34 @@ export default function GameTabletopPage() {
               <span className="hidden sm:inline">退出/投降</span>
             </button>
 
-
-            <div className="flex items-center gap-2">
-              <span className="text-neutral-400">房间:</span>
-              <span className="text-white font-bold">{gameId.slice(0, 8)}</span>
-              <span className="text-neutral-600">•</span>
-              <span className="text-neutral-400">回合:</span>
-              <span className="text-terminalCyan font-black">{gameState.turnNumber}</span>
+            <div className="flex items-center gap-2 font-num tabular-nums">
+              <span className="text-fg-muted font-sans">房间</span>
+              <span className="text-fg font-semibold">{gameId.slice(0, 8)}</span>
+              <span className="text-line-strong">/</span>
+              <span className="text-fg-muted font-sans">回合</span>
+              <span className="text-teal-400 font-bold">{gameState.turnNumber}</span>
             </div>
           </div>
 
           {/* 中央阶段标签 */}
           <div className="flex items-center gap-2">
             <span
-              className={`px-3 py-0.5 rounded-full text-xs font-mono font-bold flex items-center gap-1.5 shadow ${
+              className={`px-3 py-0.5 text-caption font-semibold flex items-center gap-1.5 border ${
                 isMyTurn
-                  ? 'bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/50 shadow-[0_0_12px_rgba(0,240,255,0.25)] animate-pulse'
-                  : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                  ? 'bg-teal-400/15 text-teal-400 border-teal-400/60'
+                  : 'bg-ink-850 text-fg-muted border-line'
               }`}
             >
               <Clock className="w-3.5 h-3.5" />
               <span>{isMyTurn ? '我方行动阶段' : '对手行动中'}</span>
             </span>
 
-            {/* 空格快捷键提示 */}
             {timing?.canPass && (
               <button
                 type="button"
                 onClick={handlePassTiming}
-                className="hidden md:flex items-center gap-1 px-2.5 py-0.5 rounded bg-terminalCyan/10 hover:bg-terminalCyan/30 border border-terminalCyan/40 text-terminalCyan text-[11px] font-bold transition-all shadow cursor-pointer active:scale-95"
-                title="推进至结束阶段 (快捷键: Space)"
+                className="pgr-sweep hidden md:flex items-center gap-1 px-2.5 py-0.5 clip-corner-sm bg-teal-400/15 hover:bg-teal-400/25 border border-teal-400/60 text-teal-400 text-hud font-semibold transition-colors cursor-pointer active:scale-95"
+                title="推进阶段或让渡时点 (快捷键: Space)"
               >
                 <span>{timing.passLabel} [Space]</span>
                 <ChevronRight className="w-3 h-3" />
@@ -1089,14 +1085,15 @@ export default function GameTabletopPage() {
             )}
           </div>
 
-          {/* 右侧工具栏按钮: 音效、快捷键指南、HUD 折叠 */}
-          <div className="flex items-center gap-2">
+          {/* 右侧工具栏按钮 */}
+          <div className="flex items-center gap-1.5">
             <button
+              type="button"
               onClick={toggleSound}
-              className={`p-1.5 rounded border transition-colors ${
+              className={`p-1.5 border transition-colors cursor-pointer ${
                 isMuted
-                  ? 'border-neutral-700 text-neutral-500 bg-neutral-900/60'
-                  : 'border-terminalCyan/40 text-terminalCyan bg-terminalCyan/10'
+                  ? 'border-line text-fg-muted bg-ink-950'
+                  : 'border-teal-400/50 text-teal-400 bg-teal-400/10'
               }`}
               title={isMuted ? '取消静音 (快捷键: M)' : '静音 (快捷键: M)'}
               aria-label={isMuted ? '取消静音' : '静音'}
@@ -1106,8 +1103,9 @@ export default function GameTabletopPage() {
             </button>
 
             <button
+              type="button"
               onClick={() => setIsShortcutsModalOpen(true)}
-              className="p-1.5 rounded border border-neutral-700 hover:border-terminalCyan/60 text-neutral-300 hover:text-white bg-neutral-900/80 transition-colors"
+              className="p-1.5 border border-line hover:border-teal-400/60 text-fg-secondary hover:text-fg bg-ink-950 transition-colors cursor-pointer"
               title="查看桌面快捷键指南 (快捷键: ?)"
               aria-label="查看桌面快捷键指南"
             >
@@ -1115,18 +1113,21 @@ export default function GameTabletopPage() {
             </button>
 
             <button
+              type="button"
               onClick={() => setIsRuleGuideModalOpen(true)}
-              className="p-1.5 rounded border border-neutral-700 hover:border-terminalGold/60 text-neutral-300 hover:text-white bg-neutral-900/80 transition-colors flex items-center gap-1 text-[11px]"
+              className="p-1.5 px-2 border border-line hover:border-gold-300/60 text-fg-secondary hover:text-fg bg-ink-950 transition-colors flex items-center gap-1 text-hud cursor-pointer"
               title="官方规则手册 / 新手指南 (快捷键: H)"
+              aria-label="打开官方规则手册"
             >
-              <BookOpen className="w-3.5 h-3.5 text-terminalGold" />
-              <span className="hidden sm:inline text-terminalGold/90 font-bold">规则手册 [H]</span>
+              <BookOpen className="w-3.5 h-3.5 text-gold-300" />
+              <span className="hidden sm:inline text-gold-300 font-semibold">规则手册 [H]</span>
             </button>
 
             <button
+              type="button"
               onClick={() => setIsHudOpen((prev) => !prev)}
-              className="p-1.5 rounded border border-neutral-700 hover:border-terminalCyan/60 text-neutral-300 hover:text-white bg-neutral-900/80 transition-colors flex items-center gap-1 text-[11px]"
-              title="折叠 / 展开右侧战术终端 HUD"
+              className="p-1.5 px-2 border border-line hover:border-teal-400/60 text-fg-secondary hover:text-fg bg-ink-950 transition-colors flex items-center gap-1 text-hud cursor-pointer"
+              title="折叠 / 展开右侧战术终端 HUD (Tab)"
               aria-label={isHudOpen ? '折叠战术终端' : '展开战术终端'}
               aria-expanded={isHudOpen}
             >
@@ -1136,7 +1137,7 @@ export default function GameTabletopPage() {
           </div>
         </header>
 
-        {/* ================= 对手区域 (TOP: 极紧凑单行 HUD: 侵蚀 + 手牌 + 信号球 + 费用) ================= */}
+        {/* ================= 对手区域 ================= */}
         <div className="flex items-center justify-between gap-3 px-2 py-0.5 max-w-5xl mx-auto w-full flex-shrink-0 z-20">
           <div
             onClick={() => {
@@ -1144,9 +1145,9 @@ export default function GameTabletopPage() {
                 handleAttackClick(selectedBattlefieldCardId);
               }
             }}
-            className={`w-44 lg:w-48 flex-shrink-0 transition-all ${
+            className={`w-44 lg:w-48 flex-shrink-0 transition-all duration-fast ${
               selectedBattlefieldCardId && isMyTurn && gameState.phase === 'MAIN_PHASE'
-                ? 'cursor-crosshair ring-2 ring-erosionRed/80 rounded-xl animate-pulse scale-[1.02] shadow-[0_0_12px_rgba(255,42,95,0.5)]'
+                ? 'cursor-crosshair ring-1 ring-crimson-500 shadow-glow-crimson'
                 : ''
             }`}
             title={selectedBattlefieldCardId ? '点击选定攻击敌方玩家' : undefined}
@@ -1156,21 +1157,20 @@ export default function GameTabletopPage() {
 
           {/* 对手手牌背面阵列与紧凑信号球 */}
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 bg-neutral-950/80 px-2.5 py-1 rounded-xl border border-terminalBorder/60 text-xs font-mono">
+            <div className="flex items-center gap-1.5 bg-ink-900/90 px-2.5 py-1 border border-line text-caption">
               <div className="flex items-center gap-1">
                 {Array.from({ length: Math.min(gameState.opponentHandCount, 7) }, (_, i) => (
                   <div
                     key={i}
-                    className="w-3.5 h-5 rounded-xs bg-neutral-900 border border-terminalBorder/70 shadow-xs"
+                    className="w-3.5 h-5 rounded-card bg-ink-850 border border-line-strong"
                   />
                 ))}
               </div>
-              <span className="text-neutral-300 font-bold text-[11px]">
-                手牌: {gameState.opponentHandCount}
+              <span className="text-fg-secondary font-num tabular-nums font-semibold text-hud ml-0.5">
+                手牌 {gameState.opponentHandCount}
               </span>
             </div>
 
-            {/* 对方信号球紧凑条 */}
             {opponentOrbs.length > 0 && (
               <SignalOrbQueueView orbs={opponentOrbs} selectedOrbIds={[]} isOpponent compact={true} />
             )}
@@ -1221,15 +1221,14 @@ export default function GameTabletopPage() {
           />
         </div>
 
-        {/* ================= 己方操作与手牌区 (BOTTOM: 紧凑费用侵蚀条 + 信号球 + 手牌托盘) ================= */}
-        <div className="flex flex-col gap-1 flex-shrink-0 pt-0.5 border-t border-terminalBorder/40">
-          {/* 己方资源紧凑栏 (侵蚀度 + 信号球充能条 + 费用区) */}
+        {/* ================= 己方操作与手牌区 ================= */}
+        <div className="flex flex-col gap-1 flex-shrink-0 pt-0.5 border-t border-line">
+          {/* 己方资源紧凑栏 */}
           <div className="flex items-center justify-between gap-3 px-2 py-0.5 max-w-5xl mx-auto w-full">
             <div className="w-44 lg:w-48 flex-shrink-0">
               <ErosionBar current={myPlayerState.erosionCount} playerName="我方" compact={true} />
             </div>
 
-            {/* 己方信号球紧凑充能条 (高度仅30px，居中无遮挡) */}
             <div className="flex-1 max-w-xl mx-auto">
               <SignalOrbQueueView
                 orbs={myOrbs}
@@ -1261,25 +1260,25 @@ export default function GameTabletopPage() {
 
           {/* 手牌快捷操作提示与行动栏 */}
           {selectedHandCard && (
-            <div className="flex items-center justify-between px-3 py-1 rounded-lg bg-surface border border-terminalBorder text-xs font-mono shadow-md">
-              <div className="flex items-center gap-2">
-                <Info className="w-3.5 h-3.5 text-terminalCyan" />
-                <span className="text-neutral-300 text-[11px]">
-                  选中: <strong className="text-white">【{selectedHandCardDef?.name || selectedHandCard.cardNumber}】</strong>
+            <div className="flex items-center justify-between px-3 py-1 bg-ink-900 border border-teal-400/50 text-caption">
+              <div className="flex items-center gap-2 min-w-0">
+                <Info className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                <span className="text-fg-secondary text-hud truncate">
+                  选中：<strong className="text-fg">【{selectedHandCardDef?.name || selectedHandCard.cardNumber}】</strong>
                   {selectedHandCardDef && (() => {
                     const effCost = getCardEffectiveCost(selectedHandCard);
                     const costText = effCost < selectedHandCardDef.cost ? `${effCost} (原${selectedHandCardDef.cost})` : `${effCost}`;
-                    return ` (${formatCardType(selectedHandCardDef.cardType, selectedHandCardDef.isInstant)} • 费用: ${costText})`;
+                    return ` (${formatCardType(selectedHandCardDef.cardType, selectedHandCardDef.isInstant)} · 费用 ${costText})`;
                   })()}
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 {selectedHandCardDef?.cardType === CardType.TACTICS && (
                   <button
                     type="button"
                     onClick={() => handlePlayTactics(selectedHandCard.instanceId)}
-                    className="px-2.5 py-0.5 rounded bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold font-mono text-[11px] flex items-center gap-1 shadow animate-pulse"
+                    className="pgr-sweep px-2.5 py-0.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
                   >
                     <Zap className="w-3 h-3 fill-current" />
                     <span>
@@ -1294,7 +1293,7 @@ export default function GameTabletopPage() {
                   <button
                     type="button"
                     onClick={() => handlePlayEquipment(selectedHandCard.instanceId)}
-                    className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-terminalGold/90 text-neutral-950 font-bold font-mono text-[11px] flex items-center gap-1 shadow"
+                    className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
                   >
                     <Shield className="w-3 h-3" />
                     <span>使用装备卡</span>
@@ -1305,7 +1304,6 @@ export default function GameTabletopPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      // 查找己方战场的合法升变角色
                       const targetRole = mySlots
                         .map((s) => (s.roleCardId ? gameState?.publicCards[s.roleCardId] : null))
                         .filter(Boolean)
@@ -1328,10 +1326,10 @@ export default function GameTabletopPage() {
                         setSelectedHandCard(null);
                       }
                     }}
-                    className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-terminalGold/90 text-neutral-950 font-bold font-mono text-[11px] flex items-center gap-1 shadow animate-pulse"
+                    className="pgr-sweep px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
                   >
                     <ArrowUpRight className="w-3 h-3" />
-                    <span>升变出场 (重叠)</span>
+                    <span>升变出场</span>
                   </button>
                 )}
 
@@ -1339,17 +1337,17 @@ export default function GameTabletopPage() {
                   <button
                     type="button"
                     onClick={() => handleChargeCostFromHand()}
-                    className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-terminalGold/90 text-neutral-950 font-bold font-mono text-[11px] flex items-center gap-1 shadow"
+                    className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
                   >
                     <Layers className="w-3 h-3" />
-                    <span>充为明费 (6.3.1.c)</span>
+                    <span>充为明费</span>
                   </button>
                 )}
 
                 <button
                   type="button"
                   onClick={() => setSelectedHandCard(null)}
-                  className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white text-[11px]"
+                  className="px-2 py-0.5 bg-ink-850 hover:bg-ink-700 border border-line text-fg-muted hover:text-fg text-hud cursor-pointer transition-colors"
                 >
                   取消 [Esc]
                 </button>
@@ -1357,22 +1355,20 @@ export default function GameTabletopPage() {
             </div>
           )}
 
-          {/* 己方手牌行 (紧凑平铺，鼠标悬停平滑浮起放大，支持双击、右键菜单、拖拽出牌) */}
+          {/* 己方手牌行 */}
           <div className="flex flex-col gap-0.5">
-            <div className="flex justify-between items-center text-[10px] font-mono text-neutral-400 px-3">
-              <span className="flex items-center gap-1.5">
-                <span>我方手牌 (快捷键: 1~7 选择 • 右键菜单 • 双击快速出牌 • 拖拽出牌)</span>
-              </span>
-              <span>手牌: {myHandCards.length} / 7</span>
+            <div className="flex justify-between items-center text-hud text-fg-muted px-3">
+              <span>我方手牌 · 1~7 选择 / 右键菜单 / 双击或拖拽出牌</span>
+              <span className="font-num tabular-nums">手牌 {myHandCards.length} / 7</span>
             </div>
 
-            <div className="flex gap-2.5 overflow-x-auto py-1 px-3 bg-surface/50 border border-terminalBorder/60 rounded-xl min-h-[120px] max-h-[128px] items-center touch-pan-x">
+            <div className="flex gap-2.5 overflow-x-auto py-1 px-3 bg-ink-900/75 border border-line min-h-[120px] max-h-[128px] items-center touch-pan-x">
               {myHandCards.map((card, idx) => {
                 const isSelected = selectedHandCardId === card.instanceId;
                 return (
                   <div
                     key={card.instanceId}
-                    className="relative group transition-transform duration-150 hover:-translate-y-2.5 hover:scale-105 hover:z-30 card-interactive select-none flex-shrink-0"
+                    className="relative group transition-transform duration-fast ease-enter hover:-translate-y-2.5 hover:scale-105 hover:z-30 card-interactive select-none flex-shrink-0"
                     onTouchStart={(e) => {
                       const t = e.touches[0];
                       touchStartPosRef.current = { x: t.clientX, y: t.clientY };
@@ -1415,7 +1411,7 @@ export default function GameTabletopPage() {
                     }}
                   >
                     {/* 数字键序号提示角标 */}
-                    <div className="absolute -top-2 left-1.5 z-20 px-1 py-px rounded bg-neutral-900/90 border border-terminalBorder text-[9px] font-mono text-neutral-400 group-hover:text-terminalCyan group-hover:border-terminalCyan/60 transition-colors">
+                    <div className="absolute -top-2 left-1.5 z-20 px-1 py-px bg-ink-950 border border-line text-hud font-num text-fg-muted group-hover:text-teal-400 group-hover:border-teal-400/60 transition-colors">
                       {idx + 1}
                     </div>
 
@@ -1443,10 +1439,10 @@ export default function GameTabletopPage() {
               })}
             </div>
 
-            {/* 移动端手牌触控拖拽全息光标跟随预览 */}
+            {/* 移动端手牌触控拖拽光标跟随预览 */}
             {touchDragInfo?.isDragging && (
               <div
-                className="fixed pointer-events-none z-50 -translate-x-1/2 -translate-y-1/2 opacity-95 scale-110 shadow-[0_0_25px_rgba(0,240,255,0.9)] animate-pulse"
+                className="fixed pointer-events-none z-50 -translate-x-1/2 -translate-y-1/2 opacity-95 scale-110 shadow-glow-teal"
                 style={{ left: touchDragInfo.x, top: touchDragInfo.y }}
               >
                 <CardView
@@ -1459,165 +1455,169 @@ export default function GameTabletopPage() {
         </div>
       </div>
 
-      {/* ================= 右侧战术终端面板 (桌面端独立侧边列 / 移动端滑出抽屉，不挤压战场) ================= */}
+      {/* ================= 右侧战术终端面板 ================= */}
       {isHudOpen && (
         <div className="fixed inset-0 z-50 lg:static lg:z-30 flex justify-end">
-          {/* 移动端遮罩背景 */}
           <div
-            className="fixed inset-0 bg-black/75 backdrop-blur-xs lg:hidden"
+            className="fixed inset-0 bg-ink-950/75 backdrop-blur-xs lg:hidden"
             onClick={() => setIsHudOpen(false)}
           />
-          <aside className="relative z-10 w-[85vw] max-w-sm lg:w-[340px] h-full border-l border-terminalBorder bg-surface/98 flex flex-col justify-between p-3.5 backdrop-blur-md font-mono overflow-y-auto flex-shrink-0 animate-in slide-in-from-right duration-200">
-          <div className="flex flex-col gap-3">
-            {/* 终端头部 */}
-            <div className="flex justify-between items-center border-b border-terminalBorder/60 pb-2.5">
-              <div>
-                <div className="text-[10px] text-neutral-400 uppercase tracking-widest">
-                  COMMAND HUD
+          <aside className="relative z-10 w-[85vw] max-w-sm lg:w-[340px] h-full border-l border-line-strong bg-ink-900/98 flex flex-col justify-between p-3.5 backdrop-blur-md overflow-y-auto flex-shrink-0 animate-in slide-in-from-right duration-fast">
+            <div className="absolute inset-x-0 top-0 h-[2px] bg-crimson-500" />
+            <div className="flex flex-col gap-3">
+              {/* 终端头部 */}
+              <div className="flex justify-between items-center border-b border-line pb-2.5">
+                <div>
+                  <div className="text-hud font-display text-fg-muted uppercase tracking-widest">
+                    COMMAND HUD
+                  </div>
+                  <div className="text-body-sm font-bold text-fg flex items-center gap-2 font-num tabular-nums mt-0.5">
+                    <span>回合 {gameState.turnNumber}</span>
+                    <span
+                      className={`text-hud px-1.5 py-px font-sans font-semibold border ${
+                        isMyTurn
+                          ? 'bg-teal-400/15 text-teal-400 border-teal-400/50'
+                          : 'bg-ink-850 text-fg-muted border-line'
+                      }`}
+                    >
+                      {isMyTurn ? '我方' : '对手'}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-sm font-bold text-white flex items-center gap-2">
-                  回合 {gameState.turnNumber}
-                  <span
-                    className={`text-[10px] px-1.5 py-px rounded font-mono ${
-                      isMyTurn
-                        ? 'bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 animate-pulse'
-                        : 'bg-neutral-800 text-neutral-400'
-                    }`}
-                  >
-                    {isMyTurn ? '我方' : '对手'}
-                  </span>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-1">
                 <button
+                  type="button"
                   onClick={() => setIsHudOpen(false)}
-                  className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800"
-                  title="收起终端"
+                  aria-label="收起终端"
+                  className="p-1.5 border border-line text-fg-muted hover:text-fg hover:border-teal-400 transition-colors cursor-pointer"
+                  title="收起终端 (Tab)"
                 >
                   <PanelRightClose className="w-4 h-4" />
                 </button>
               </div>
-            </div>
 
-            {/* 回合流程指南 */}
-            <TurnFlowView
-              currentPhase={gameState.phase}
-              isMyTurn={isMyTurn}
-              canPassTiming={!!timing?.canPass}
-              passLabel={timing?.passLabel}
-              waitingHint={timing?.waitingHint}
-              onPassTiming={handlePassTiming}
-            />
-
-            {/* 抽牌阶段快速充能按钮 */}
-            {gameState.phase === 'DRAW_CHARGE_PHASE' && isMyTurn && !selectedHandCardId && (
-              <button
-                onClick={() => handleChargeCostFromHand()}
-                className="w-full py-1.5 rounded bg-terminalGold/90 hover:bg-terminalGold text-neutral-950 font-bold text-xs flex items-center justify-center gap-1 shadow"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>跳过明费填充进入主要阶段 (6.3)</span>
-              </button>
-            )}
-
-            {/* 战术卡牌详情检视面板 */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs text-neutral-300 font-bold flex items-center justify-between">
-                <span>卡牌战术详情</span>
-                {inspectedCard && (
-                  <button
-                    onClick={() => setIsDetailModalOpen(true)}
-                    className="text-[10px] text-terminalCyan hover:underline font-bold"
-                  >
-                    放大大图 [F]
-                  </button>
-                )}
-              </span>
-              <CardDetailPanel
-                card={inspectedCard}
-                onOpenModal={() => setIsDetailModalOpen(true)}
-                customAction={(() => {
-                  if (
-                    !inspectedCard ||
-                    inspectedCard.controllerPlayerId !== resolvedMyUserId ||
-                    inspectedCard.zone !== 'BATTLEFIELD'
-                  ) {
-                    return undefined;
-                  }
-                  const inspectedDef = findCardByNumberOrId(
-                    inspectedCard.cardNumber || inspectedCard.cardId
-                  );
-                  const hasAbility = !!(
-                    inspectedDef?.rulesText?.includes('【起】') ||
-                    inspectedDef?.rulesText?.includes('起动')
-                  );
-                  const canActivate = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
-                  const hasRush = Boolean(
-                    inspectedDef?.rulesText?.includes('速攻') ||
-                    inspectedCard.grantedKeywords?.includes('速攻')
-                  );
-                  const canAttack =
-                    isMyTurn &&
-                    gameState.phase === 'MAIN_PHASE' &&
-                    !!inspectedCard.isReady &&
-                    (inspectedCard.turnEnteredZone < gameState.turnNumber || hasRush);
-
-                  if (!canActivate && !canAttack) return undefined;
-
-                  return (
-                    <div className="flex items-center gap-1.5">
-                      {canActivate && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleActivateAbility(inspectedCard.instanceId);
-                            setSelectedBattlefieldCardId(null);
-                          }}
-                          className="px-2 py-0.5 rounded-md bg-terminalCyan text-neutral-950 font-black text-[10px] font-mono flex items-center gap-1 hover:scale-105 active:scale-95 shadow-[0_0_12px_rgba(0,240,255,0.5)] animate-pulse cursor-pointer"
-                          title="点击发动角色的【起】动能力"
-                        >
-                          <Zap className="w-3 h-3 fill-current" />
-                          <span>发动【起】</span>
-                        </button>
-                      )}
-                      {canAttack && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleAttackClick(inspectedCard.instanceId);
-                            setSelectedBattlefieldCardId(null);
-                          }}
-                          className="px-2 py-0.5 rounded-md bg-erosionRed text-white font-black text-[10px] font-mono flex items-center gap-1 hover:scale-105 active:scale-95 shadow-[0_0_12px_rgba(255,50,50,0.5)] cursor-pointer"
-                          title="宣告攻击对方玩家"
-                        >
-                          <Swords className="w-3 h-3" />
-                          <span>宣告攻击</span>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })()}
+              {/* 回合流程指南 */}
+              <TurnFlowView
+                currentPhase={gameState.phase}
+                isMyTurn={isMyTurn}
+                canPassTiming={!!timing?.canPass}
+                passLabel={timing?.passLabel}
+                waitingHint={timing?.waitingHint}
+                onPassTiming={handlePassTiming}
               />
-            </div>
 
-            {/* 实时战斗事件流日志 */}
-            <div className="flex flex-col gap-1.5 flex-1 overflow-hidden mt-1">
-              <span className="text-[11px] text-neutral-400 font-bold">对局事件通讯流</span>
-              <div className="h-32 lg:h-40 overflow-y-auto bg-neutral-950 p-2 rounded-lg border border-terminalBorder text-[10px] leading-relaxed flex flex-col gap-1 text-neutral-300">
-                {combatLogs.length === 0 ? (
-                  <span className="text-neutral-600 italic">等待战术行动中...</span>
-                ) : (
-                  combatLogs.map((log, index) => (
-                    <div key={index} className="border-b border-neutral-900 pb-1 font-mono">
-                      {log}
-                    </div>
-                  ))
-                )}
+              {/* 抽牌阶段快速跳过明费按钮 */}
+              {gameState.phase === 'DRAW_CHARGE_PHASE' && isMyTurn && !selectedHandCardId && (
+                <button
+                  type="button"
+                  onClick={() => handleChargeCostFromHand()}
+                  className="w-full py-2 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-caption flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>跳过明费填充进入主要阶段</span>
+                </button>
+              )}
+
+              {/* 战术卡牌详情检视面板 */}
+              <div className="flex flex-col gap-1.5">
+                <span className="text-caption text-fg-secondary font-semibold flex items-center justify-between">
+                  <span>卡牌战术详情</span>
+                  {inspectedCard && (
+                    <button
+                      type="button"
+                      onClick={() => setIsDetailModalOpen(true)}
+                      className="text-hud text-teal-400 hover:underline font-medium cursor-pointer"
+                    >
+                      放大大图 [F]
+                    </button>
+                  )}
+                </span>
+                <CardDetailPanel
+                  card={inspectedCard}
+                  onOpenModal={() => setIsDetailModalOpen(true)}
+                  customAction={(() => {
+                    if (
+                      !inspectedCard ||
+                      inspectedCard.controllerPlayerId !== resolvedMyUserId ||
+                      inspectedCard.zone !== 'BATTLEFIELD'
+                    ) {
+                      return undefined;
+                    }
+                    const inspectedDef = findCardByNumberOrId(
+                      inspectedCard.cardNumber || inspectedCard.cardId
+                    );
+                    const hasAbility = !!(
+                      inspectedDef?.rulesText?.includes('【起】') ||
+                      inspectedDef?.rulesText?.includes('起动')
+                    );
+                    const canActivate = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
+                    const hasRush = Boolean(
+                      inspectedDef?.rulesText?.includes('速攻') ||
+                      inspectedCard.grantedKeywords?.includes('速攻')
+                    );
+                    const canAttack =
+                      isMyTurn &&
+                      gameState.phase === 'MAIN_PHASE' &&
+                      !!inspectedCard.isReady &&
+                      (inspectedCard.turnEnteredZone < gameState.turnNumber || hasRush);
+
+                    if (!canActivate && !canAttack) return undefined;
+
+                    return (
+                      <div className="flex items-center gap-1.5">
+                        {canActivate && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleActivateAbility(inspectedCard.instanceId);
+                              setSelectedBattlefieldCardId(null);
+                            }}
+                            className="px-2 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                            title="点击发动角色的【起】动能力"
+                          >
+                            <Zap className="w-3 h-3 fill-current" />
+                            <span>发动【起】</span>
+                          </button>
+                        )}
+                        {canAttack && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleAttackClick(inspectedCard.instanceId);
+                              setSelectedBattlefieldCardId(null);
+                            }}
+                            className="px-2 py-0.5 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                            title="宣告攻击对方玩家"
+                          >
+                            <Swords className="w-3 h-3" />
+                            <span>宣告攻击</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+                />
+              </div>
+
+              {/* 实时战斗事件流日志 */}
+              <div className="flex flex-col gap-1.5 flex-1 overflow-hidden mt-1">
+                <span className="text-hud font-display uppercase tracking-widest text-fg-muted">
+                  COMBAT LOG · 对局事件流
+                </span>
+                <div className="h-32 lg:h-40 overflow-y-auto bg-ink-950 p-2.5 border border-line text-hud leading-relaxed flex flex-col gap-1 text-fg-secondary font-num">
+                  {combatLogs.length === 0 ? (
+                    <span className="text-fg-disabled font-sans">等待战术行动中...</span>
+                  ) : (
+                    combatLogs.map((log, index) => (
+                      <div key={index} className="border-b border-line/50 pb-1 font-sans">
+                        {log}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
+          </aside>
         </div>
       )}
 
@@ -1745,15 +1745,15 @@ export default function GameTabletopPage() {
         isOpponentReady={Boolean(opponentPlayerState.hasMulliganed)}
       />
 
-      {/* 调度完成等待对手全息提示条 */}
+      {/* 调度完成等待对手提示条 */}
       {gameState.phase === 'MULLIGAN_PHASE' && Boolean(myPlayerState.hasMulliganed) && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-2xl bg-neutral-950/95 border border-terminalCyan/60 text-terminalCyan text-xs font-mono flex items-center gap-3 shadow-[0_0_25px_rgba(0,229,255,0.3)] animate-pulse">
-          <RefreshCw className="w-4 h-4 animate-spin-slow text-terminalCyan" />
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 clip-corner-sm bg-ink-950/95 border border-teal-400/70 text-teal-400 text-caption flex items-center gap-3 shadow-overlay">
+          <RefreshCw className="w-4 h-4 animate-spin text-teal-400" />
           <span>手牌调度已确认！正在等待对手确认调度，稍后将自动开局...</span>
         </div>
       )}
 
-      {/* 2. 效果处理决策窗口 (PendingChoiceModal) */}
+      {/* 2. 效果处理决策窗口 */}
       {activePendingChoice && activePendingChoice.playerId === resolvedMyUserId && (
         <PendingChoiceModal
           choice={activePendingChoice}
@@ -1767,8 +1767,8 @@ export default function GameTabletopPage() {
         (activePendingChoice && activePendingChoice.playerId !== resolvedMyUserId) ||
         gameState.opponentPendingChoice
       ) && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-2xl bg-neutral-950/95 border border-terminalGold/80 text-terminalGold text-xs font-mono flex items-center gap-2.5 shadow-[0_0_25px_rgba(255,200,0,0.3)] animate-pulse">
-          <Clock className="w-4 h-4 text-terminalGold" />
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 clip-corner-sm bg-ink-950/95 border border-gold-300/80 text-gold-300 text-caption flex items-center gap-2.5 shadow-overlay">
+          <Clock className="w-4 h-4 text-gold-300" />
           <span>
             {gameState.opponentPendingChoice?.effectType === 'OPPONENT_CONFIRM_REVEAL'
               ? '已公开卡牌！正在等待对手查阅确认，稍后将继续处理...'
@@ -1777,7 +1777,7 @@ export default function GameTabletopPage() {
         </div>
       )}
 
-      {/* 3. 墓地卡牌清单弹窗 (GraveyardModal) */}
+      {/* 3. 墓地卡牌清单弹窗 */}
       <GraveyardModal
         isOpen={isGraveyardOpen}
         onClose={() => setIsGraveyardOpen(false)}
@@ -1793,26 +1793,26 @@ export default function GameTabletopPage() {
         }}
       />
 
-      {/* 4. 超清卡牌大图与完整效果检视弹窗 (CardDetailModal) */}
+      {/* 4. 高清卡牌大图与完整效果检视弹窗 */}
       <CardDetailModal
         card={inspectedCard || activePreviewCard}
         isOpen={isDetailModalOpen}
         onClose={() => setIsDetailModalOpen(false)}
       />
 
-      {/* 5. 键盘快捷键帮助指南弹窗 (KeyboardShortcutsModal) */}
+      {/* 5. 键盘快捷键帮助指南弹窗 */}
       <KeyboardShortcutsModal
         isOpen={isShortcutsModalOpen}
         onClose={() => setIsShortcutsModalOpen(false)}
       />
 
-      {/* 5.1 官方规则手册与新手指南弹窗 (RuleGuideModal) */}
+      {/* 5.1 官方规则手册与新手指南弹窗 */}
       <RuleGuideModal
         isOpen={isRuleGuideModalOpen}
         onClose={() => setIsRuleGuideModalOpen(false)}
       />
 
-      {/* 6. 双方费用区卡牌全息检视弹窗 (CostZoneModal) */}
+      {/* 6. 双方费用区卡牌检视弹窗 */}
       <CostZoneModal
         isOpen={costModalState.isOpen}
         onClose={() => setCostModalState({ isOpen: false, isOpponent: false })}
@@ -1840,36 +1840,61 @@ export default function GameTabletopPage() {
 
       {/* 7. 胜负公布结算弹窗 */}
       {gameOverResult && (
-        <div className="fixed inset-0 bg-neutral-950/85 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-in fade-in duration-300">
-          <div className="max-w-md w-full p-8 rounded-2xl border border-terminalBorder bg-surface flex flex-col items-center text-center shadow-2xl">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="对局结算"
+          className="fixed inset-0 bg-ink-950/85 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-in fade-in duration-base"
+        >
+          <div className="relative max-w-md w-full p-8 clip-corner-md border border-line-strong bg-ink-900 flex flex-col items-center text-center shadow-overlay animate-in zoom-in-95 duration-fast">
             <div
-              className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${
+              className={`absolute inset-x-0 top-0 h-[2px] ${
+                gameOverResult.winnerId === resolvedMyUserId ? 'bg-gold-300' : 'bg-crimson-500'
+              }`}
+            />
+            <HudBrackets
+              size="md"
+              color={gameOverResult.winnerId === resolvedMyUserId ? 'teal' : 'crimson'}
+            />
+
+            <div
+              className={`w-16 h-16 flex items-center justify-center mb-4 border ${
                 gameOverResult.winnerId === resolvedMyUserId
-                  ? 'bg-terminalGold/20 text-terminalGold border border-terminalGold/50 shadow-[0_0_20px_rgba(255,200,0,0.3)]'
-                  : 'bg-erosionRed/20 text-erosionRed border border-erosionRed/50 shadow-[0_0_20px_rgba(255,50,50,0.3)]'
+                  ? 'bg-gold-300/15 text-gold-300 border-gold-300/60'
+                  : 'bg-crimson-500/15 text-crimson-400 border-crimson-500/60'
               }`}
             >
               <Trophy className="w-8 h-8" />
             </div>
 
-            <h2 className="text-2xl font-bold text-white mb-2">
+            <div className="text-hud font-display uppercase tracking-widest text-fg-muted mb-1">
+              {gameOverResult.isDraw
+                ? 'OPERATION DRAW'
+                : gameOverResult.winnerId === resolvedMyUserId
+                ? 'MISSION ACCOMPLISHED'
+                : 'CONNECTION TERMINATED'}
+            </div>
+
+            <h2 className="text-title font-bold text-fg mb-2">
               {gameOverResult.isDraw
                 ? '对局平局 (1.2.3)'
                 : gameOverResult.winnerId === resolvedMyUserId
-                ? '作战胜利 • VICTORY'
-                : '作战失败 • DEFEATED'}
+                ? '作战胜利'
+                : '作战失败'}
             </h2>
 
-            <p className="text-xs text-neutral-400 font-mono mb-6 leading-relaxed">
+            <p className="text-caption text-fg-muted mb-6 leading-relaxed">
               {gameOverResult.reason}
             </p>
 
-            <button
+            <Button
+              variant="primary"
+              size="lg"
               onClick={() => handleExitGame(false)}
-              className="w-full py-2.5 rounded-lg bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold text-sm font-mono shadow-lg transition-transform hover:scale-105 active:scale-95"
+              className="w-full"
             >
               返回房间大厅
-            </button>
+            </Button>
           </div>
         </div>
       )}

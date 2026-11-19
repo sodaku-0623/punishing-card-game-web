@@ -10,13 +10,11 @@ import { useGameStore } from '@/stores/game-store';
 import {
   PublicRoomState,
   RoomStatus,
-  RoomPlayerDto,
   ErrorCode,
 } from '@zhanshuang/shared';
 import { apiUrl } from '@/lib/api';
 import { takePendingRoomPassword } from '@/lib/room-password';
 import {
-  Swords,
   Shield,
   Users,
   CheckCircle2,
@@ -28,10 +26,18 @@ import {
   Copy,
   Check,
   Lock,
-  User as UserIcon,
 } from 'lucide-react';
 import { OFFICIAL_STARTER_DECKS, findOfficialStarterDeck } from '@/lib/starter-decks';
 import { copyText } from '@/lib/clipboard';
+import {
+  AppShell,
+  Button,
+  Badge,
+  Input,
+  Dialog,
+  HudBrackets,
+  HudRule,
+} from '@/components/ui';
 
 interface DeckOption {
   id: string;
@@ -59,8 +65,9 @@ function RoomWaitingContent() {
   const [copiedId, setCopiedId] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // 房间密码输入弹窗 (加入设有密码的房间时)
-  const [passwordPrompt, setPasswordPrompt] = useState<{ open: boolean; error?: string }>({ open: false });
+  const [passwordPrompt, setPasswordPrompt] = useState<{ open: boolean; error?: string }>({
+    open: false,
+  });
   const [passwordInput, setPasswordInput] = useState('');
   const roomPasswordRef = React.useRef<string | undefined>(undefined);
   const passwordLoadedRef = React.useRef(false);
@@ -69,16 +76,13 @@ function RoomWaitingContent() {
   const roomRef = React.useRef<PublicRoomState | null>(null);
   roomRef.current = room;
 
-  // 获取真实的用户 ID 与昵称
   const myUserId = user?.id || getSocketUserId();
   const myNickname = user?.nickname || getSocketUsername();
 
-  // 进入房间等待区时重置旧游戏状态
   useEffect(() => {
     useGameStore.getState().reset();
   }, []);
 
-  // 读取本地已保存的卡组供出战选择
   useEffect(() => {
     try {
       const rawUserDecks = localStorage.getItem('zhanshuang_user_decks');
@@ -101,7 +105,6 @@ function RoomWaitingContent() {
     const currentUsername = user?.nickname || user?.username || getSocketUsername();
     const socket = getSocket(currentUserId, currentUsername);
 
-    // 房主新建房间时由大厅暂存的密码，仅读取一次 (ref 可跨越 StrictMode 的二次挂载)
     if (!passwordLoadedRef.current) {
       passwordLoadedRef.current = true;
       roomPasswordRef.current = takePendingRoomPassword(roomId);
@@ -126,7 +129,6 @@ function RoomWaitingContent() {
       setRoom(updatedRoom);
       roomRef.current = updatedRoom;
       setPasswordPrompt({ open: false });
-      // 若房间已开局并存在对局 ID，立即进入对局桌面
       if (updatedRoom.status === RoomStatus.PLAYING && updatedRoom.currentGameId) {
         navigatingToGameRef.current = true;
         router.push(`/game/${updatedRoom.currentGameId}`);
@@ -150,7 +152,10 @@ function RoomWaitingContent() {
     };
 
     const handleError = (err: { code: string; message: string }) => {
-      if (err.code === ErrorCode.ROOM_PASSWORD_REQUIRED || err.code === ErrorCode.ROOM_PASSWORD_INVALID) {
+      if (
+        err.code === ErrorCode.ROOM_PASSWORD_REQUIRED ||
+        err.code === ErrorCode.ROOM_PASSWORD_INVALID
+      ) {
         setPasswordPrompt({
           open: true,
           error: err.code === ErrorCode.ROOM_PASSWORD_INVALID ? err.message : undefined,
@@ -175,7 +180,6 @@ function RoomWaitingContent() {
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
 
-    // 主动同步一次服务端最新房间数据
     fetch(apiUrl(`/api/rooms/${encodeURIComponent(roomId)}`))
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
@@ -229,10 +233,11 @@ function RoomWaitingContent() {
     setTimeout(() => setCopiedCode(false), 2000);
   }
 
-  // 准确定位当前操作玩家
   const me =
     room?.players.find((p) => p.userId === myUserId) ||
-    (room && room.players.length === 1 && (room.creatorId === myUserId || room.players[0].userId === myUserId)
+    (room &&
+    room.players.length === 1 &&
+    (room.creatorId === myUserId || room.players[0].userId === myUserId)
       ? room.players[0]
       : undefined);
 
@@ -242,15 +247,13 @@ function RoomWaitingContent() {
     (room && room.players.length > 0 && room.players[0]?.userId === myUserId);
 
   const canStart =
-    isHost &&
+    Boolean(isHost) &&
     room?.players.length === 2 &&
     room.players.every((p) => p.isReady);
 
   function getCustomDeckPayload(deckId: string) {
     const official = findOfficialStarterDeck(deckId);
-    if (official) {
-      return official;
-    }
+    if (official) return official;
     try {
       const rawUserDecks = localStorage.getItem('zhanshuang_user_decks');
       if (rawUserDecks) {
@@ -300,250 +303,221 @@ function RoomWaitingContent() {
 
   const seat0 = room?.players.find((p) => p.seatIndex === 0);
   const seat1 = room?.players.find((p) => p.seatIndex === 1);
-
   const displayRoomTitle = room?.title || titleParam || `作战推演室 #${roomId}`;
 
   return (
-    <div className="min-h-screen bg-background text-foreground p-6 md:p-12 relative flex flex-col items-center">
-      {/* 错误提示浮条 */}
+    <AppShell className="space-y-6">
+      {/* 错误警示 */}
       {errorMessage && (
         <div
           role="alert"
-          className="w-full max-w-5xl mb-6 p-4 rounded-xl border border-erosionRed/50 bg-erosionRed/10 text-erosionRed text-xs font-mono flex items-center gap-3 shadow-lg"
+          className="border border-crimson-500/60 bg-crimson-700/20 px-4 py-3 text-body-sm text-crimson-400 flex items-center gap-2.5 animate-in fade-in duration-fast"
         >
-          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMessage}</span>
         </div>
       )}
 
-      {/* 房间密码输入弹窗 */}
-      {passwordPrompt.open && (
-        <div
-          className="fixed inset-0 bg-neutral-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="room-password-title"
-        >
-          <form
-            onSubmit={handleSubmitPassword}
-            className="max-w-sm w-full p-6 rounded-2xl border border-terminalBorder bg-surface flex flex-col gap-4 shadow-2xl"
-          >
-            <h2 id="room-password-title" className="text-base font-bold text-white flex items-center gap-2">
-              <Lock className="w-5 h-5 text-terminalGold" /> 该房间已设置密码
-            </h2>
-            <input
-              type="password"
-              autoFocus
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="请输入房主提供的房间密码"
-              aria-label="房间密码"
-              className="w-full px-3.5 py-2.5 rounded-lg bg-neutral-950 border border-terminalBorder text-white text-sm focus:border-terminalCyan outline-none"
-            />
-            {passwordPrompt.error && (
-              <p role="alert" className="text-xs text-erosionRed font-mono">
-                {passwordPrompt.error}
-              </p>
-            )}
-            <div className="flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => router.push('/rooms')}
-                className="px-4 py-2 rounded-lg border border-terminalBorder text-neutral-400 hover:text-white text-xs font-mono"
-              >
-                返回大厅
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 rounded-lg bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold text-xs font-mono"
-              >
-                进入房间
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* 顶部导航 */}
-      <header className="w-full max-w-5xl flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-terminalBorder/60 pb-6 mb-8 gap-4">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={handleLeaveRoom}
-            className="p-2 rounded-lg border border-terminalBorder bg-surface hover:border-terminalCyan/50 text-neutral-400 hover:text-white transition-all flex items-center gap-2 text-xs font-mono"
-          >
+      {/* 顶部房间信息栏 */}
+      <header className="border-b border-line pb-5 flex flex-col md:flex-row md:items-center justify-between gap-4 pgr-enter">
+        <div className="flex items-start gap-4">
+          <Button variant="secondary" size="md" onClick={handleLeaveRoom} className="shrink-0">
             <ArrowLeft className="w-4 h-4" />
             <span>返回大厅</span>
-          </button>
+          </Button>
 
-          <div>
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-xl md:text-2xl font-bold tracking-wider text-white">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-title font-bold text-fg tracking-wide">
                 {displayRoomTitle}
               </h1>
 
-              {/* 复制 Room ID 按钮 */}
               <button
+                type="button"
                 onClick={handleCopyRoomId}
-                className="px-2.5 py-1 rounded-lg bg-terminalCyan/10 border border-terminalCyan/40 text-terminalCyan text-xs font-mono flex items-center gap-1.5 hover:bg-terminalCyan/20 transition-all"
                 title="点击复制 Room ID 分享给对手"
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-teal-400/50 bg-teal-400/10 text-teal-400 text-caption font-num hover:bg-teal-400/20 transition-colors cursor-pointer"
               >
                 <span>ID: {roomId}</span>
-                {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedId ? (
+                  <Check className="w-3.5 h-3.5 text-success" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
               </button>
 
-              {/* 房间代号 */}
               {room?.roomCode && room.roomCode !== roomId && (
                 <button
+                  type="button"
                   onClick={handleCopyCode}
-                  className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-neutral-700 text-neutral-400 text-xs font-mono flex items-center gap-1 hover:text-white transition-all"
                   title="点击复制房间代号"
+                  className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-line bg-ink-850 text-fg-secondary text-caption font-num hover:border-line-strong hover:text-fg transition-colors cursor-pointer"
                 >
                   <span>CODE: {room.roomCode}</span>
-                  {copiedCode ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  {copiedCode ? (
+                    <Check className="w-3.5 h-3.5 text-success" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
                 </button>
               )}
             </div>
-            <p className="text-xs text-neutral-400 font-mono mt-1">
-              战术前置编队室 • 权威裁判内核实时仲裁
+
+            <p className="font-display text-hud uppercase text-fg-muted">
+              PRE-BATTLE STAGING ROOM // AUTHORITATIVE ENGINE READY
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <span
-            className={`px-3.5 py-1 rounded-full text-xs font-mono font-bold border ${
-              room?.status === RoomStatus.READY
-                ? 'bg-terminalGold/15 text-terminalGold border-terminalGold/50 animate-pulse'
-                : 'bg-neutral-900 text-neutral-400 border-terminalBorder'
-            }`}
-          >
-            {room?.status === RoomStatus.READY ? '双方就绪 • 待开战' : '等待就绪中'}
-          </span>
-        </div>
+        <Badge variant={room?.status === RoomStatus.READY ? 'success' : 'neutral'} className="h-7 px-3 self-start md:self-center">
+          {room?.status === RoomStatus.READY ? '双方就绪 · 等待房主开战' : '整备等待中'}
+        </Badge>
       </header>
 
-      {/* 双方席位展示 (Seat 0 & Seat 1) */}
-      <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-        {/* 席位 1: 房主 (指挥官 1) */}
-        <div className="p-6 rounded-2xl border border-terminalBorder bg-surface relative flex flex-col justify-between shadow-xl min-h-[320px]">
-          <div className="flex justify-between items-start">
+      {/* 双方对峙整备席位 */}
+      <div className="relative grid grid-cols-1 md:grid-cols-2 gap-6 pgr-enter pgr-delay-1">
+        {/* 中央 VS 切角徽标 (桌面端居中叠层) */}
+        <div
+          aria-hidden="true"
+          className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 h-11 w-11 bg-ink-950 border border-line-strong clip-corner-sm items-center justify-center"
+        >
+          <span className="font-display text-body-sm font-bold italic text-crimson-500">
+            VS
+          </span>
+        </div>
+
+        {/* SEAT 01 己方/房主席 */}
+        <div className="relative border border-line bg-ink-850 p-6 flex flex-col justify-between min-h-[300px]">
+          <HudBrackets color={seat0?.isReady ? 'teal' : 'steel'} />
+          <span aria-hidden="true" className="absolute left-0 top-0 bottom-0 w-1 bg-teal-400" />
+
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-terminalCyan shadow-sm" />
-              <span className="text-xs font-mono text-neutral-400 uppercase tracking-widest">
-                SEAT 01 • 先手发起方
+              <span aria-hidden="true" className="h-2 w-2 bg-teal-400" />
+              <span className="font-display text-hud uppercase text-fg-muted">
+                SEAT 01 // HOST COMMANDER
               </span>
             </div>
             {seat0?.isReady && (
-              <span className="px-2.5 py-1 rounded bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 text-xs font-mono font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> 已准备
-              </span>
+              <Badge variant="success">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>已准备</span>
+              </Badge>
             )}
           </div>
 
           {seat0 ? (
-            <div className="flex flex-col items-center my-auto py-4">
-              <div className="w-20 h-20 rounded-2xl bg-neutral-900 border-2 border-terminalCyan/60 flex items-center justify-center text-terminalCyan text-2xl font-bold shadow-lg mb-3">
+            <div className="my-auto py-6 flex flex-col items-center text-center">
+              <div className="h-20 w-20 rounded-full border border-teal-400/70 bg-ink-900 flex items-center justify-center text-display font-bold text-teal-400 mb-3">
                 {seat0.nickname.substring(0, 1) || '01'}
               </div>
-              <h3 className="text-lg font-bold text-white tracking-wide flex items-center gap-2">
-                <span>{seat0.nickname}</span>
-                {seat0.userId === myUserId && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-terminalCyan/10 text-terminalCyan border border-terminalCyan/30">
-                    您自己
-                  </span>
-                )}
-              </h3>
-              <p className="text-xs text-neutral-500 font-mono mb-2">UID: {seat0.userId.slice(-8)}</p>
-              <div className="px-3 py-1 rounded-lg bg-neutral-950 border border-terminalBorder text-xs font-mono text-neutral-300 flex items-center gap-2">
-                <Layers className="w-3.5 h-3.5 text-terminalGold" />
-                <span>卡组: {seat0.deckName || '灰鸦特遣初始牌组 (ST01)'}</span>
+              <div className="flex items-center gap-2">
+                <h2 className="text-title font-semibold text-fg">{seat0.nickname}</h2>
+                {seat0.userId === myUserId && <Badge variant="teal">我方</Badge>}
+              </div>
+              <p className="font-num tabular-nums text-caption text-fg-muted mt-1">
+                UID: {seat0.userId.slice(-8)}
+              </p>
+              <div className="mt-4 inline-flex items-center gap-2 border border-line bg-ink-900 px-3 py-1.5 text-caption text-fg-secondary">
+                <Layers className="w-3.5 h-3.5 text-gold-300" />
+                <span>出战卡组：{seat0.deckName || '灰鸦特遣初始牌组 (ST01)'}</span>
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center my-auto py-8 text-neutral-600">
-              <Clock className="w-10 h-10 animate-spin mb-3 text-neutral-600" />
-              <span className="text-sm font-mono">等待先手席位连接...</span>
+            <div className="my-auto py-10 flex flex-col items-center text-fg-muted">
+              <Clock className="w-8 h-8 animate-spin mb-3" />
+              <span className="text-body-sm">等待先手席位连接...</span>
             </div>
           )}
 
-          <div className="text-[11px] font-mono text-neutral-500 border-t border-terminalBorder/50 pt-3 flex justify-between items-center">
-            <span>ROLE: 战术指挥官 (房主)</span>
-            <span className="text-terminalCyan">● ONLINE</span>
+          <div className="pt-3 border-t border-line flex items-center justify-between text-caption text-fg-muted">
+            <span>身份：作战房主</span>
+            <span className="font-num text-teal-400">● ONLINE</span>
           </div>
         </div>
 
-        {/* 席位 2: 挑战者 (指挥官 2) */}
-        <div className="p-6 rounded-2xl border border-terminalBorder bg-surface relative flex flex-col justify-between shadow-xl min-h-[320px]">
-          <div className="flex justify-between items-start">
+        {/* SEAT 02 挑战者席 */}
+        <div className="relative border border-line bg-ink-850 p-6 flex flex-col justify-between min-h-[300px]">
+          <HudBrackets color={seat1?.isReady ? 'crimson' : 'steel'} />
+          <span aria-hidden="true" className="absolute right-0 top-0 bottom-0 w-1 bg-crimson-500" />
+
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-erosionRed shadow-sm" />
-              <span className="text-xs font-mono text-neutral-400 uppercase tracking-widest">
-                SEAT 02 • 迎战挑战方
+              <span aria-hidden="true" className="h-2 w-2 bg-crimson-500" />
+              <span className="font-display text-hud uppercase text-fg-muted">
+                SEAT 02 // CHALLENGER
               </span>
             </div>
             {seat1?.isReady && (
-              <span className="px-2.5 py-1 rounded bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 text-xs font-mono font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> 已准备
-              </span>
+              <Badge variant="success">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>已准备</span>
+              </Badge>
             )}
           </div>
 
           {seat1 ? (
-            <div className="flex flex-col items-center my-auto py-4">
-              <div className="w-20 h-20 rounded-2xl bg-neutral-900 border-2 border-erosionRed/60 flex items-center justify-center text-erosionRed text-2xl font-bold shadow-lg mb-3">
+            <div className="my-auto py-6 flex flex-col items-center text-center">
+              <div className="h-20 w-20 rounded-full border border-crimson-500/70 bg-ink-900 flex items-center justify-center text-display font-bold text-crimson-400 mb-3">
                 {seat1.nickname.substring(0, 1) || '02'}
               </div>
-              <h3 className="text-lg font-bold text-white tracking-wide flex items-center gap-2">
-                <span>{seat1.nickname}</span>
-                {seat1.userId === myUserId && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-terminalCyan/10 text-terminalCyan border border-terminalCyan/30">
-                    您自己
-                  </span>
-                )}
-              </h3>
-              <p className="text-xs text-neutral-500 font-mono mb-2">UID: {seat1.userId.slice(-8)}</p>
-              <div className="px-3 py-1 rounded-lg bg-neutral-950 border border-terminalBorder text-xs font-mono text-neutral-300 flex items-center gap-2">
-                <Layers className="w-3.5 h-3.5 text-terminalGold" />
-                <span>卡组: {seat1.deckName || '灰鸦特遣初始牌组 (ST01)'}</span>
+              <div className="flex items-center gap-2">
+                <h2 className="text-title font-semibold text-fg">{seat1.nickname}</h2>
+                {seat1.userId === myUserId && <Badge variant="teal">我方</Badge>}
+              </div>
+              <p className="font-num tabular-nums text-caption text-fg-muted mt-1">
+                UID: {seat1.userId.slice(-8)}
+              </p>
+              <div className="mt-4 inline-flex items-center gap-2 border border-line bg-ink-900 px-3 py-1.5 text-caption text-fg-secondary">
+                <Layers className="w-3.5 h-3.5 text-gold-300" />
+                <span>出战卡组：{seat1.deckName || '灰鸦特遣初始牌组 (ST01)'}</span>
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center my-auto py-8 text-neutral-500">
-              <div className="w-16 h-16 rounded-full border border-dashed border-terminalBorder flex items-center justify-center mb-3">
-                <Users className="w-6 h-6 text-neutral-600" />
+            <div className="my-auto py-10 flex flex-col items-center text-center text-fg-muted">
+              <div className="h-14 w-14 border border-dashed border-line-strong flex items-center justify-center mb-3">
+                <Users className="w-6 h-6 text-fg-muted" />
               </div>
-              <span className="text-sm font-mono text-neutral-300">等待二号位指挥官加入...</span>
+              <span className="text-body-sm text-fg-secondary">等待二号位指挥官加入...</span>
               <button
+                type="button"
                 onClick={handleCopyRoomId}
-                className="text-xs text-terminalCyan hover:underline font-mono mt-2 flex items-center gap-1"
+                className="mt-2 inline-flex items-center gap-1.5 text-caption text-teal-400 hover:underline cursor-pointer font-num"
               >
-                <span>分享 Room ID: {roomId}</span>
+                <span>复制并分享房间 ID: {roomId}</span>
                 <Copy className="w-3 h-3" />
               </button>
             </div>
           )}
 
-          <div className="text-[11px] font-mono text-neutral-500 border-t border-terminalBorder/50 pt-3 flex justify-between items-center">
-            <span>ROLE: 战术参演方</span>
-            <span>{seat1 ? <span className="text-terminalCyan">● ONLINE</span> : '○ WAITING'}</span>
+          <div className="pt-3 border-t border-line flex items-center justify-between text-caption text-fg-muted">
+            <span>身份：参演挑战方</span>
+            <span className="font-num">
+              {seat1 ? <span className="text-teal-400">● ONLINE</span> : '○ WAITING'}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* 底部操作与卡组选择面板 */}
-      <div className="w-full max-w-5xl bg-surface/80 border border-terminalBorder rounded-2xl p-6 flex flex-col md:flex-row justify-between items-center gap-6 shadow-2xl backdrop-blur-md">
-        {/* 卡组选择区 */}
-        <div className="flex flex-col gap-2 w-full md:w-auto">
-          <label className="text-xs font-mono text-neutral-400 flex items-center gap-2">
-            <Shield className="w-4 h-4 text-terminalCyan" />
-            <span>选择出战牌组 (符合 5.1 规则书 50 张构筑标准)</span>
+      <HudRule code="DEPLOYMENT CONFIGURATION" />
+
+      {/* 底部出战卡组与准备控制栏 */}
+      <div className="border border-line bg-ink-850 p-5 flex flex-col md:flex-row md:items-end justify-between gap-6 pgr-enter pgr-delay-2">
+        <div className="space-y-2 flex-1">
+          <label
+            htmlFor="room-deck-select"
+            className="flex items-center gap-2 text-caption text-fg-muted font-medium"
+          >
+            <Shield className="w-4 h-4 text-teal-400" />
+            <span>选择出战卡组（符合 5.1 规则书 50 张构筑标准）</span>
           </label>
           <div className="flex flex-wrap items-center gap-3">
             <select
+              id="room-deck-select"
               value={selectedDeckId}
               onChange={(e) => handleSelectDeck(e.target.value)}
               disabled={isReady}
-              className="px-4 py-2.5 rounded-lg bg-neutral-950 border border-terminalBorder text-white text-sm font-mono focus:border-terminalCyan outline-none disabled:opacity-50 min-w-[260px]"
+              className="h-9 px-3 bg-ink-800 border border-line text-body-sm text-fg focus:border-teal-400 focus:outline-none disabled:bg-ink-600 disabled:text-fg-disabled min-w-[260px]"
             >
               {availableDecks.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -551,46 +525,84 @@ function RoomWaitingContent() {
                 </option>
               ))}
             </select>
-            <Link
-              href="/decks"
-              className="px-3 py-2 rounded-lg border border-terminalBorder hover:border-terminalCyan text-xs font-mono text-neutral-400 hover:text-white transition-colors"
-            >
-              构筑新卡组
+            <Link href="/decks">
+              <Button variant="secondary" size="md">
+                构筑新卡组
+              </Button>
             </Link>
           </div>
         </div>
 
-        {/* 行动按钮群 */}
-        <div className="flex items-center gap-4 w-full md:w-auto justify-end">
-          <button
+        <div className="flex flex-wrap items-center gap-3 justify-end">
+          <Button
+            variant={isReady ? 'secondary' : isHost ? 'secondary' : 'primary'}
+            size="lg"
             onClick={handleToggleReady}
-            className={`px-6 py-3 rounded-xl font-bold font-mono text-sm transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
-              isReady
-                ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 border border-neutral-600'
-                : 'bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 shadow-[0_0_15px_rgba(0,240,255,0.3)]'
-            }`}
+            className={
+              !isReady && isHost
+                ? 'border-teal-400 text-teal-400 hover:bg-teal-400/10'
+                : undefined
+            }
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>{isReady ? '取消准备' : '准备出战 (READY)'}</span>
-          </button>
+            <span>{isReady ? '取消准备' : '准备出战'}</span>
+          </Button>
 
           {isHost && (
-            <button
-              onClick={handleStartGame}
+            <Button
+              variant="primary"
+              size="lg"
               disabled={!canStart}
-              className={`px-8 py-3 rounded-xl font-bold font-mono text-sm flex items-center gap-2 shadow-xl transition-all ${
-                canStart
-                  ? 'bg-terminalGold hover:bg-terminalGold/90 text-neutral-950 cursor-pointer scale-105 animate-pulse shadow-[0_0_20px_rgba(255,184,0,0.3)]'
-                  : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-terminalBorder'
-              }`}
+              onClick={handleStartGame}
             >
               <Play className="w-4 h-4 fill-current" />
-              <span>开始作战 (START)</span>
-            </button>
+              <span>开始作战</span>
+            </Button>
           )}
         </div>
       </div>
-    </div>
+
+      {/* 密码校验弹窗 */}
+      <Dialog
+        open={passwordPrompt.open}
+        onClose={() => router.push('/rooms')}
+        closeOnBackdrop={false}
+        title="该房间已设置密码"
+        subtitle="ENCRYPTED ROOM ACCESS"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => router.push('/rooms')}>
+              返回大厅
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              type="submit"
+              form="room-password-form"
+            >
+              <span>进入房间</span>
+            </Button>
+          </>
+        }
+      >
+        <form id="room-password-form" onSubmit={handleSubmitPassword} className="space-y-3">
+          <div className="flex items-center gap-2 text-caption text-gold-300">
+            <Lock className="w-4 h-4 shrink-0" />
+            <span>此房间为私密演习通道，需要输入房主设定的口令。</span>
+          </div>
+          <Input
+            type="password"
+            autoFocus
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            placeholder="请输入房间密码"
+            aria-label="房间密码"
+            error={passwordPrompt.error}
+          />
+        </form>
+      </Dialog>
+    </AppShell>
   );
 }
 
@@ -598,9 +610,9 @@ export default function RoomWaitingPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-terminalCyan font-mono">
-          <Clock className="w-8 h-8 animate-spin mb-4" />
-          <p>正在同步作战房间状态...</p>
+        <div className="min-h-screen bg-ink-950 flex flex-col items-center justify-center p-6 text-fg-secondary">
+          <Clock className="w-7 h-7 animate-spin mb-3 text-crimson-500" />
+          <p className="text-body-sm">正在同步作战房间状态...</p>
         </div>
       }
     >

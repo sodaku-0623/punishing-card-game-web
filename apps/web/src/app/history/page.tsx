@@ -3,21 +3,22 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  History,
   Swords,
   Trophy,
   Play,
   Clock,
-  ChevronRight,
-  ShieldAlert,
   Search,
   RefreshCw,
-  ExternalLink,
-  Layers,
-  ArrowRight,
-  Sparkles,
 } from 'lucide-react';
 import { apiUrl } from '@/lib/api';
+import {
+  AppShell,
+  Button,
+  Badge,
+  Input,
+  SectionHeader,
+  HudRule,
+} from '@/components/ui';
 
 interface GameHistoryItem {
   id: string;
@@ -46,7 +47,6 @@ export default function HistoryPage() {
         }
       }
     } catch {
-      // 离线开发模拟数据
       setHistoryList([
         {
           id: 'game-demo-1790579001',
@@ -100,143 +100,150 @@ export default function HistoryPage() {
   };
 
   return (
-    <div className="w-full min-h-screen bg-background text-neutral-200 p-4 md:p-8 flex flex-col items-center overflow-x-hidden overflow-y-auto">
-      {/* 顶部导航 */}
-      <header className="w-full max-w-6xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-terminalBorder/60 pb-6 mb-8">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-mono text-neutral-400 mb-1">
-            <Link href="/" className="hover:text-terminalCyan transition-colors">
-              终端首页
+    <AppShell className="space-y-6">
+      <SectionHeader
+        code="SECTOR 04"
+        pageLabel={`${String(historyList.length).padStart(2, '0')} LOGS`}
+        title="对局历史与回放归档"
+        subtitle="BATTLE ARCHIVE & REPLAYS"
+        action={
+          <>
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={fetchHistory}
+              disabled={loading}
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <span>刷新记录</span>
+            </Button>
+            <Link href="/rooms">
+              <Button variant="primary" size="md">
+                <Swords className="w-4 h-4" />
+                <span>进入对战大厅</span>
+              </Button>
             </Link>
-            <ChevronRight className="w-3.5 h-3.5" />
-            <span className="text-terminalCyan">历史战局与对决归档 (History Logs)</span>
-          </div>
-          <h1 className="text-2xl md:text-3xl font-black tracking-wide text-white flex items-center gap-3">
-            <History className="w-8 h-8 text-terminalCyan" />
-            对局历史与回放归档
-          </h1>
-        </div>
+          </>
+        }
+      />
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={fetchHistory}
-            disabled={loading}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-terminalBorder bg-surface hover:border-terminalCyan/70 text-xs font-mono transition-all text-neutral-300"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-terminalCyan' : ''}`} />
-            刷新记录
-          </button>
-          <Link
-            href="/rooms"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-erosionRed/50 bg-erosionRed/10 hover:bg-erosionRed/20 text-xs font-mono font-bold text-erosionRed transition-all"
-          >
-            <Swords className="w-4 h-4" />
-            新建对战房间
-          </Link>
-        </div>
-      </header>
+      {/* 搜索与归档计数 */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pgr-enter">
+        <Input
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="搜索对局 ID、房间编号、胜利者或结语..."
+          aria-label="搜索战局记录"
+          leftSlot={<Search className="w-4 h-4" />}
+          containerClassName="sm:max-w-md"
+        />
 
-      {/* 搜索控制条 */}
-      <div className="w-full max-w-6xl flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-        <div className="relative w-full sm:w-96">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-          <input
-            type="text"
-            placeholder="搜索对局 ID、房间名、胜利者..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-surface/70 border border-terminalBorder rounded-lg text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-terminalCyan"
-          />
-        </div>
-
-        <div className="text-xs font-mono text-neutral-400">
-          已归档总战局: <strong className="text-terminalCyan">{historyList.length}</strong> 局
+        <div className="flex items-center gap-3 text-caption text-fg-muted shrink-0">
+          <span>
+            匹配战局{' '}
+            <strong className="font-num tabular-nums text-fg">
+              {filteredList.length}
+            </strong>{' '}
+            / <span className="font-num tabular-nums">{historyList.length}</span>
+          </span>
         </div>
       </div>
 
-      {/* 对局历史清单 */}
-      <main className="w-full max-w-6xl space-y-4 mb-12">
-        {filteredList.length === 0 ? (
-          <div className="py-20 flex flex-col items-center justify-center rounded-2xl border border-terminalBorder/50 bg-surface/30 text-center">
-            <Swords className="w-12 h-12 text-neutral-600 mb-3" />
-            <h3 className="text-base font-bold text-neutral-300">暂无符合条件的战局归档记录</h3>
-            <p className="text-xs text-neutral-500 mt-1 max-w-md">
-              尚未检索到已结算或进行中的对战数据。指挥官可以在大厅创建或加入房间开启对决！
-            </p>
-            <Link
-              href="/rooms"
-              className="mt-4 px-4 py-2 rounded-lg border border-terminalCyan/40 text-terminalCyan text-xs hover:bg-terminalCyan/10 transition-colors font-mono"
-            >
-              前往大厅作战
-            </Link>
+      <HudRule code="ARCHIVED BATTLE LOGS" />
+
+      {/* 战局列表（官网风格 44px+ 斑马纹战术行） */}
+      {filteredList.length === 0 ? (
+        <div className="border border-dashed border-line-strong bg-ink-900/60 py-16 px-6 flex flex-col items-center text-center">
+          <div className="h-12 w-12 border border-line bg-ink-850 flex items-center justify-center text-fg-muted mb-4">
+            <Swords className="w-6 h-6" />
           </div>
-        ) : (
-          filteredList.map((game) => (
+          <h2 className="text-title-sm font-semibold text-fg mb-1.5">
+            暂无符合条件的战局归档记录
+          </h2>
+          <p className="text-body-sm text-fg-secondary max-w-md mb-6">
+            尚未检索到已结算或进行中的对战数据。前往大厅开启一场实战对决即可自动归档。
+          </p>
+          <Link href="/rooms">
+            <Button variant="secondary" size="md">
+              前往大厅作战
+            </Button>
+          </Link>
+        </div>
+      ) : (
+        <div className="border border-line divide-y divide-line pgr-enter pgr-delay-1">
+          {filteredList.map((game, idx) => (
             <div
               key={game.id}
-              className="p-5 rounded-xl border border-terminalBorder bg-surface/80 backdrop-blur hover:border-terminalCyan/60 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
+              className={`group relative px-5 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors duration-fast ease-enter hover:bg-ink-700 ${
+                idx % 2 === 1 ? 'bg-ink-800/70' : 'bg-ink-850'
+              }`}
             >
-              {/* 左侧：战局信息 */}
-              <div className="flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                  <span className="px-2 py-0.5 rounded bg-black/60 border border-terminalBorder text-terminalCyan font-bold">
+              {/* 左侧语义状态条 */}
+              <span
+                aria-hidden="true"
+                className={`absolute left-0 top-0 bottom-0 w-0.5 ${
+                  game.isDraw
+                    ? 'bg-line-strong'
+                    : game.winnerUserId
+                      ? 'bg-gold-300'
+                      : 'bg-teal-400'
+                }`}
+              />
+
+              <div className="space-y-2 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 text-caption">
+                  <span className="font-num tabular-nums px-2 py-0.5 border border-line bg-ink-900 text-fg font-semibold">
                     {game.id}
                   </span>
-                  <span className="text-neutral-400">
-                    推演房间: <strong className="text-neutral-200">{game.roomId}</strong>
+                  <span className="text-fg-muted">
+                    房间 <strong className="font-num text-fg-secondary">{game.roomId}</strong>
                   </span>
-                  <span className="text-neutral-500">•</span>
-                  <span className="text-neutral-400">
-                    Seed: <span className="font-mono text-neutral-300">{game.rngSeed}</span>
+                  <span className="text-fg-disabled">·</span>
+                  <span className="text-fg-muted">
+                    SEED <span className="font-num text-fg-secondary">{game.rngSeed}</span>
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
                   {game.isDraw ? (
-                    <span className="px-2.5 py-0.5 rounded bg-neutral-800 text-neutral-300 font-bold text-xs border border-neutral-700">
-                      平局 DRAW
-                    </span>
+                    <Badge variant="neutral">平局 DRAW</Badge>
                   ) : game.winnerUserId ? (
-                    <span className="px-2.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/40 flex items-center gap-1">
-                      <Trophy className="w-3.5 h-3.5 text-amber-400" />
-                      胜利者: 指挥官 {game.winnerUserId}
-                    </span>
+                    <Badge variant="gold">
+                      <Trophy className="w-3 h-3" />
+                      <span>胜者：{game.winnerUserId}</span>
+                    </Badge>
                   ) : (
-                    <span className="px-2.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold text-xs border border-emerald-500/40">
-                      推演进行中
-                    </span>
+                    <Badge variant="teal">推演进行中</Badge>
                   )}
 
                   {game.finishReason && (
-                    <span className="text-xs text-neutral-400 italic">
-                      “{game.finishReason}”
+                    <span className="text-body-sm text-fg-secondary truncate">
+                      {game.finishReason}
                     </span>
                   )}
                 </div>
 
-                <div className="flex items-center gap-4 text-[11px] font-mono text-neutral-500">
-                  <span className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    开战时间: {new Date(game.startedAt).toLocaleString()}
+                <div className="flex flex-wrap items-center gap-4 text-caption text-fg-muted font-num tabular-nums">
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5" />
+                    {new Date(game.startedAt).toLocaleString()}
                   </span>
-                  <span>对战时长: {formatDuration(game.startedAt, game.finishedAt)}</span>
+                  <span>时长 {formatDuration(game.startedAt, game.finishedAt)}</span>
                 </div>
               </div>
 
-              {/* 右侧：回放按钮 */}
-              <div className="flex items-center gap-3 self-end md:self-center">
-                <Link
-                  href={`/replay/${game.id}`}
-                  className="px-4 py-2 rounded-lg border border-terminalCyan bg-terminalCyan/15 hover:bg-terminalCyan/25 text-xs font-mono font-bold text-terminalCyan transition-all flex items-center gap-2 shadow-[0_0_12px_rgba(0,240,255,0.2)]"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  观战全景回放
+              <div className="shrink-0 self-end md:self-center">
+                <Link href={`/replay/${game.id}`}>
+                  <Button variant="secondary" size="md">
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>观战全景回放</span>
+                  </Button>
                 </Link>
               </div>
             </div>
-          ))
-        )}
-      </main>
-    </div>
+          ))}
+        </div>
+      )}
+    </AppShell>
   );
 }

@@ -150,13 +150,15 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   return (
     <div
       ref={wrapperRef}
-      className="relative mx-auto select-none rounded-2xl border border-cyan-500/40 overflow-hidden shadow-[0_0_40px_rgba(0,240,255,0.22)] ygo-battlefield-mat flex-shrink-0"
+      className="relative mx-auto select-none border border-line-strong overflow-hidden ygo-battlefield-mat flex-shrink-0"
       style={arenaStyle}
     >
-      {/* 赛博网格与边缘微光暗角遮罩 */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/40 pointer-events-none" />
+      {/* 顶/底阵营边线与微暗边缘过渡 */}
+      <div className="absolute inset-x-0 top-0 h-px bg-crimson-500/40 pointer-events-none z-20" />
+      <div className="absolute inset-x-0 bottom-0 h-px bg-teal-400/40 pointer-events-none z-20" />
+      <div className="absolute inset-0 bg-gradient-to-b from-ink-950/35 via-transparent to-ink-950/40 pointer-events-none" />
 
-      {/* ================= 敌方战场 5 个绝对卡位 (TOP ROW: top 8.00%, height 29.33%) ================= */}
+      {/* ================= 敌方战场 5 个绝对卡位 ================= */}
       {opponentSlots.slice(0, 5).map((slot, index) => {
         const pos = OPPONENT_SLOT_POSITIONS[index] || OPPONENT_SLOT_POSITIONS[0];
         const roleCard = slot.roleCardId ? gameState.publicCards?.[slot.roleCardId] : undefined;
@@ -200,7 +202,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         );
       })}
 
-      {/* ================= 战术交战中线与对决状态指示 (MIDFIELD: top 46.5%, height 7.0%) ================= */}
+      {/* ================= 战术交战中线与对决状态指示 (MIDFIELD) ================= */}
       <div
         className="absolute z-15 flex items-center justify-between px-3"
         style={{
@@ -210,36 +212,43 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           height: '7.0%',
         }}
       >
-        <div className="w-full flex items-center justify-center gap-2 border-y border-dashed border-cyan-500/30 bg-black/55 backdrop-blur-[2px] py-1 text-[11px] font-mono text-neutral-300 rounded shadow-sm">
-          <div className="h-px bg-terminalBorder/60 flex-1" />
+        <div
+          className={`w-full flex items-center justify-center gap-2 border-y bg-ink-950/80 backdrop-blur-sm py-1 text-caption font-sans text-fg-secondary transition-colors duration-fast ${
+            gameState.currentCombat ? 'border-crimson-500/60' : 'border-line'
+          }`}
+        >
+          <div className="h-px bg-line flex-1" />
           <div className="flex items-center gap-2 flex-wrap justify-center">
-            <Swords className="w-3.5 h-3.5 text-terminalCyan animate-pulse" />
-            <span className="font-bold tracking-wider text-cyan-200">
-              战术交战区 • 5v5 绝对卡位
+            <Swords className={`w-3.5 h-3.5 ${gameState.currentCombat ? 'text-crimson-400' : 'text-teal-400'}`} />
+            <span className="font-semibold tracking-wider text-fg">
+              战术交战区
+            </span>
+            <span className="font-display text-hud tracking-widest text-fg-muted uppercase hidden sm:inline">
+              5V5 TACTICAL GRID
             </span>
 
             {gameState.currentCombat && (
               <>
-                <span className="ml-1 px-2 py-0.5 rounded bg-erosionRed/25 text-red-200 border border-erosionRed/50 font-bold animate-pulse text-[10px]">
-                  【交战中】目标: {gameState.currentCombat.targetType === 'PLAYER' ? '对方玩家' : '角色卡'}
+                <span className="ml-1 px-2 py-0.5 bg-crimson-500/20 text-crimson-400 border border-crimson-500/60 font-semibold text-hud">
+                  交战中 · 目标：{gameState.currentCombat.targetType === 'PLAYER' ? '对方玩家' : '角色卡'}
                 </span>
 
                 {timing.waitingHint && gameState.phase === 'COMBAT_FREE_TIMING' && (
-                  <span className="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
-                    <Clock className="w-3 h-3 text-yellow-400 animate-spin" />
+                  <span className="px-2 py-0.5 bg-gold-300/15 text-gold-300 border border-gold-300/40 text-hud font-medium flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-gold-300" />
                     <span>{timing.waitingHint}</span>
                   </span>
                 )}
                 {(timing.canDeclareBlock || (timing.hasInstantPriority && gameState.phase === 'COMBAT_FREE_TIMING')) && (
                   <div className="flex items-center gap-2 ml-1">
-                    <span className="px-2 py-0.5 rounded bg-erosionRed/30 text-red-200 border border-erosionRed/60 text-[10px] font-bold flex items-center gap-1 animate-pulse">
-                      <Shield className="w-3 h-3 text-yellow-300" />
+                    <span className="px-2 py-0.5 bg-crimson-500/20 text-fg border border-crimson-500/60 text-hud font-medium flex items-center gap-1">
+                      <Shield className="w-3 h-3 text-gold-300" />
                       <span>{timing.canDeclareBlock ? '请选择角色【阻挡】，或：' : '可以使用【瞬时】，或：'}</span>
                     </span>
                     <button
                       type="button"
                       onClick={onPassTiming}
-                      className="px-2.5 py-0.5 rounded bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-black text-[10px] font-mono shadow-[0_0_12px_rgba(255,200,0,0.8)] animate-bounce active:scale-95 transition-all cursor-pointer"
+                      className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans active:scale-95 transition-all duration-fast cursor-pointer"
                       title="快捷键: Space"
                     >
                       {timing.passLabel} [Space]
@@ -249,11 +258,11 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               </>
             )}
           </div>
-          <div className="h-px bg-terminalBorder/60 flex-1" />
+          <div className="h-px bg-line flex-1" />
         </div>
       </div>
 
-      {/* ================= 己方战场 5 个绝对卡位 (BOTTOM ROW: top 54.86%, height 33.33%) ================= */}
+      {/* ================= 己方战场 5 个绝对卡位 ================= */}
       {mySlots.slice(0, 5).map((slot, index) => {
         const pos = MY_SLOT_POSITIONS[index] || MY_SLOT_POSITIONS[0];
         const roleCard = slot.roleCardId ? gameState.publicCards?.[slot.roleCardId] : undefined;
@@ -317,7 +326,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         );
       })}
 
-      {/* ================= 左翼：官方战术处理区 (PROCESSING ZONE: left 2.34%, top 38.88%, width 10.15%, height 22.22%) ================= */}
+      {/* ================= 左翼：官方战术处理区 ================= */}
       <div
         className="absolute z-15 flex flex-col items-center justify-center"
         style={{
@@ -338,7 +347,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         />
       </div>
 
-      {/* ================= 敌方牌库与墓地 (右侧上方: left 85.15%, width 10.94%) ================= */}
+      {/* ================= 敌方牌库与墓地 (右侧上方) ================= */}
       <div
         className="absolute z-15 flex flex-col items-center justify-center gap-1"
         style={{
@@ -373,7 +382,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         />
       </div>
 
-      {/* ================= 我方牌库与墓地 (右侧下方: left 85.15%, width 10.94%) ================= */}
+      {/* ================= 我方牌库与墓地 (右侧下方) ================= */}
       <div
         className="absolute z-15 flex flex-col items-center justify-center gap-1"
         style={{
@@ -408,7 +417,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         />
       </div>
 
-      {/* ================= 攻击碰撞闪光与刀光特效图层 (CLASH FLASH OVERLAY) ================= */}
+      {/* ================= 攻击碰撞闪光与刀光特效图层 (单次爆发) ================= */}
       {attackAnim?.isClashing && (
         <div
           className="absolute z-50 pointer-events-none clash-flash-effect flex items-center justify-center"
@@ -417,12 +426,11 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
             top: attackAnim.clashY ? `${attackAnim.clashY}%` : '50%',
           }}
         >
-          {/* 核心能量耀斑与环形冲击波 */}
           <div className="relative flex items-center justify-center">
-            <div className="w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-r from-red-500 via-amber-300 to-white opacity-90 blur-[2px] shadow-[0_0_35px_#ff2a5f]" />
-            <div className="absolute w-36 h-36 rounded-full border-2 border-white/80 animate-ping" />
-            <div className="absolute w-44 h-1 bg-white transform rotate-45 shadow-[0_0_20px_#ffffff]" />
-            <div className="absolute w-44 h-1 bg-white transform -rotate-45 shadow-[0_0_20px_#ffffff]" />
+            <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-gradient-to-r from-crimson-500 via-gold-300 to-fg opacity-90 blur-[2px] shadow-glow-crimson" />
+            <div className="absolute w-32 h-32 border border-fg/80 rotate-45" />
+            <div className="absolute w-44 h-0.5 bg-fg transform rotate-45 shadow-[0_0_12px_#ffffff]" />
+            <div className="absolute w-44 h-0.5 bg-fg transform -rotate-45 shadow-[0_0_12px_#ffffff]" />
           </div>
         </div>
       )}

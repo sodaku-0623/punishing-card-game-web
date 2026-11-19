@@ -4,12 +4,16 @@ import React from 'react';
 import { ShieldAlert, Skull, Activity } from 'lucide-react';
 
 interface ErosionBarProps {
-  current: number; // 0..7 (or up to 10 on the mat)
+  current: number;
   playerName: string;
   isOpponent?: boolean;
   compact?: boolean;
 }
 
+/**
+ * 侵蚀条 (docs/design/design-spec.md 6. 对局界面)
+ * crimson-500 实心分段条，每段之间 2px 间隔，无持续闪烁
+ */
 export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
   current,
   playerName,
@@ -18,49 +22,44 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
 }) => {
   const isDanger = current >= 5;
   const isLoss = current >= 7;
-
-  // 对应场地图 0 到 10 的水平刻度标尺
   const TICKS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
-  // 紧凑单行胶囊模式 (用于 1080p 紧凑 HUD，极大地压缩高度与宽度)
   if (compact) {
     return (
       <div
         {...(isOpponent ? { 'data-opponent-player-target': 'true' } : {})}
-        className={`flex items-center justify-between px-2.5 py-1 rounded-xl border backdrop-blur-md transition-all select-none font-mono ${
-          isDanger
-            ? 'border-erosionRed/80 bg-erosionRed/20 shadow-[0_0_12px_rgba(255,42,109,0.35)]'
-            : 'border-terminalBorder/70 bg-surface/75'
+        className={`flex items-center justify-between gap-2 px-2.5 py-1 border bg-ink-900/90 backdrop-blur-md transition-colors duration-fast select-none ${
+          isDanger ? 'border-crimson-500' : 'border-line'
         }`}
       >
-        <div className="flex items-center gap-1.5 text-xs">
+        <div className="flex items-center gap-1.5 min-w-0">
           {isDanger ? (
-            <ShieldAlert className="w-3.5 h-3.5 text-erosionRed animate-bounce" />
+            <ShieldAlert className="w-3.5 h-3.5 text-crimson-400 shrink-0" />
           ) : (
-            <Activity className="w-3.5 h-3.5 text-terminalCyan" />
+            <Activity
+              className={`w-3.5 h-3.5 shrink-0 ${
+                isOpponent ? 'text-crimson-400' : 'text-teal-400'
+              }`}
+            />
           )}
-          <span className="font-bold text-white text-[11px] truncate max-w-[65px]">
+          <span className="font-semibold text-fg text-caption truncate max-w-[72px]">
             {playerName}
           </span>
-          <span className="text-[10px] text-neutral-400 font-normal">
-            {isOpponent ? '侵蚀' : '我方侵蚀'}
+          <span className="text-hud text-fg-muted shrink-0">
+            {isOpponent ? '侵蚀' : '我方'}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* 7 个微型晶格指示灯 */}
-          <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-2 shrink-0">
+          {/* 7 段 crimson-500 实心分段条，每段 2px 间隔 */}
+          <div className="flex items-center gap-[2px]" aria-label={`侵蚀度 ${current} / 7`}>
             {[1, 2, 3, 4, 5, 6, 7].map((val) => {
               const filled = val <= current;
               return (
                 <div
                   key={val}
-                  className={`w-1.5 h-3 rounded-xs transition-all ${
-                    filled
-                      ? val >= 5
-                        ? 'bg-erosionRed shadow-[0_0_6px_#ff2a5f]'
-                        : 'bg-terminalCyan shadow-[0_0_4px_#00f0ff]'
-                      : 'bg-neutral-800'
+                  className={`w-1.5 h-3 transition-colors duration-base ${
+                    filled ? 'bg-crimson-500' : 'bg-ink-700'
                   }`}
                   title={`侵蚀格 ${val}`}
                 />
@@ -69,10 +68,10 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
           </div>
 
           <span
-            className={`font-black text-xs px-1.5 py-px rounded ${
+            className={`font-num tabular-nums font-bold text-caption px-1.5 py-px border ${
               isDanger
-                ? 'bg-erosionRed text-white font-bold animate-pulse'
-                : 'bg-neutral-900 text-terminalCyan border border-terminalCyan/40'
+                ? 'bg-crimson-500 text-fg border-crimson-500'
+                : 'bg-ink-950 text-fg border-line'
             }`}
           >
             {current}/7
@@ -85,61 +84,53 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
   return (
     <div
       {...(isOpponent ? { 'data-opponent-player-target': 'true' } : {})}
-      className={`flex flex-col gap-1.5 p-3 rounded-2xl border backdrop-blur-md transition-all select-none ${
-        isDanger
-          ? 'border-erosionRed/60 bg-erosionRed/10 shadow-[0_0_20px_rgba(255,42,109,0.2)]'
-          : 'border-terminalBorder/60 bg-surface/50'
+      className={`flex flex-col gap-2 p-3 border bg-ink-900/90 select-none transition-colors duration-fast ${
+        isDanger ? 'border-crimson-500' : 'border-line'
       }`}
     >
-      {/* 顶部玩家信息与数值 */}
-      <div className="flex justify-between items-center text-xs font-mono">
-        <span className="flex items-center gap-1.5 text-white font-bold tracking-wide">
+      <div className="flex justify-between items-center text-caption">
+        <span className="flex items-center gap-1.5 text-fg font-semibold">
           {isDanger ? (
-            <ShieldAlert className="w-4 h-4 text-erosionRed animate-bounce" />
+            <ShieldAlert className="w-4 h-4 text-crimson-400" />
           ) : (
-            <Activity className="w-3.5 h-3.5 text-terminalCyan" />
+            <Activity className={`w-3.5 h-3.5 ${isOpponent ? 'text-crimson-400' : 'text-teal-400'}`} />
           )}
           <span>{playerName}</span>
-          <span className="text-[10px] text-neutral-400 font-normal">
-            {isOpponent ? '(对手)' : '(我方)'}
+          <span className="text-hud text-fg-muted font-normal">
+            {isOpponent ? '对手' : '我方'}
           </span>
         </span>
 
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-neutral-400 font-mono">
-            败北界限: 7
-          </span>
+          <span className="text-hud text-fg-muted">败北界限 7</span>
           <span
-            className={`font-bold font-mono px-2 py-0.5 rounded text-xs ${
+            className={`font-num tabular-nums font-bold px-2 py-0.5 border text-caption ${
               isDanger
-                ? 'bg-erosionRed/20 text-erosionRed border border-erosionRed/40 animate-pulse'
-                : 'bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/30'
+                ? 'bg-crimson-500 text-fg border-crimson-500'
+                : 'bg-ink-850 text-fg border-line'
             }`}
           >
-            侵蚀度: {current}
+            {current} / 7
           </span>
         </div>
       </div>
 
-      {/* 场地图风格的水平标尺: 侵蚀计数 0 1 2 3 4 5 6 7 8 9 10 */}
-      <div className="flex flex-col gap-1 bg-neutral-950/90 p-2 rounded-xl border border-terminalBorder/40">
-        <div className="flex items-center justify-between text-[11px] font-mono px-1">
-          <span className="text-neutral-400 font-bold tracking-widest text-[10px]">
-            侵蚀计数
-          </span>
-          <div className="flex items-center gap-2 sm:gap-3 text-neutral-400 font-bold">
+      <div className="flex flex-col gap-1.5 bg-ink-950 p-2 border border-line">
+        <div className="flex items-center justify-between font-num text-hud px-0.5">
+          <span className="text-fg-muted font-display uppercase">EROSION</span>
+          <div className="flex items-center gap-2 sm:gap-3">
             {TICKS.map((val) => {
               const isCurrent = val === current;
               const isThreshold = val === 7;
               return (
                 <span
                   key={val}
-                  className={`transition-all text-center min-w-[14px] ${
+                  className={`tabular-nums min-w-[14px] text-center transition-colors ${
                     isCurrent
-                      ? 'text-white font-black text-sm scale-125 text-terminalCyan drop-shadow-[0_0_8px_rgba(0,240,255,0.8)]'
+                      ? 'text-fg font-bold'
                       : isThreshold
-                      ? 'text-erosionRed/80 font-bold'
-                      : 'text-neutral-500'
+                        ? 'text-crimson-400 font-semibold'
+                        : 'text-fg-disabled'
                   }`}
                 >
                   {val}
@@ -149,20 +140,16 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
           </div>
         </div>
 
-        {/* 晶格标尺滑轨 */}
-        <div className="grid grid-cols-11 gap-1 h-2.5 w-full bg-neutral-900 rounded p-0.5">
+        {/* 实心分段条，每段 2px 间隔 */}
+        <div className="grid grid-cols-11 gap-[2px] h-2 w-full">
           {TICKS.map((val) => {
-            const filled = val <= current;
-            let barColor = 'bg-terminalCyan';
-            if (val >= 4) barColor = 'bg-terminalGold';
-            if (val >= 6) barColor = 'bg-erosionRed';
-
+            const filled = val <= current && val > 0;
             return (
               <div
                 key={val}
-                className={`h-full rounded-sm transition-all duration-300 ${
-                  filled ? `${barColor} shadow-sm` : 'bg-neutral-800/40'
-                } ${val === 7 ? 'border-r-2 border-red-500' : ''}`}
+                className={`h-full transition-colors duration-base ${
+                  filled ? 'bg-crimson-500' : 'bg-ink-700'
+                } ${val === 7 ? 'border-r border-crimson-400' : ''}`}
               />
             );
           })}
@@ -170,9 +157,9 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
       </div>
 
       {isLoss && (
-        <div className="flex items-center justify-center gap-1.5 text-xs text-erosionRed font-bold font-mono py-0.5 animate-pulse">
+        <div className="flex items-center justify-center gap-1.5 text-caption text-crimson-400 font-semibold py-0.5">
           <Skull className="w-4 h-4" />
-          <span>侵蚀超限 • 达到 7 败北判定 (1.2.2.a)</span>
+          <span>侵蚀超限 · 达到 7 败北判定 (1.2.2.a)</span>
         </div>
       )}
     </div>

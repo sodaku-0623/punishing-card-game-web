@@ -2,20 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #090c10;
-  --foreground: #e6edf3;
-  --terminal-cyan: #00f0ff;
-  --terminal-gold: #ffc800;
-  --erosion-red: #ff2a5f;
-  --hud-panel-bg: rgba(13, 17, 23, 0.92);
-}
-
-html, body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+html,
+body {
+  color: theme('colors.fg.DEFAULT');
+  background-color: theme('colors.ink.950');
+  font-family: theme('fontFamily.sans');
   overflow-x: hidden;
   overflow-y: auto;
   user-select: none;
@@ -34,13 +25,13 @@ select,
   -webkit-user-select: text;
 }
 
-/* 键盘导航可见焦点 (仅键盘操作时显示，不影响鼠标点击观感) */
+/* 键盘导航可见焦点 (设计规范 8. 可访问性：2px teal-400 + 2px 偏移) */
 :focus-visible {
-  outline: 2px solid var(--terminal-cyan);
+  outline: 2px solid theme('colors.teal.400');
   outline-offset: 2px;
 }
 
-/* 尊重系统“减少动态效果”偏好：关闭持续闪烁/弹跳等装饰动画 */
+/* 尊重系统“减少动态效果”偏好：关闭持续或装饰动画 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -52,38 +43,170 @@ select,
   }
 }
 
-/* 战双末世科幻高光与全息光效 Design Tokens */
-.terminal-glow-cyan {
-  box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
+/* ================= 设计规范工具类 (docs/design/design-spec.md) ================= */
+/* 颜色与动效取值全部来自 tailwind.config.ts，通过 theme() 引用 */
+@layer utilities {
+  /* 45° 切角，代替圆角 (4. 空间、形状、层级)：只切右上与左下 */
+  .clip-corner-sm {
+    clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  }
+  .clip-corner-md {
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+
+  /* HUD 斜线条纹 (5.9 HudStripes) */
+  .hud-stripes {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      theme('colors.line.strong') 0 1px,
+      transparent 1px 5px
+    );
+  }
+
+  /* 卡牌对战子品牌底：钢灰蓝 + 24px 网格 (5.3) */
+  .bg-steel-grid {
+    background-color: theme('colors.steel.700');
+    background-image:
+      linear-gradient(theme('colors.steel.500 / 15%') 1px, transparent 1px),
+      linear-gradient(90deg, theme('colors.steel.500 / 15%') 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* 极克制的深黑战术微网格背景（外围页面底层氛围） */
+  .bg-tactical-grid {
+    background-color: theme('colors.ink.950');
+    background-image:
+      linear-gradient(theme('colors.fg.DEFAULT / 3%') 1px, transparent 1px),
+      linear-gradient(90deg, theme('colors.fg.DEFAULT / 3%') 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+
+  /* 对局桌面背景：steel-700 向 ink-950 的纵向渐变 + 细网格 (6. 对局界面) */
+  .bg-arena-surface {
+    background-color: theme('colors.ink.950');
+    background-image:
+      linear-gradient(theme('colors.steel.500 / 12%') 1px, transparent 1px),
+      linear-gradient(90deg, theme('colors.steel.500 / 12%') 1px, transparent 1px),
+      linear-gradient(180deg, theme('colors.steel.700 / 55%') 0%, theme('colors.ink.950') 100%);
+    background-size: 24px 24px, 24px 24px, 100% 100%;
+  }
+
+  /* 子品牌大标题：钢蓝错位投影 (5.3) */
+  .title-offset {
+    text-shadow: 2px 2px 0 theme('colors.steel.300');
+  }
+
+  /* 官网风格超大半透明英文底字 (5.3) */
+  .pgr-watermark {
+    font-size: clamp(3.5rem, 11vw, 9rem);
+    line-height: 0.9;
+    letter-spacing: 0.16em;
+  }
+
+  /* 悬停一次性光学扫光线 (7. 动效：一次性，无无限循环) */
+  .pgr-sweep {
+    position: relative;
+    overflow: hidden;
+  }
+  .pgr-sweep::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      115deg,
+      transparent 0%,
+      transparent 35%,
+      theme('colors.fg.DEFAULT / 16%') 50%,
+      transparent 65%,
+      transparent 100%
+    );
+    transform: translateX(-130%);
+    pointer-events: none;
+  }
+  .pgr-sweep:hover::after {
+    animation: pgr-sweep-once 480ms theme('transitionTimingFunction.enter') forwards;
+  }
+
+  /* 页面区块入场动效 (7. 动效：位移 <= 16px + 淡入) */
+  .pgr-enter {
+    animation: pgr-fade-up 360ms theme('transitionTimingFunction.enter') both;
+  }
+  .pgr-delay-1 {
+    animation-delay: 60ms;
+  }
+  .pgr-delay-2 {
+    animation-delay: 120ms;
+  }
+  .pgr-delay-3 {
+    animation-delay: 180ms;
+  }
+  .pgr-delay-4 {
+    animation-delay: 240ms;
+  }
+
+  /* 细线横向展开入场 */
+  .pgr-line-draw {
+    transform-origin: left center;
+    animation: pgr-scale-x 420ms theme('transitionTimingFunction.enter') both;
+  }
 }
 
-.terminal-glow-gold {
-  box-shadow: 0 0 16px rgba(255, 200, 0, 0.45);
+@keyframes pgr-sweep-once {
+  0% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(130%);
+  }
 }
 
-.terminal-glow-red {
-  box-shadow: 0 0 16px rgba(255, 42, 95, 0.5);
+@keyframes pgr-fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.terminal-glow-purple {
-  box-shadow: 0 0 16px rgba(168, 85, 247, 0.45);
+@keyframes pgr-scale-x {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
 }
 
-.terminal-border-cyan {
-  border: 1px solid rgba(0, 240, 255, 0.4);
+/* 极简战双直角滚动条 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: theme('colors.ink.900');
+}
+::-webkit-scrollbar-thumb {
+  background: theme('colors.ink.600');
+}
+::-webkit-scrollbar-thumb:hover {
+  background: theme('colors.crimson.500');
 }
 
-.hud-panel {
-  background: var(--hud-panel-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(0, 240, 255, 0.2);
-}
+/* ================= 对局核心交互与动效 (6. 对局界面 & 7. 动效) ================= */
 
 /* 卡牌交互与 GPU 渲染加速及移动端触控优化 */
 .card-interactive {
   will-change: transform;
-  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.16s ease-out, border-color 0.16s ease-out;
+  transition:
+    transform 150ms theme('transitionTimingFunction.enter'),
+    box-shadow 150ms theme('transitionTimingFunction.enter'),
+    border-color 150ms theme('transitionTimingFunction.enter'),
+    filter 150ms theme('transitionTimingFunction.enter');
   touch-action: none;
   -webkit-touch-callout: none;
 }
@@ -94,144 +217,74 @@ select,
   -webkit-overflow-scrolling: touch;
 }
 
-/* 卡牌横置 90 度旋转状态 (7.2.1.b 攻击横置 / 7.3.1.c 阻挡横置) */
+/* 卡牌横置 90 度旋转状态 (6. 对局界面：旋转 90°，亮度降至 80%，不改透明度) */
 .card-rested {
-  transform: rotate(90deg) scale(0.72) !important;
+  transform: rotate(90deg) scale(0.74) !important;
   transform-origin: center center !important;
-  opacity: 0.9 !important;
-  box-shadow: 0 0 16px rgba(0, 0, 0, 0.75) !important;
-  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease-out !important;
+  filter: brightness(0.8);
+  transition:
+    transform 300ms theme('transitionTimingFunction.enter') !important,
+    filter 300ms theme('transitionTimingFunction.enter') !important;
 }
 
-/* 拖拽释放悬停高亮提示 */
+/* 拖拽释放悬停高亮提示 (6. 对局界面：teal-400 12% + 1px teal-400 虚线) */
 .drag-valid-slot {
-  background: rgba(0, 240, 255, 0.15) !important;
-  border-color: rgba(0, 240, 255, 0.9) !important;
-  box-shadow: 0 0 20px rgba(0, 240, 255, 0.6) !important;
-  transform: scale(1.03);
+  background: theme('colors.teal.400 / 12%') !important;
+  border-color: theme('colors.teal.400') !important;
+  border-style: dashed !important;
+  box-shadow: theme('boxShadow.glow-teal') !important;
 }
 
+/* 攻击目标高亮 (6. 对局界面：1px crimson-500 + glow-crimson，仅瞬时显示) */
 .drag-target-attack {
-  background: rgba(255, 42, 95, 0.2) !important;
-  border-color: rgba(255, 42, 95, 0.9) !important;
-  box-shadow: 0 0 22px rgba(255, 42, 95, 0.7) !important;
-  transform: scale(1.04);
+  background: theme('colors.crimson.500 / 14%') !important;
+  border-color: theme('colors.crimson.500') !important;
+  box-shadow: theme('boxShadow.glow-crimson') !important;
 }
 
-/* 科技角标绘制 */
-.corner-tl {
-  position: absolute;
-  top: 2px;
-  left: 3px;
-  font-family: monospace;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-}
-.corner-tr {
-  position: absolute;
-  top: 2px;
-  right: 3px;
-  font-family: monospace;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-}
-.corner-bl {
-  position: absolute;
-  bottom: 2px;
-  left: 3px;
-  font-family: monospace;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-}
-.corner-br {
-  position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-family: monospace;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
+/* ================= 战双风格阶段切换横幅 (6. 对局界面：水平滑入 -> 停留 -> 滑出，<= 1.2s) ================= */
+.pgr-phase-banner {
+  animation: pgr-phase-slide 1150ms theme('transitionTimingFunction.enter') forwards;
   pointer-events: none;
 }
 
-/* 极简科幻滚动条 */
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.3);
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 240, 255, 0.3);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 240, 255, 0.6);
-}
-
-/* ================= YGOPro 2 风格 阶段切换全屏横幅 ================= */
-.phase-banner {
-  position: fixed;
-  top: 50%;
-  left: -100%;
-  transform: translateY(-50%);
-  font-size: 3.5rem;
-  font-weight: 900;
-  text-shadow: 0 0 25px var(--terminal-cyan), 0 0 50px rgba(0, 240, 255, 0.6);
-  animation: phase-slide-in 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  pointer-events: none;
-  z-index: 100;
-  white-space: nowrap;
-}
-
-.phase-banner-red {
-  text-shadow: 0 0 25px var(--erosion-red), 0 0 55px rgba(255, 42, 95, 0.7);
-}
-
-.phase-banner-gold {
-  text-shadow: 0 0 25px var(--terminal-gold), 0 0 55px rgba(255, 200, 0, 0.7);
-}
-
-@keyframes phase-slide-in {
+@keyframes pgr-phase-slide {
   0% {
-    left: -100%;
     opacity: 0;
+    transform: translateX(-40px);
   }
-  30% {
-    left: 50%;
+  18% {
     opacity: 1;
-    transform: translateX(-50%) translateY(-50%);
+    transform: translateX(0);
   }
-  70% {
-    left: 50%;
+  78% {
     opacity: 1;
-    transform: translateX(-50%) translateY(-50%);
+    transform: translateX(0);
   }
   100% {
-    left: 120%;
     opacity: 0;
-    transform: translateX(0) translateY(-50%);
+    transform: translateX(40px);
   }
 }
 
-/* ================= 攻击动画: 冲锋 + 碰撞闪光 ================= */
-/* 己方向上冲锋冲撞目标 (向对手卡位或对手玩家) */
+.pgr-phase-scan {
+  animation: pgr-sweep-once 650ms theme('transitionTimingFunction.enter') 120ms both;
+}
+
+/* ================= 攻击动画: 冲锋 + 受击震颤 + 碰撞斩光 (瞬时 crimson-500 语义) ================= */
 @keyframes attack-charge-up {
   0% {
     transform: translateY(0) scale(1);
     z-index: 45;
   }
-  40% {
-    transform: translateY(-60px) scale(1.1);
-    filter: brightness(1.5) drop-shadow(0 0 15px rgba(255, 42, 95, 0.8));
+  38% {
+    transform: translateY(-56px) scale(1.06);
+    filter: brightness(1.35) drop-shadow(0 0 16px theme('colors.crimson.500 / 80%'));
     z-index: 45;
   }
-  60% {
-    transform: translateY(-80px) scale(1.15);
-    filter: brightness(1.7) drop-shadow(0 0 22px rgba(255, 42, 95, 1));
+  62% {
+    transform: translateY(-72px) scale(1.09);
+    filter: brightness(1.5) drop-shadow(0 0 20px theme('colors.crimson.500'));
     z-index: 45;
   }
   100% {
@@ -241,20 +294,19 @@ select,
   }
 }
 
-/* 对手向下冲锋冲撞我方目标 */
 @keyframes attack-charge-down {
   0% {
     transform: translateY(0) scale(1);
     z-index: 45;
   }
-  40% {
-    transform: translateY(60px) scale(1.1);
-    filter: brightness(1.5) drop-shadow(0 0 15px rgba(255, 42, 95, 0.8));
+  38% {
+    transform: translateY(56px) scale(1.06);
+    filter: brightness(1.35) drop-shadow(0 0 16px theme('colors.crimson.500 / 80%'));
     z-index: 45;
   }
-  60% {
-    transform: translateY(80px) scale(1.15);
-    filter: brightness(1.7) drop-shadow(0 0 22px rgba(255, 42, 95, 1));
+  62% {
+    transform: translateY(72px) scale(1.09);
+    filter: brightness(1.5) drop-shadow(0 0 20px theme('colors.crimson.500'));
     z-index: 45;
   }
   100% {
@@ -265,30 +317,29 @@ select,
 }
 
 .animate-attack-up {
-  animation: attack-charge-up 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards !important;
+  animation: attack-charge-up 600ms theme('transitionTimingFunction.enter') forwards !important;
 }
 
 .animate-attack-down {
-  animation: attack-charge-down 0.65s cubic-bezier(0.2, 0.8, 0.2, 1) forwards !important;
+  animation: attack-charge-down 600ms theme('transitionTimingFunction.enter') forwards !important;
 }
 
-/* 受击卡牌震颤晃动与闪红 */
 @keyframes target-hit-shake {
   0% {
     transform: translate(0, 0);
   }
   20% {
-    transform: translate(-10px, 8px) scale(0.96);
-    filter: brightness(1.8) drop-shadow(0 0 16px rgba(255, 42, 95, 0.9));
+    transform: translate(-8px, 6px) scale(0.96);
+    filter: brightness(1.5) drop-shadow(0 0 16px theme('colors.crimson.500 / 85%'));
   }
-  40% {
-    transform: translate(10px, -8px) scale(1.02);
+  42% {
+    transform: translate(8px, -6px) scale(1.01);
   }
-  60% {
-    transform: translate(-6px, 5px);
+  64% {
+    transform: translate(-5px, 4px);
   }
-  80% {
-    transform: translate(4px, -3px);
+  82% {
+    transform: translate(3px, -2px);
   }
   100% {
     transform: translate(0, 0);
@@ -297,45 +348,46 @@ select,
 }
 
 .animate-target-hit {
-  animation: target-hit-shake 0.5s ease-out forwards !important;
+  animation: target-hit-shake 460ms theme('transitionTimingFunction.exit') forwards !important;
 }
 
-/* 碰撞光暴与刀光冲击特效 */
 @keyframes clash-flash {
   0% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.2) rotate(0deg);
+    transform: translate(-50%, -50%) scale(0.35) rotate(-12deg);
   }
-  30% {
+  28% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.5) rotate(15deg);
-    filter: brightness(2.2);
+    transform: translate(-50%, -50%) scale(1.25) rotate(0deg);
+    filter: brightness(1.6);
   }
   70% {
-    opacity: 0.9;
-    transform: translate(-50%, -50%) scale(1.2) rotate(30deg);
+    opacity: 0.85;
+    transform: translate(-50%, -50%) scale(1.1) rotate(8deg);
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(2.2) rotate(45deg);
+    transform: translate(-50%, -50%) scale(1.6) rotate(16deg);
   }
 }
 
 .clash-flash-effect {
-  animation: clash-flash 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: clash-flash 550ms theme('transitionTimingFunction.enter') forwards;
   pointer-events: none;
 }
 
-/* ================= 战双官方竞技场战场纹理底图容器 ================= */
+/* ================= 战双官方竞技场战场纹理底图容器 (压暗融合至 design-spec) ================= */
 .ygo-battlefield-mat {
-  background-image: url('/official-arena-hd.jpg');
-  background-size: 100% 100%;
-  background-position: center;
-  background-repeat: no-repeat;
-  box-shadow: 0 0 35px rgba(0, 240, 255, 0.15), inset 0 0 50px rgba(0, 0, 0, 0.3);
+  background-color: theme('colors.ink.950');
+  background-image:
+    linear-gradient(180deg, theme('colors.ink.950 / 72%') 0%, theme('colors.steel.700 / 38%') 50%, theme('colors.ink.950 / 76%') 100%),
+    url('/official-arena-hd.jpg');
+  background-size: 100% 100%, 100% 100%;
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
 }
 
-/* ================= 战术全息交战指示流光 ================= */
+/* ================= 战术交战指向流光 (仅拖拽或目标选择期间激活) ================= */
 @keyframes arrow-dash-flow {
   0% {
     stroke-dashoffset: 30;
@@ -346,6 +398,5 @@ select,
 }
 
 .targeting-arrow-pulse {
-  animation: arrow-dash-flow 0.85s linear infinite;
+  animation: arrow-dash-flow 750ms linear infinite;
 }
-
