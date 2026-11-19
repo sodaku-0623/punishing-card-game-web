@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { ElementAttribute } from '@zhanshuang/shared';
+import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { CardData, findCardByNumberOrId, getCardVariants, CardVariant, formatCardType } from '@/lib/cards-data';
 import { Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Info, Star } from 'lucide-react';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
@@ -165,6 +166,14 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
               <span className="px-1.5 py-0.5 text-hud font-num font-semibold bg-ink-850 border border-line text-gold-300">
                 {resolvedCard.cost ?? 0}费
               </span>
+              {isCardApproximatelyImplemented(resolvedCard.cardNumber, resolvedCard.rulesText) && (
+                <span
+                  className="px-1.5 py-0.5 text-hud font-sans font-semibold bg-gold-300/15 border border-gold-300/50 text-gold-300"
+                  title="该卡尚在按官方文本逐卡转换中，当前对局按关键字近似结算 (ST01~ST03 官方预组为完全精确实现)"
+                >
+                  近似效果
+                </span>
+              )}
             </div>
             <h4 className="text-body-sm font-semibold text-fg truncate mt-1">
               {resolvedCard.name}

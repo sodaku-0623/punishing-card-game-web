@@ -63,6 +63,8 @@ export interface StaticRuleEvaluationContext extends StaticRuleContext {
   targetKeywords: ReadonlySet<string>;
   /** 目标所属方处于对方回合 */
   isOpponentTurnForSource: boolean;
+  /** 8.9.1.d 无递归特征查询：目标卡直读 Layer 1 结果，其余卡独立计算 Layer 1 特征 */
+  hasCardTrait: (cardInstanceId: string, trait: string) => boolean;
 }
 
 export interface StaticContribution {
@@ -237,6 +239,8 @@ export class ContinuousEffectEngine {
           targetTraits: traitsSet,
           targetKeywords: keywordsSet,
           isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+          hasCardTrait: (id, trait) =>
+            id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
         };
         const contrib = rule.evaluate(source, card, evalCtx);
         if (!contrib) continue;
@@ -325,6 +329,8 @@ export class ContinuousEffectEngine {
           targetTraits: traitsSet,
           targetKeywords: keywordsSet,
           isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+          hasCardTrait: (id, trait) =>
+            id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
         };
         const contrib = rule.evaluate(source, card, evalCtx);
         if (!contrib) continue;
@@ -403,6 +409,10 @@ export class ContinuousEffectEngine {
           targetTraits: traitsSet,
           targetKeywords: new Set(),
           isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+          hasCardTrait: (id, trait) =>
+            id === card.instanceId
+              ? traitsSet.has(trait)
+              : Boolean(this.state.cards[id] && this.getDef(this.state.cards[id]!)?.traits.includes(trait)),
         });
         if (contrib?.addTraits) {
           for (const t of contrib.addTraits) traitsSet.add(t);
@@ -417,85 +427,7 @@ export class ContinuousEffectEngine {
   // ===================================================================
 
   private registerBuiltinStaticRules(): void {
-    // ST02-004 露娜·银冕：【永】若我方墓地的牌为10张及以上，该牌PP+1500
-    this.registerStaticRule({
-      id: 'static:ST02-004',
-      layer: 'STAT',
-      matchSource: (src) => src.cardNumber === 'ST02-004',
-      evaluate: (src, target, ctx) => {
-        if (src.instanceId !== target.instanceId) return undefined;
-        return ctx.getCardsInZone(src.controllerPlayerId, 'GRAVEYARD').length >= 10
-          ? { pp: 1500 }
-          : undefined;
-      },
-    });
-
-    // ST02-006 露娜·银冕：【永】若我方的侵蚀计数为4及以上，该牌PP+1000
-    this.registerStaticRule({
-      id: 'static:ST02-006',
-      layer: 'STAT',
-      matchSource: (src) => src.cardNumber === 'ST02-006',
-      evaluate: (src, target, ctx) => {
-        if (src.instanceId !== target.instanceId) return undefined;
-        const erosion = ctx.state.players[src.controllerPlayerId]?.erosionCount ?? 0;
-        return erosion >= 4 ? { pp: 1000 } : undefined;
-      },
-    });
-
-    // ST02-008 苦刑之女：【永】若我方战场存在<升格者>角色，该牌PP+1000
-    this.registerStaticRule({
-      id: 'static:ST02-008',
-      layer: 'STAT',
-      dependsOnTraits: true,
-      matchSource: (src) => src.cardNumber === 'ST02-008',
-      evaluate: (src, target, ctx) => {
-        if (src.instanceId !== target.instanceId) return undefined;
-        const hasAscendant = ctx.getFieldRoles(src.controllerPlayerId).some((r) => {
-          if (r.instanceId === target.instanceId) return ctx.targetTraits.has('升格者');
-          return this.evaluateLayer1Traits(r.instanceId).has('升格者');
-        });
-        return hasAscendant ? { pp: 1000 } : undefined;
-      },
-    });
-
-    // ST03-004 诺克提·擎驱：【永】对方回合中，横置状态的该牌PP+1000
-    this.registerStaticRule({
-      id: 'static:ST03-004',
-      layer: 'STAT',
-      matchSource: (src) => src.cardNumber === 'ST03-004',
-      evaluate: (src, target, ctx) => {
-        if (src.instanceId !== target.instanceId) return undefined;
-        return ctx.isOpponentTurnForSource && !target.isReady ? { pp: 1000 } : undefined;
-      },
-    });
-
-    // ST02-001 露娜·银冕：【永】若我方侵蚀计数为5及以上，我方战场所有<升格者>角色PP+1000
-    this.registerStaticRule({
-      id: 'static:ST02-001',
-      layer: 'STAT',
-      dependsOnTraits: true,
-      matchSource: (src) => src.cardNumber === 'ST02-001',
-      evaluate: (src, target, ctx) => {
-        if (target.controllerPlayerId !== src.controllerPlayerId) return undefined;
-        const erosion = ctx.state.players[src.controllerPlayerId]?.erosionCount ?? 0;
-        if (erosion < 5) return undefined;
-        return ctx.targetTraits.has('升格者') ? { pp: 1000 } : undefined;
-      },
-    });
-
-    // ST03-002 薇拉·瑰丽：【永】对方回合中，我方战场所有横置状态的<三头犬小队>角色PP+1000
-    this.registerStaticRule({
-      id: 'static:ST03-002',
-      layer: 'STAT',
-      dependsOnTraits: true,
-      matchSource: (src) => src.cardNumber === 'ST03-002',
-      evaluate: (src, target, ctx) => {
-        if (target.controllerPlayerId !== src.controllerPlayerId) return undefined;
-        if (!ctx.isOpponentTurnForSource || target.isReady) return undefined;
-        return ctx.targetTraits.has('三头犬小队') ? { pp: 1000 } : undefined;
-      },
-    });
-
+    // 注：官方预组 ST01~ST03 的【永】静态规则由声明式效果库 (effects/dsl/specs/starter-decks.ts) 统一注册。
     // BP04-001 露娜·终焉：【永】该牌下方的牌每有1张，该牌PP+1000。若该牌下方的牌为10张及以上，该牌DP+1。(Q&A·10)
     this.registerStaticRule({
       id: 'static:BP04-001',

@@ -510,12 +510,11 @@ export class GameEngine {
       }
     }
 
-    // 2. 卡牌自身静态能力减费 (8.6.2.c)
-    // 2.1 ST03-011 (三头犬出击): 【永】：我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1。
-    if (
-      cardDef.cardNumber === 'ST03-011' ||
-      cardDef.rulesText.includes('我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1')
-    ) {
+    // 2. 卡牌自身静态能力减费 (8.6.2.c)：优先走声明式效果库 (如 ST03-011 三头犬出击)
+    const dslDiscount = this.effectEngine.presets.calculateHandCostDiscount(playerId, cardDef.cardNumber);
+    if (dslDiscount > 0) {
+      discount += dslDiscount;
+    } else if (cardDef.rulesText.includes('我方战场每有1张<三头犬小队>角色，手牌的该牌的费用-1')) {
       const myBattlefieldSlots = this.state.battlefields[playerId] || [];
       const cerberusRoleCount = myBattlefieldSlots.filter((s) => {
         if (!s.roleCardId) return false;

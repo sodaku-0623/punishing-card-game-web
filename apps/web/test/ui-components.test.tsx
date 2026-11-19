@@ -22,6 +22,7 @@ import LoginPage from '@/app/login/page';
 import GuidePage from '@/app/guide/page';
 import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
+import { CardDetailPanel } from '@/components/game/CardDetailPanel';
 import { canRoleAttackOnEnterTurn, formatCardModifiers, hasCardKeyword } from '@/lib/card-stats';
 import type { CardInstance, PendingChoice } from '@zhanshuang/shared';
 
@@ -211,5 +212,43 @@ describe('PGR UI Design System Components', () => {
     const modTags = formatCardModifiers(card);
     expect(modTags.some((t) => t.includes('PP+2000') && t.includes('至T1末'))).toBe(true);
     expect(modTags.some((t) => t.includes('PP=70') && t.includes('至离场'))).toBe(true);
+  });
+
+  it('shows 近似效果 badge on unmigrated booster cards and hides it on exact ST01~ST03 starter cards', () => {
+    const exactHtml = renderToString(
+      <CardDetailPanel
+        card={{
+          cardNumber: 'ST01-001',
+          name: '露西亚·红莲',
+          cardType: 'ROLE',
+          attribute: 'PHYSICAL',
+          cost: 5,
+          basePP: 5000,
+          baseDP: 1,
+          traits: ['灰鸦小队', '露西亚'],
+          rulesText: '【出】丢弃1张手牌：…',
+        }}
+      />
+    );
+    expect(exactHtml).toContain('ST01-001');
+    expect(exactHtml).not.toContain('近似效果');
+
+    const approxHtml = renderToString(
+      <CardDetailPanel
+        card={{
+          cardNumber: 'BP01-001',
+          name: '露西亚·鸦羽',
+          cardType: 'ROLE',
+          attribute: 'ICE',
+          cost: 8,
+          basePP: 7000,
+          baseDP: 2,
+          traits: ['灰鸦小队', '露西亚'],
+          rulesText: '【出】消除2同色信号球：…',
+        }}
+      />
+    );
+    expect(approxHtml).toContain('BP01-001');
+    expect(approxHtml).toContain('近似效果');
   });
 });

@@ -8,6 +8,7 @@ import {
   getAttributeDisplay,
 } from '@/lib/cards-data';
 import { CardType, ElementAttribute } from '@zhanshuang/shared';
+import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
 import {
   Search,
@@ -717,9 +718,19 @@ export default function CardsBrowserPage() {
                   <div className="absolute bottom-0 inset-x-0 p-2 bg-gradient-to-t from-ink-950 via-ink-950/80 to-transparent space-y-1">
                     <div className="flex items-center justify-between gap-1 text-hud">
                       <span className="font-num text-fg-muted">{card.cardNumber}</span>
-                      <span className={`px-1 border ${attrInfo.tagColor}`}>
-                        {card.attributeName || (card.attribute === ElementAttribute.VOID ? '空' : card.attribute)}
-                      </span>
+                      <div className="flex items-center gap-1">
+                        {isCardApproximatelyImplemented(card.cardNumber, card.rulesText) && (
+                          <span
+                            className="px-1 bg-gold-300/15 border border-gold-300/50 text-gold-300 font-semibold"
+                            title="该卡效果当前为关键字近似实现 (ST01~ST03 预组为精确实现)"
+                          >
+                            近似
+                          </span>
+                        )}
+                        <span className={`px-1 border ${attrInfo.tagColor}`}>
+                          {card.attributeName || (card.attribute === ElementAttribute.VOID ? '空' : card.attribute)}
+                        </span>
+                      </div>
                     </div>
                     <div className="text-caption font-semibold text-fg truncate">
                       {card.name}
@@ -789,7 +800,17 @@ export default function CardsBrowserPage() {
                       </div>
                     </td>
                     <td className="py-2 px-3 font-num text-caption text-crimson-400 font-semibold whitespace-nowrap">
-                      {card.cardNumber}
+                      <div className="flex items-center gap-1.5">
+                        <span>{card.cardNumber}</span>
+                        {isCardApproximatelyImplemented(card.cardNumber, card.rulesText) && (
+                          <span
+                            className="px-1 py-px text-hud font-sans bg-gold-300/15 border border-gold-300/50 text-gold-300"
+                            title="该卡效果当前为关键字近似实现"
+                          >
+                            近似
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       <Badge variant={card.variantStar > 0 ? 'gold' : 'neutral'} className="font-num">

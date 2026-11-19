@@ -36,6 +36,9 @@ export class CardEffectEngine {
 
   constructor(private ctx: CardEffectContext) {
     this.presets = new PresetCardEffects(ctx, this);
+    if (ctx.continuousEffects) {
+      this.presets.registerStaticEffects(ctx.continuousEffects);
+    }
     if (ctx.triggerMgr) {
       this.presets.registerTriggers(ctx.triggerMgr);
     }
@@ -830,7 +833,7 @@ export class CardEffectEngine {
     const playerId = action.playerId;
     const player = this.ctx.state.players[playerId];
 
-    if (choice.effectType?.startsWith('PRESET_')) {
+    if (this.presets.handlesChoice(choice) || choice.effectType?.startsWith('PRESET_')) {
       const result = this.presets.resolveChoice(action, choice);
       if (!result.success) return result;
       return this.finishChoiceResolution(choice, playerId, selectedIds);

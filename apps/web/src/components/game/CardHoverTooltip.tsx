@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
+import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
 import { formatBonus, formatCardModifiers, getDisplayStats } from '@/lib/card-stats';
@@ -230,12 +231,17 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
       {/* 头部：卡名、卡号、费用、属性 */}
       <div className="flex items-start justify-between gap-2 border-b border-line pb-2">
         <div className="flex-1 min-w-0">
-          <div className="text-hud font-num text-teal-400 flex items-center gap-1.5">
+          <div className="text-hud font-num text-teal-400 flex items-center gap-1.5 flex-wrap">
             <span>{card.cardNumber || cardDef?.cardNumber}</span>
             <span className="text-fg-disabled">/</span>
             <span className="text-fg-muted font-sans">
               {formatCardType(cardDef?.cardType || CardType.ROLE)}
             </span>
+            {isCardApproximatelyImplemented(card.cardNumber || cardDef?.cardNumber, cardDef?.rulesText) && (
+              <span className="px-1 py-px bg-gold-300/15 border border-gold-300/50 text-gold-300 font-sans font-semibold">
+                近似效果
+              </span>
+            )}
           </div>
           <h4 className="text-body-sm font-semibold text-fg truncate mt-0.5">
             {cardDef?.name || card.cardNumber}
