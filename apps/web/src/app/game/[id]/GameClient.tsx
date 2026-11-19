@@ -27,6 +27,7 @@ import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { RuleGuideModal } from '@/components/game/RuleGuideModal';
 import { Button, HudBrackets } from '@/components/ui';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
+import { canRoleAttackOnEnterTurn } from '@/lib/card-stats';
 import { sfx } from '@/lib/audio';
 import {
   CardInstance,
@@ -328,7 +329,7 @@ export default function GameTabletopPage() {
       return false;
     }
     const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
-    const hasRush = Boolean(cardDef?.rulesText?.includes('速攻') || card.grantedKeywords?.includes('速攻'));
+    const hasRush = canRoleAttackOnEnterTurn(card, cardDef);
     return (
       card.turnEnteredZone < gameState.turnNumber ||
       hasRush
@@ -1503,6 +1504,7 @@ export default function GameTabletopPage() {
                 canPassTiming={!!timing?.canPass}
                 passLabel={timing?.passLabel}
                 waitingHint={timing?.waitingHint}
+                pendingTriggers={gameState.pendingTriggers}
                 onPassTiming={handlePassTiming}
               />
 
@@ -1551,10 +1553,7 @@ export default function GameTabletopPage() {
                       inspectedDef?.rulesText?.includes('起动')
                     );
                     const canActivate = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
-                    const hasRush = Boolean(
-                      inspectedDef?.rulesText?.includes('速攻') ||
-                      inspectedCard.grantedKeywords?.includes('速攻')
-                    );
+                    const hasRush = canRoleAttackOnEnterTurn(inspectedCard, inspectedDef);
                     const canAttack =
                       isMyTurn &&
                       gameState.phase === 'MAIN_PHASE' &&
@@ -1659,9 +1658,9 @@ export default function GameTabletopPage() {
             contextMenu.card.zone === 'BATTLEFIELD' &&
             !!contextMenu.card.isReady &&
             (contextMenu.card.turnEnteredZone < gameState.turnNumber ||
-              Boolean(
-                findCardByNumberOrId(contextMenu.card.cardNumber || contextMenu.card.cardId)?.rulesText?.includes('速攻') ||
-                contextMenu.card.grantedKeywords?.includes('速攻')
+              canRoleAttackOnEnterTurn(
+                contextMenu.card,
+                findCardByNumberOrId(contextMenu.card.cardNumber || contextMenu.card.cardId)
               ))
           }
           canBlock={

@@ -5,13 +5,34 @@ import {
 } from '@zhanshuang/shared';
 import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from './zone-manager.js';
+import {
+  ContinuousEffectEngine,
+  addCardModifier,
+  EvaluatedCardStats,
+} from '../effects/continuous-effects.js';
+import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class BattlefieldManager {
-  /** 永久能力带来的 PP 增减 (8.9.1.c)，由卡牌效果引擎提供 */
+  /** 永久能力带来的 PP 增减 (8.9.1.c)，保留扩展钩子以兼容旧调用 */
   private staticPPProvider?: (cardInstanceId: string) => number;
+  private continuousEffects?: ContinuousEffectEngine;
+  private onTriggerEventCallback?: (event: TriggerEvent) => void;
+  private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
 
   setStaticPPProvider(provider: (cardInstanceId: string) => number): void {
     this.staticPPProvider = provider;
+  }
+
+  setContinuousEffectEngine(engine: ContinuousEffectEngine): void {
+    this.continuousEffects = engine;
+  }
+
+  setTriggerEventHandler(
+    handler: (event: TriggerEvent) => void,
+    snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot']
+  ): void {
+    this.onTriggerEventCallback = handler;
+    this.snapshotProvider = snapshotProvider;
   }
 
   constructor(
@@ -78,6 +99,7 @@ export class BattlefieldManager {
       return false; // 卡位已被占用
     }
 
+    const fromZone = this.state.cards[cardInstanceId]?.zone;
     slot.roleCardId = cardInstanceId;
     this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
       slotIndex,
@@ -91,6 +113,15 @@ export class BattlefieldManager {
       cardInstanceId,
       slotIndex,
       isAscension: false,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId,
+      fromZone,
+      toZone: 'BATTLEFIELD',
+      isAscension: false,
+      subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
     });
     return true;
   }
@@ -137,6 +168,7 @@ export class BattlefieldManager {
     if (!ascensionCard) return false;
 
     // 先将升变卡放置到卡位 (移动区域会重置卡牌状态，下方卡牌与装备须在移动之后再挂接)
+    const fromZone = ascensionCard.zone;
     slot.roleCardId = ascensionCardId;
     this.zoneMgr.moveCard(ascensionCardId, 'BATTLEFIELD', {
       slotIndex,
@@ -154,18 +186,24 @@ export class BattlefieldManager {
       targetCard.attachedEquipmentId = undefined;
     }
 
-    // 8.11.4.c 升变对象原本的卡牌状态不继承；作为下方的牌，其临时效果也不再适用 (3.2.6)
+    // 8.11.4.c 升变对象原本的卡牌状态不继承；作为下方的牌，其持续效果也不再适用 (3.2.6)
     targetCard.tempPPBonus = undefined;
     targetCard.tempDPBonus = undefined;
     targetCard.grantedKeywords = undefined;
+    targetCard.modifiers = undefined;
 
-    // 8.11.2.c 执行升变能力：获得升变能力中记述的关键字 (如【速攻】、【突进】)
+    // 8.11.2.c 执行升变能力：通过 CardModifier 获得升变能力记述的关键字 (持续到离场为止，3.1.4)
     const ascensionDef =
       this.cardDb.getCard(ascensionCard.cardNumber) ||
       (ascensionCard.cardId ? this.cardDb.getCard(ascensionCard.cardId) : undefined);
     const grantKeywords = ascensionDef?.ascensionConfig?.grantKeywords ?? [];
     if (grantKeywords.length > 0) {
-      ascensionCard.grantedKeywords = [...new Set([...(ascensionCard.grantedKeywords ?? []), ...grantKeywords])];
+      addCardModifier(this.state, ascensionCard, {
+        keywords: [...grantKeywords],
+        untilTurn: undefined,
+        source: ascensionCard.cardNumber,
+        sourceCardInstanceId: ascensionCardId,
+      });
     }
 
     // 被升变的原卡不再单独计为顶层角色
@@ -182,6 +220,15 @@ export class BattlefieldManager {
       type: 'CARD_ASCENDED',
       parentCardId: ascensionCardId,
       underneathCardIds: stackedCardIds,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId: ascensionCardId,
+      fromZone,
+      toZone: 'BATTLEFIELD',
+      isAscension: true,
+      subjectSnapshot: this.snapshotProvider?.(ascensionCardId),
     });
 
     return true;
@@ -293,51 +340,57 @@ export class BattlefieldManager {
   }
 
   /**
-   * 计算角色当前有效 PP (8.9 持续效果层级计算 Layer 1 + 装备 4.18.2 + 临时加成)
+   * 8.9.1 统一评估战场角色的当前有效情报 (PP / DP / 充能数 / 词条 / 特征)
    */
-  calculateRoleEffectivePP(cardInstanceId: string): number {
-    const card = this.state.cards[cardInstanceId];
-    if (!card) return 0;
+  evaluateRoleStats(cardInstanceId: string): EvaluatedCardStats {
+    if (this.continuousEffects) {
+      const evaluated = this.continuousEffects.evaluateCard(cardInstanceId);
+      const extraStaticPP = this.staticPPProvider?.(cardInstanceId) ?? 0;
+      return {
+        ...evaluated,
+        pp: evaluated.pp + extraStaticPP,
+      };
+    }
 
+    // 兜底：未注入 ContinuousEffectEngine 时按基本值 + 装备 + modifiers 计算
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return { pp: 0, dp: 0, charge: 0, keywords: [], traits: [], abilitiesLost: false };
     const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
     let pp = cardDef?.basePP ?? 0;
-
-    // 4.18.2 装备角色的PP会增加其装备牌的基本PP数值
     if (card.attachedEquipmentId) {
       const eqCard = this.state.cards[card.attachedEquipmentId];
-      if (eqCard) {
-        const eqDef = this.cardDb.getCard(eqCard.cardNumber);
-        pp += eqDef?.basePP ?? 0;
-      }
+      if (eqCard) pp += this.cardDb.getCard(eqCard.cardNumber)?.basePP ?? 0;
     }
-
-    // 临时加成与带期限的持续效果 (8.9.1.c)
-    if (card.tempPPBonus) {
-      pp += card.tempPPBonus;
-    }
+    if (card.tempPPBonus) pp += card.tempPPBonus;
+    let dp = (cardDef?.baseDP ?? 0) + (card.tempDPBonus ?? 0);
     for (const m of card.modifiers ?? []) {
-      pp += m.pp ?? 0;
+      if (m.setPP !== undefined) pp = m.setPP;
+      if (m.pp !== undefined) pp += m.pp;
+      if (m.setDP !== undefined) dp = m.setDP;
+      if (m.dp !== undefined) dp += m.dp;
     }
     pp += this.staticPPProvider?.(cardInstanceId) ?? 0;
+    return {
+      pp,
+      dp: Math.max(0, dp),
+      charge: 1,
+      keywords: [...(card.grantedKeywords ?? [])],
+      traits: [...(cardDef?.traits ?? [])],
+      abilitiesLost: false,
+    };
+  }
 
-    return pp;
+  /**
+   * 计算角色当前有效 PP (8.9 持续效果层级计算 + 装备 4.18.2)
+   */
+  calculateRoleEffectivePP(cardInstanceId: string): number {
+    return this.evaluateRoleStats(cardInstanceId).pp;
   }
 
   /**
    * 计算角色当前有效 DP (2.9 & 8.9.1.c)
    */
   calculateRoleEffectiveDP(cardInstanceId: string): number {
-    const card = this.state.cards[cardInstanceId];
-    if (!card) return 0;
-
-    const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
-    let dp = cardDef?.baseDP ?? 0;
-    if (card.tempDPBonus) {
-      dp += card.tempDPBonus;
-    }
-    for (const m of card.modifiers ?? []) {
-      dp += m.dp ?? 0;
-    }
-    return Math.max(0, dp);
+    return this.evaluateRoleStats(cardInstanceId).dp;
   }
 }

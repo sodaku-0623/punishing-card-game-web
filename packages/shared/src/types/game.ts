@@ -30,16 +30,31 @@ export type ZoneId =
   | 'REMOVED'; // 游戏外/放逐区
 
 /**
- * 带期限的持续效果 (8.2.1.b)：「直到回合结束为止」untilTurn = 当前回合，「直到下个回合结束为止」= 当前回合 + 1。
- * 在该回合的结束阶段 (6.5.1.d) 消失；卡牌移动区域时随之消失 (3.1.4)。
+ * 带期限的持续效果 (8.2.1.b / 8.9)：
+ * - untilTurn 为数字：「直到回合结束为止」= 当前回合，「直到下个回合结束为止」= 当前回合 + 1，在该回合结束阶段 (6.5.1.d) 消失
+ * - untilTurn 为 undefined：持续到卡牌离开当前区域为止 (3.1.4，如升变能力赋予的【速攻】)
+ * 卡牌移动区域时一律消失 (3.1.4)。
  */
 export interface CardModifier {
+  id?: string;
+  /** 8.9.1.e 适用顺序时间戳 (单调递增，随快照保存) */
+  timestamp?: number;
   pp?: number;
+  /** 8.9.1.e / Q&A·6「PP 变为 X」，覆盖此前的 PP 增减 */
+  setPP?: number;
   dp?: number;
+  /** 「DP 变为 X」 */
+  setDP?: number;
   charge?: number; // 10.4【充能+X】
-  keywords?: string[];
-  untilTurn: number;
+  /** 10.3 效果赋予的「充能X」 */
+  setCharge?: number;
+  keywords?: string[]; // 8.9.1.b 获得的词条 (如 速攻、突进、贯通、同命)
+  removeKeywords?: string[]; // 8.9.1.b 失去的词条
+  addTraits?: string[]; // 8.9.1.b 获得的特征 (如 <升格者>)
+  loseAbilities?: boolean; // 8.3.4 失去能力 / 效果无效
+  untilTurn?: number;
   source?: string; // 产生该效果的卡牌编号 (用于展示)
+  sourceCardInstanceId?: string;
 }
 
 export interface CardInstance {
@@ -55,13 +70,20 @@ export interface CardInstance {
   isFaceUp: boolean; // 4.6.2 正面 / 背面
   isReady: boolean; // 4.6.1 竖直 / 横置
   turnEnteredZone: number; // 进入当前区域的回合编号 (用于出场攻击限制 7.2.1.b.1)
-  tempPPBonus?: number; // 临时PP加成
-  tempDPBonus?: number; // 临时DP加成
-  grantedKeywords?: string[]; // 持续存在于该区域期间获得的词条 (如升变获得的【速攻】)
-  modifiers?: CardModifier[]; // 带期限的持续效果 (PP/DP/充能数/词条)
+  /** 8.9.1.e.1 进入当前区域的单调时间戳 (永久能力持续效果适用顺序基准) */
+  enteredZoneTimestamp?: number;
+  /** @deprecated 已迁移至 modifiers (CardModifier)，仅保留用于兼容旧快照只读回退 */
+  tempPPBonus?: number;
+  /** @deprecated 已迁移至 modifiers (CardModifier)，仅保留用于兼容旧快照只读回退 */
+  tempDPBonus?: number;
+  /** @deprecated 已迁移至 modifiers (CardModifier)，仅保留用于兼容旧快照只读回退 */
+  grantedKeywords?: string[];
+  modifiers?: CardModifier[]; // 8.9 持续效果 (PP/DP/充能数/词条/特征/失去能力)
   endOfTurnToGraveyard?: number; // 「该回合结束时，将该牌放置到墓地」的回合编号
   effectivePP?: number; // 服务端计算的当前 PP (含装备、持续效果与永久能力；仅战场卡位上的角色)
   effectiveDP?: number; // 服务端计算的当前 DP
+  effectiveKeywords?: string[]; // 服务端计算的当前有效词条列表 (含固有词条、持续效果与永久能力)
+  effectiveTraits?: string[]; // 服务端计算的当前有效特征列表 (含基本特征与持续效果赋予特征)
   imageUrl?: string; // 卡面插画链接
 }
 
@@ -72,12 +94,61 @@ export interface BattlefieldSlot {
   assistCardId?: string; // 辅助机牌 (2.2.2.c.2)
 }
 
+/**
+ * 8.5 / 8.7 自动能力触发事件类型
+ */
+export type TriggerEventType =
+  | 'CARD_ENTERED_FIELD' // 角色/道具出场 (含升变出场)
+  | 'CARD_LEFT_FIELD' // 卡牌离开战场 (8.7.4.a.2)
+  | 'CARD_DESTROYED' // 卡牌被破坏 (战斗/效果/PP不足)
+  | 'ATTACK_DECLARED' // 7.2.1.d 攻击宣言时
+  | 'FREE_TIMING_STARTED' // 7.3.1.a 自由时点步骤开始时
+  | 'BLOCK_DECLARED' // 7.3.1.c 阻挡宣言时
+  | 'ATTACK_CHARGE_STARTED' // 7.4.1.a 攻击充能开始时
+  | 'DAMAGE_STEP_STARTED' // 7.5.1.a 伤害步骤开始时
+  | 'CHARACTER_BATTLE_STARTED' // 7.6.1.a 角色战斗步骤开始时
+  | 'ATTACK_ENDED' // 7.5.1.d / 7.6.1.f 攻击结束时
+  | 'TURN_STARTED' // 6.2 竖直阶段/回合开始时
+  | 'END_PHASE_TRIGGERS' // 6.5.1.b 回合结束时
+  | 'ORBS_ELIMINATED' // 4.16.2 消除信号球时
+  | 'DAMAGE_DEALT' // 4.10 玩家受到伤害时
+  | 'CARD_CHARGED'; // 4.12 充能翻开卡牌时
+
 export interface PendingTrigger {
   id: string;
   abilityId: string;
+  eventType?: TriggerEventType;
   sourceCardInstanceId: string;
+  sourceCardNumber?: string;
   controllerPlayerId: string;
+  label?: string; // 展示给玩家的触发能力说明 (用于多触发顺序选择与前端展示)
+  oncePerTurn?: boolean; // 10.1 【回合1】限制
   triggerContext: Record<string, unknown>;
+}
+
+/**
+ * 8.7.5 时限触发：效果注册在未来特定时点自动触发的能力 (默认触发一次后移除)
+ */
+export interface DelayedTrigger {
+  id: string;
+  eventType: TriggerEventType;
+  triggerTurn?: number;
+  sourceCardInstanceId: string;
+  sourceCardNumber: string;
+  controllerPlayerId: string;
+  abilityId: string;
+  label: string;
+  once: boolean;
+  payload?: Record<string, unknown>;
+}
+
+/** 对客户端公开的待机自动能力摘要 (不含隐藏信息) */
+export interface PublicPendingTrigger {
+  id: string;
+  sourceCardInstanceId: string;
+  sourceCardNumber: string;
+  controllerPlayerId: string;
+  label: string;
 }
 
 export interface PendingChoice {
@@ -125,10 +196,18 @@ export interface CostModifier {
 
 /**
  * 角色攻击流程中的当前步骤 (第 7 章)
- * FREE_TIMING: 7.3.1.b 轮流使用瞬时；BLOCK: 7.3.1.c 被攻击玩家选择是否阻挡；
- * CHARGE: 7.4 攻击充能；DAMAGE: 7.5 伤害步骤；BATTLE: 7.6 角色战斗步骤；END: 攻击结束
+ * ATTACK_DECLARATION: 7.2.1.d 攻击时触发处理；FREE_TIMING: 7.3.1.b 轮流使用瞬时；
+ * BLOCK: 7.3.1.c 被攻击玩家选择是否阻挡；CHARGE: 7.4 攻击充能；
+ * DAMAGE: 7.5 伤害步骤；BATTLE: 7.6 角色战斗步骤；END: 攻击结束
  */
-export type CombatStep = 'FREE_TIMING' | 'BLOCK' | 'CHARGE' | 'DAMAGE' | 'BATTLE' | 'END';
+export type CombatStep =
+  | 'ATTACK_DECLARATION'
+  | 'FREE_TIMING'
+  | 'BLOCK'
+  | 'CHARGE'
+  | 'DAMAGE'
+  | 'BATTLE'
+  | 'END';
 
 /**
  * 轮流使用【瞬时】的时机 (7.3.1.b 自由时点步骤 / 6.5.1.a 结束阶段)
@@ -174,6 +253,8 @@ export interface GameState {
   
   currentCombat?: CombatState;
   pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
+  delayedTriggers?: DelayedTrigger[]; // 8.7.5 时限触发池
+  effectTimestampSeq?: number; // 8.9.1.e 持续效果时间戳序号 (随快照保存)
   currentPendingChoice?: PendingChoice; // 待决玩家决策
   pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)
   timingWindow?: TimingWindow; // 轮流使用瞬时的时机 (7.3.1.b / 6.5.1.a)
@@ -203,6 +284,7 @@ export interface PublicGameState {
   currentCombat?: CombatState;
   timingWindow?: TimingWindow;
   endPhaseStep?: EndPhaseStep;
+  pendingTriggers?: PublicPendingTrigger[]; // 当前待处理的自动能力列表 (仅公开摘要)
   currentPendingChoice?: PendingChoice;
   opponentPendingChoice?: { playerId: string; prompt: string; effectType?: string };
   winnerId?: string;

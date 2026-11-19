@@ -7,9 +7,13 @@ import {
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { SeedRng } from '../rng/seed-rng.js';
 import { ICardDatabase } from '../database/card-registry.js';
+import { nextEffectTimestamp } from '../effects/continuous-effects.js';
+import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class ZoneManager {
   private onChargeAutoEffectCallback?: (playerId: string, cardInstanceId: string, cardDef: any) => void;
+  private onTriggerEventCallback?: (event: TriggerEvent) => void;
+  private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
 
   constructor(
     private state: GameState,
@@ -20,6 +24,14 @@ export class ZoneManager {
 
   setChargeAutoHandler(handler: (playerId: string, cardInstanceId: string, cardDef: any) => void): void {
     this.onChargeAutoEffectCallback = handler;
+  }
+
+  setTriggerEventHandler(
+    handler: (event: TriggerEvent) => void,
+    snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot']
+  ): void {
+    this.onTriggerEventCallback = handler;
+    this.snapshotProvider = snapshotProvider;
   }
 
   /**
@@ -39,6 +51,10 @@ export class ZoneManager {
 
     const fromZone = card.zone;
     const fromSlot = card.slotIndex;
+    const leftBattlefieldSnapshot =
+      fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD'
+        ? this.snapshotProvider?.(cardInstanceId)
+        : undefined;
 
     // 9.6 战场卡位上的卡牌离开战场：清空卡位，其下方的卡牌 (升变对象、装备等) 因规则放置到墓地
     if (fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD') {
@@ -61,9 +77,17 @@ export class ZoneManager {
       card.endOfTurnToGraveyard = undefined;
       card.underneathCardIds = [];
       card.attachedEquipmentId = undefined;
+      card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
       if (toZone !== 'BATTLEFIELD') card.slotIndex = undefined;
-      // 10.1.2.a 回合次数限制只对同一区域中的同一张卡牌计数
-      delete this.state.players[card.controllerPlayerId]?.turnAbilityUsage[cardInstanceId];
+      // 10.1.2.a 回合次数限制只对同一区域中的同一张卡牌计数 (清理 cardInstanceId 及 cardInstanceId:abilityId)
+      const usage = this.state.players[card.controllerPlayerId]?.turnAbilityUsage;
+      if (usage) {
+        delete usage[cardInstanceId];
+        const prefix = `${cardInstanceId}:`;
+        for (const key of Object.keys(usage)) {
+          if (key.startsWith(prefix)) delete usage[key];
+        }
+      }
     }
 
     if (options?.slotIndex !== undefined) card.slotIndex = options.slotIndex;
@@ -85,6 +109,18 @@ export class ZoneManager {
       isFaceUp: card.isFaceUp,
       isReady: card.isReady,
     });
+
+    // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报)
+    if (fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD') {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_LEFT_FIELD',
+        playerId: card.controllerPlayerId,
+        cardInstanceId,
+        fromZone,
+        toZone,
+        subjectSnapshot: leftBattlefieldSnapshot,
+      });
+    }
   }
 
   /**
@@ -317,10 +353,23 @@ export class ZoneManager {
    * 并处理其充能时自动能力 (10.2.1.b)。返回翻开的卡牌；无法翻开时返回 undefined。
    * 能力可能产生需要玩家决定的选择，调用方须在选择处理完毕后再调用 completeAttackCharge / completeDamageCharge。
    */
-  revealTopForCharge(playerId: string): string | undefined {
+  revealTopForCharge(
+    playerId: string,
+    chargeKind: 'ATTACK' | 'DAMAGE' = 'ATTACK',
+    attackerCardId?: string
+  ): string | undefined {
     if (!this.refreshDeckIfEmpty(playerId)) return undefined;
     const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
     this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
+
+    this.onTriggerEventCallback?.({
+      type: 'CARD_CHARGED',
+      playerId,
+      cardInstanceId: topCard.instanceId,
+      targetCardId: attackerCardId,
+      chargeKind,
+      subjectSnapshot: this.snapshotProvider?.(topCard.instanceId),
+    });
 
     const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
     // 目前只实现了信号球牌的【充能自】，其他卡牌的充能时自动能力随卡牌效果逐步实现
@@ -381,6 +430,12 @@ export class ZoneManager {
       newValue: player.erosionCount,
       reason: 'DAMAGE',
     });
+    this.onTriggerEventCallback?.({
+      type: 'DAMAGE_DEALT',
+      playerId: defenderPlayerId,
+      cardInstanceId,
+      damageAmount: 1,
+    });
   }
 
   /**
@@ -390,7 +445,7 @@ export class ZoneManager {
     const attacker = this.state.cards[attackerCardId];
     if (!attacker) return;
     for (let i = 0; i < chargeCount; i++) {
-      const cardId = this.revealTopForCharge(attacker.controllerPlayerId);
+      const cardId = this.revealTopForCharge(attacker.controllerPlayerId, 'ATTACK', attackerCardId);
       if (!cardId) break;
       this.completeAttackCharge(attackerCardId, cardId, i + 1);
     }
@@ -404,7 +459,7 @@ export class ZoneManager {
     if (!this.state.players[defenderPlayerId] || damageAmount <= 0) return;
     for (let i = 0; i < damageAmount; i++) {
       if (this.isFinished()) return;
-      const cardId = this.revealTopForCharge(defenderPlayerId);
+      const cardId = this.revealTopForCharge(defenderPlayerId, 'DAMAGE');
       // 牌组与墓地都为空时已立即败北 (9.2.2.a)
       if (this.isFinished()) return;
       this.completeDamageCharge(defenderPlayerId, cardId);
@@ -449,6 +504,11 @@ export class ZoneManager {
 
     // 按信号球区中的顺序放置到墓地 (4.16.2.b 剩余信号球顺序不变)
     const sortedIds = positions.map((p) => orbIds[p]!);
+    const orbColors = sortedIds.map((id) => {
+      const card = this.state.cards[id];
+      const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
+      return def?.signalOrb ?? 'UNKNOWN';
+    });
     for (const orbId of sortedIds) {
       this.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
     }
@@ -460,6 +520,12 @@ export class ZoneManager {
       playerId,
       orbCardIds: sortedIds,
       cardDrawnCount: RULE_CONSTANTS.ORB_ELIMINATION_DRAW_COUNT,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'ORBS_ELIMINATED',
+      playerId,
+      orbCardIds: sortedIds,
+      orbColors,
     });
 
     return { success: true };

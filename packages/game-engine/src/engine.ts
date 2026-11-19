@@ -20,8 +20,10 @@ import { ZoneManager } from './zone/zone-manager.js';
 import { BattlefieldManager } from './zone/battlefield-manager.js';
 import { SbaEngine } from './sba/sba-engine.js';
 import { CheckTimingManager } from './priority/check-timing.js';
+import { TriggerManager } from './priority/trigger-system.js';
 import { CombatManager } from './combat/combat-manager.js';
 import { PhaseMachine } from './phases/phase-machine.js';
+import { ContinuousEffectEngine } from './effects/continuous-effects.js';
 import { CardEffectEngine } from './effects/card-effects.js';
 import { advancePendingChoice, enqueuePendingChoice } from './state/pending-choice.js';
 
@@ -50,6 +52,8 @@ export class GameEngine {
 
   zoneMgr!: ZoneManager;
   fieldMgr!: BattlefieldManager;
+  continuousEffects!: ContinuousEffectEngine;
+  triggerMgr!: TriggerManager;
   sbaEngine!: SbaEngine;
   checkTimingMgr!: CheckTimingManager;
   combatMgr!: CombatManager;
@@ -83,8 +87,40 @@ export class GameEngine {
   private initManagers(): void {
     this.zoneMgr = new ZoneManager(this.state, this.rng, this.cardDb, this.events);
     this.fieldMgr = new BattlefieldManager(this.state, this.zoneMgr, this.cardDb, this.events);
+    this.continuousEffects = new ContinuousEffectEngine(
+      this.state,
+      this.cardDb,
+      (playerId, zone) => this.zoneMgr.getCardsInZone(playerId, zone),
+      (playerId) =>
+        this.fieldMgr
+          .getSlots(playerId)
+          .map((s) => (s.roleCardId ? this.state.cards[s.roleCardId] : undefined))
+          .filter((c): c is CardInstance => !!c)
+    );
+    this.fieldMgr.setContinuousEffectEngine(this.continuousEffects);
+
+    this.triggerMgr = new TriggerManager(
+      this.state,
+      this.cardDb,
+      this.zoneMgr,
+      this.fieldMgr,
+      this.continuousEffects,
+      this.events,
+      (ch) => enqueuePendingChoice(this.state, ch)
+    );
+
+    const emitTrigger = (ev: Parameters<TriggerManager['emit']>[0]) => this.triggerMgr.emit(ev);
+    const snapshotCard = (id: string) => this.triggerMgr.snapshotCard(id);
+
+    this.zoneMgr.setTriggerEventHandler(emitTrigger, snapshotCard);
+    this.fieldMgr.setTriggerEventHandler(emitTrigger, snapshotCard);
+
     this.sbaEngine = new SbaEngine(this.state, this.zoneMgr, this.fieldMgr, this.events);
+    this.sbaEngine.setTriggerEventHandler(emitTrigger, snapshotCard);
+
     this.checkTimingMgr = new CheckTimingManager(this.state, this.sbaEngine);
+    this.checkTimingMgr.setTriggerManager(this.triggerMgr);
+
     this.combatMgr = new CombatManager(
       this.state,
       this.zoneMgr,
@@ -93,16 +129,22 @@ export class GameEngine {
       this.checkTimingMgr,
       this.events
     );
+    this.combatMgr.setTriggerEventHandler(emitTrigger, snapshotCard);
+
     this.phaseMachine = new PhaseMachine(
       this.state,
       this.zoneMgr,
       this.checkTimingMgr,
       this.events
     );
+    this.phaseMachine.setTriggerEventHandler(emitTrigger);
+
     this.effectEngine = new CardEffectEngine({
       state: this.state,
       zoneMgr: this.zoneMgr,
       fieldMgr: this.fieldMgr,
+      continuousEffects: this.continuousEffects,
+      triggerMgr: this.triggerMgr,
       cardDb: this.cardDb,
       events: this.events,
       payCost: (p, c) => this.payCost(p, c),
@@ -306,8 +348,6 @@ export class GameEngine {
         );
         success = res.success;
         error = res.error;
-        // 7.2.1.d「攻击时」触发的自动能力
-        if (success) this.effectEngine.presets.onAttackDeclared(action.attackerCardId);
         break;
       }
 
@@ -484,7 +524,7 @@ export class GameEngine {
         const rDef = this.cardDb.getCard(roleCard.cardNumber) || (roleCard.cardId ? this.cardDb.getCard(roleCard.cardId) : undefined);
         if (!rDef || rDef.cardType !== CardType.ROLE) return false;
         return (
-          rDef.traits?.some((t) => t.includes('三头犬小队')) ||
+          this.continuousEffects.hasTrait(roleCard.instanceId, '三头犬小队') ||
           rDef.name.includes('三头犬小队')
         );
       }).length;
@@ -696,7 +736,7 @@ export class GameEngine {
     if (tf.exactName && normalize(targetDef.name) !== normalize(tf.exactName)) {
       return `升变对象必须是《${tf.exactName}》 (8.11.2.a.1)`;
     }
-    if (tf.traits && !tf.traits.every((t) => targetDef.traits?.includes(t))) {
+    if (tf.traits && !tf.traits.every((t) => this.continuousEffects.hasTrait(target.instanceId, t))) {
       return `升变对象必须是<${tf.traits.join('、')}> (8.11.2.a.1)`;
     }
     if (tf.exactCost !== undefined && targetDef.cost !== tf.exactCost) {
@@ -793,6 +833,9 @@ export class GameEngine {
     if (!isTopLevelOnField && !usableFromZone) {
       return { success: false, error: '该卡牌当前所在区域不能发动起动能力 (2.5.2)' };
     }
+    if (isTopLevelOnField && this.continuousEffects.hasLostInherentAbilities(card.instanceId)) {
+      return { success: false, error: `【${cardDef.name}】的能力当前处于无效状态，无法发动起动能力 (8.3.4)` };
+    }
 
     const player = this.state.players[action.playerId]!;
 
@@ -881,6 +924,16 @@ export class GameEngine {
     const validationError = validateChoiceSelection(choice, action.selectedIds);
     if (validationError) {
       return { success: false, error: validationError };
+    }
+
+    // 8.5.1.c/d & 8.7.3.a 玩家自选待机自动能力的发动顺序
+    if (choice.effectType === 'CHOOSE_TRIGGER_ORDER') {
+      this.state.currentPendingChoice = undefined;
+      const res = this.checkTimingMgr.resolveTriggerOrderChoice(action.playerId, action.selectedIds[0]!);
+      if (res.success && !this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
+      return res;
     }
 
     // 6.5.1.c 结束阶段弃牌
@@ -980,16 +1033,27 @@ export class GameEngine {
   }
 
   /**
-   * 将战场角色当前的 PP/DP 写入状态，供前端直接展示 (前端不重复实现装备、持续效果与永久能力的计算)
+   * 将战场角色当前的 PP/DP、关键字与特征写入状态，供前端直接展示
+   * (前端不重复实现装备、8.9 持续效果层与永久能力的计算)
    */
   private refreshDisplayedStats(): void {
     for (const card of Object.values(this.state.cards)) {
       if (card.zone === 'BATTLEFIELD' && this.fieldMgr.isSlotRole(card.controllerPlayerId, card.instanceId)) {
-        card.effectivePP = this.fieldMgr.calculateRoleEffectivePP(card.instanceId);
-        card.effectiveDP = this.fieldMgr.calculateRoleEffectiveDP(card.instanceId);
-      } else if (card.effectivePP !== undefined || card.effectiveDP !== undefined) {
+        const evaluated = this.fieldMgr.evaluateRoleStats(card.instanceId);
+        card.effectivePP = evaluated.pp;
+        card.effectiveDP = evaluated.dp;
+        card.effectiveKeywords = evaluated.keywords;
+        card.effectiveTraits = evaluated.traits;
+      } else if (
+        card.effectivePP !== undefined ||
+        card.effectiveDP !== undefined ||
+        card.effectiveKeywords !== undefined ||
+        card.effectiveTraits !== undefined
+      ) {
         delete card.effectivePP;
         delete card.effectiveDP;
+        delete card.effectiveKeywords;
+        delete card.effectiveTraits;
       }
     }
   }
@@ -999,12 +1063,19 @@ export class GameEngine {
   }
 
   /**
-   * 推进不需要玩家行动的流程 (攻击流程的各步骤、结束阶段的各步骤、无可用瞬时时自动放弃)，
+   * 推进不需要玩家行动的流程 (检查时机、攻击流程各步骤、结束阶段各步骤、无可用瞬时时自动放弃)，
    * 直到需要玩家行动或决策为止
    */
   private continueFlow(): void {
     for (let guard = 0; guard < 1000; guard++) {
       if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return;
+
+      // 8.6.2.e.4 战术牌结算完毕送入墓地后再进入检查时机
+      this.sweepResolvedTactics();
+
+      // 8.5.1 推进检查时机 (SBA + 待机自动能力队列)；若产生待机顺序或效果选择则暂停
+      if (!this.checkTimingMgr.resolveCheckTiming()) return;
+      if ((this.state.status as string) === 'FINISHED' || this.state.currentPendingChoice) return;
 
       const window = this.state.timingWindow;
       if (window) {
@@ -1034,14 +1105,12 @@ export class GameEngine {
   private advanceEndPhase(): boolean {
     switch (this.state.endPhaseStep) {
       case 'INSTANTS':
-        // 6.5.1.b「回合结束时」的触发条件生效后，进入检查时机
+        // 6.5.1.b「回合结束时」的触发条件生效 (含 8.7.5 时限触发)，进入检查时机
         this.state.endPhaseStep = 'TRIGGERS';
-        // 效果赋予的「该回合结束时，将该牌放置到墓地」
-        for (const card of Object.values(this.state.cards)) {
-          if (card.endOfTurnToGraveyard === this.state.turnNumber && card.zone === 'BATTLEFIELD') {
-            this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
-          }
-        }
+        this.triggerMgr.emit({
+          type: 'END_PHASE_TRIGGERS',
+          playerId: this.state.activePlayerId,
+        });
         this.checkTimingMgr.resolveCheckTiming();
         return true;
       case 'TRIGGERS': {
@@ -1119,7 +1188,7 @@ export class GameEngine {
         const role = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
         const roleDef = role ? this.cardDb.getCard(role.cardNumber) : undefined;
         if (!roleDef) return false;
-        return bracket === '《' ? roleDef.name === subject : roleDef.traits.includes(subject);
+        return bracket === '《' ? roleDef.name === subject : this.continuousEffects.hasTrait(role!.instanceId, subject);
       });
       if (!exists) {
         return `该牌只能在我方战场存在${bracket === '《' ? `《${subject}》` : `<${subject}>`}时才能使用`;

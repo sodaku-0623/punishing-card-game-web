@@ -20,6 +20,10 @@ import {
 import HomePage from '@/app/page';
 import LoginPage from '@/app/login/page';
 import GuidePage from '@/app/guide/page';
+import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
+import { TurnFlowView } from '@/components/game/TurnFlowView';
+import { canRoleAttackOnEnterTurn, formatCardModifiers, hasCardKeyword } from '@/lib/card-stats';
+import type { CardInstance, PendingChoice } from '@zhanshuang/shared';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/',
@@ -125,5 +129,87 @@ describe('PGR UI Design System Components', () => {
 
     const guideHtml = renderToString(<GuidePage />);
     expect(guideHtml).toContain('游戏玩法与胜负');
+  });
+
+  it('supports CHOOSE_TRIGGER_ORDER modal, multi-select ordering prompt, pendingTriggers HUD, and 8.9 card-stats helpers', () => {
+    const triggerOrderChoice: PendingChoice = {
+      id: 'ch-trig-1',
+      playerId: 'p1',
+      choiceType: 'SELECT_OPTION',
+      effectType: 'CHOOSE_TRIGGER_ORDER',
+      prompt: '共有 2 项自动能力同时处于待机状态，请选择优先发动哪一项：',
+      minSelections: 1,
+      maxSelections: 1,
+      options: [
+        { id: 't1', label: '【可靠的伙伴 21号&诺克提】《薇拉·瑰丽》出场时', payload: { cardNumber: 'ST03-009', eligible: true } },
+        { id: 't2', label: '【奥兹玛】攻击时 PP-4000', payload: { cardNumber: 'ST02-009', eligible: true } },
+      ],
+    };
+    const triggerHtml = renderToString(
+      <PendingChoiceModal choice={triggerOrderChoice} onConfirm={() => {}} />
+    );
+    expect(triggerHtml).toContain('待机自动能力顺序选择');
+    expect(triggerHtml).toContain('ST03-009');
+    expect(triggerHtml).toContain('优先发动所选能力');
+
+    const multiOrderChoice: PendingChoice = {
+      id: 'ch-multi-1',
+      playerId: 'p1',
+      choiceType: 'SELECT_CARDS',
+      effectType: 'PRESET_ST02_006_ORDER',
+      prompt: '按从下到上的顺序依次点选信号球区的全部 2 张牌',
+      minSelections: 2,
+      maxSelections: 2,
+      options: [
+        { id: 'c1', label: 'ST02-012', payload: { cardNumber: 'ST02-012', eligible: true } },
+        { id: 'c2', label: 'ST02-013', payload: { cardNumber: 'ST02-013', eligible: true } },
+      ],
+    };
+    const multiHtml = renderToString(
+      <PendingChoiceModal choice={multiOrderChoice} onConfirm={() => {}} />
+    );
+    expect(multiHtml).toContain('点击顺序即排列顺序');
+
+    const flowHtml = renderToString(
+      <TurnFlowView
+        currentPhase="MAIN_PHASE"
+        isMyTurn={true}
+        pendingTriggers={[
+          {
+            id: 'trig-1',
+            sourceCardInstanceId: 'card-1',
+            sourceCardNumber: 'ST03-009',
+            controllerPlayerId: 'p1',
+            label: '【可靠的伙伴】薇拉出场触发',
+          },
+        ]}
+      />
+    );
+    expect(flowHtml).toContain('待机自动能力');
+    expect(flowHtml).toContain('【可靠的伙伴】薇拉出场触发');
+
+    const card: CardInstance = {
+      instanceId: 'c-1',
+      cardId: 'c-st01-005',
+      cardNumber: 'ST01-005',
+      ownerPlayerId: 'p1',
+      controllerPlayerId: 'p1',
+      zone: 'BATTLEFIELD',
+      underneathCardIds: [],
+      isFaceUp: true,
+      isReady: true,
+      turnEnteredZone: 1,
+      effectiveKeywords: ['突进'],
+      modifiers: [
+        { pp: 2000, keywords: ['突进'], untilTurn: 1, source: 'BP01-002' },
+        { setPP: 70, addTraits: ['升格者'], untilTurn: undefined, source: 'TEST' },
+      ],
+    };
+    expect(hasCardKeyword(card, null, '突进')).toBe(true);
+    expect(hasCardKeyword(card, null, '速攻')).toBe(false);
+    expect(canRoleAttackOnEnterTurn(card, null)).toBe(true);
+    const modTags = formatCardModifiers(card);
+    expect(modTags.some((t) => t.includes('PP+2000') && t.includes('至T1末'))).toBe(true);
+    expect(modTags.some((t) => t.includes('PP=70') && t.includes('至离场'))).toBe(true);
   });
 });

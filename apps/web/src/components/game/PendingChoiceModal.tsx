@@ -64,12 +64,14 @@ function getAttributeBadge(attr?: string) {
 function RevealedCardItem({
   option,
   isSelected,
+  selectionOrder,
   cardWidth,
   cardHeight,
   onSelect,
 }: {
   option: { id: string; label: string; payload?: unknown };
   isSelected: boolean;
+  selectionOrder?: number;
   cardWidth: number;
   cardHeight: number;
   onSelect: () => void;
@@ -141,8 +143,12 @@ function RevealedCardItem({
         </span>
 
         {isSelected && (
-          <span className="flex items-center bg-ink-950 text-teal-400 px-1">
-            <Check className="w-2.5 h-2.5 stroke-[3]" />
+          <span className="flex items-center gap-0.5 bg-ink-950 text-teal-400 px-1 font-num font-bold">
+            {selectionOrder !== undefined ? (
+              <span>#{selectionOrder}</span>
+            ) : (
+              <Check className="w-2.5 h-2.5 stroke-[3]" />
+            )}
           </span>
         )}
       </div>
@@ -229,7 +235,13 @@ function RevealedCardItem({
             : 'bg-ink-950 text-fg-disabled'
         }`}
       >
-        {isEligible ? (isSelected ? '已选中' : '点击选择') : '不可选'}
+        {isEligible
+          ? isSelected
+            ? selectionOrder !== undefined
+              ? `第 ${selectionOrder} 顺位`
+              : '已选中'
+            : '点击选择'
+          : '不可选'}
       </div>
     </div>
   );
@@ -241,17 +253,18 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
   const isMulti = choice.maxSelections > 1;
 
   const isCardGalleryMode =
-    choice.choiceType === 'SELECT_CARDS' ||
-    choice.effectType === 'SEARCH_TOP_CARDS' ||
-    choice.options.some((o) => {
-      const p = o.payload as CardPayload | undefined;
-      return (
-        p?.eligible !== undefined ||
-        p?.cardNumber !== undefined ||
-        p?.cardType !== undefined ||
-        !!findCardByNumberOrId(o.id)
-      );
-    });
+    choice.effectType !== 'CHOOSE_TRIGGER_ORDER' &&
+    (choice.choiceType === 'SELECT_CARDS' ||
+      choice.effectType === 'SEARCH_TOP_CARDS' ||
+      choice.options.some((o) => {
+        const p = o.payload as CardPayload | undefined;
+        return (
+          p?.eligible !== undefined ||
+          p?.cardNumber !== undefined ||
+          p?.cardType !== undefined ||
+          !!findCardByNumberOrId(o.id)
+        );
+      }));
 
   const eligibleOptions = choice.options.filter((opt) => {
     const p = opt.payload as CardPayload | undefined;
@@ -281,16 +294,19 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
     (!hasEligibleCards && selectedIds.length === 0);
 
   const selectedCardsNames = selectedIds
-    .map((id) => {
+    .map((id, idx) => {
       const opt = choice.options.find((o) => o.id === id);
       const p = opt?.payload as CardPayload | undefined;
       const def = findCardByNumberOrId(p?.cardNumber || id);
-      return p?.name || def?.name || opt?.label || id;
+      const displayName = p?.name || def?.name || opt?.label || id;
+      return isMulti ? `#${idx + 1} ${displayName}` : displayName;
     })
-    .join(', ');
+    .join(isMulti ? ' → ' : ', ');
 
   const modalTitle =
-    choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
+    choice.effectType === 'CHOOSE_TRIGGER_ORDER'
+      ? '待机自动能力顺序选择 (8.5.1)'
+      : choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
       ? '对手公开卡牌查阅'
       : choice.effectType === 'ST01_002_INSPECT_ORB' || choice.effectType === 'INSPECT_REVEALED_CARDS'
       ? '翻开卡牌检视'
@@ -377,7 +393,7 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               <div className="flex items-center justify-between text-caption text-fg-muted px-1 flex-shrink-0">
                 <span className="flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-teal-400" />
-                  <span>点击卡牌完成选取</span>
+                  <span>{isMulti ? '按顺序点击卡牌完成选取（点击顺序即排列顺序）' : '点击卡牌完成选取'}</span>
                 </span>
                 <span className="font-num tabular-nums">
                   {hasEligibleCards ? (
@@ -391,16 +407,21 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               </div>
 
               <div className="flex flex-row items-center justify-center gap-3 w-full flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-2 py-1">
-                {choice.options.map((opt) => (
-                  <RevealedCardItem
-                    key={opt.id}
-                    option={opt}
-                    isSelected={selectedIds.includes(opt.id)}
-                    cardWidth={cardWidth}
-                    cardHeight={cardHeight}
-                    onSelect={() => handleToggle(opt.id)}
-                  />
-                ))}
+                {choice.options.map((opt) => {
+                  const selectedIdx = selectedIds.indexOf(opt.id);
+                  const isSelected = selectedIdx >= 0;
+                  return (
+                    <RevealedCardItem
+                      key={opt.id}
+                      option={opt}
+                      isSelected={isSelected}
+                      selectionOrder={isMulti && isSelected ? selectedIdx + 1 : undefined}
+                      cardWidth={cardWidth}
+                      cardHeight={cardHeight}
+                      onSelect={() => handleToggle(opt.id)}
+                    />
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -411,7 +432,9 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               </div>
 
               {choice.options.map((opt) => {
-                const isSelected = selectedIds.includes(opt.id);
+                const selectedIdx = selectedIds.indexOf(opt.id);
+                const isSelected = selectedIdx >= 0;
+                const payload = opt.payload as CardPayload | undefined;
                 return (
                   <button
                     key={opt.id}
@@ -423,22 +446,33 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                         : 'border-line bg-ink-950 text-fg-secondary hover:border-teal-400/50 hover:bg-ink-850'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
                       <div
-                        className={`w-4 h-4 ${
+                        className={`w-5 h-5 shrink-0 ${
                           isMulti ? '' : 'rounded-full'
-                        } border flex items-center justify-center transition-colors ${
+                        } border flex items-center justify-center font-num text-hud font-bold transition-colors ${
                           isSelected
                             ? 'border-teal-400 bg-teal-400 text-ink-950'
                             : 'border-line-strong bg-ink-900'
                         }`}
                       >
-                        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                        {isSelected ? (
+                          isMulti ? (
+                            selectedIdx + 1
+                          ) : (
+                            <Check className="w-3 h-3 stroke-[3]" />
+                          )
+                        ) : null}
                       </div>
-                      <span className="font-medium">{opt.label}</span>
+                      {choice.effectType === 'CHOOSE_TRIGGER_ORDER' && payload?.cardNumber && (
+                        <span className="px-1.5 py-px bg-ink-900 border border-line text-hud font-num text-teal-400 shrink-0">
+                          {payload.cardNumber}
+                        </span>
+                      )}
+                      <span className="font-medium truncate">{opt.label}</span>
                     </div>
                     <ChevronRight
-                      className={`w-4 h-4 transition-transform duration-fast ${
+                      className={`w-4 h-4 shrink-0 transition-transform duration-fast ${
                         isSelected ? 'text-teal-400 rotate-90' : 'text-fg-disabled'
                       }`}
                     />
@@ -482,7 +516,9 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>
-                  {choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
+                  {choice.effectType === 'CHOOSE_TRIGGER_ORDER'
+                    ? '优先发动所选能力'
+                    : choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
                     ? '已阅确认'
                     : choice.effectType === 'ST01_002_INSPECT_ORB'
                     ? (choice.metadata as any)?.hasOrb

@@ -11,6 +11,8 @@ import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
 import { PresetCardEffects } from './preset-cards.js';
+import { ContinuousEffectEngine, addCardModifier } from './continuous-effects.js';
+import type { TriggerManager } from '../priority/trigger-system.js';
 
 export interface CardEffectContext {
   state: GameState;
@@ -18,6 +20,8 @@ export interface CardEffectContext {
   fieldMgr: BattlefieldManager;
   cardDb: ICardDatabase;
   events: GameEvent[];
+  continuousEffects?: ContinuousEffectEngine;
+  triggerMgr?: TriggerManager;
   payCost: (playerId: string, costToPay: number) => boolean;
   setPendingChoice: (choice?: PendingChoice) => void;
 }
@@ -32,7 +36,9 @@ export class CardEffectEngine {
 
   constructor(private ctx: CardEffectContext) {
     this.presets = new PresetCardEffects(ctx, this);
-    ctx.fieldMgr.setStaticPPProvider((id) => this.presets.staticPP(id));
+    if (ctx.triggerMgr) {
+      this.presets.registerTriggers(ctx.triggerMgr);
+    }
   }
 
   private getOpponentPlayerId(playerId: string): string {
@@ -471,10 +477,8 @@ export class CardEffectEngine {
 
     if (this.presets.handlesEntry(cardNum) || this.presets.isVanillaEntry(cardNum)) {
       if (this.presets.handlesEntry(cardNum)) this.presets.enter(playerId, roleInstanceId, cardDef);
-      this.presets.onRoleEntered(playerId, roleInstanceId);
       return;
     }
-    this.presets.onRoleEntered(playerId, roleInstanceId);
 
     // 1. BP01-001 (露西亚·鸦羽 8费): 【出】消除2同色信号球：公开我方牌组顶5张牌，选择其中任意数量的费用合计为6及以下的<灰鸦小队>角色出场，将剩余的牌按任意顺序放置到牌组底。
     if (cardNum === 'BP01-001' || cardDef.rulesText.includes('费用合计为6及以下的<灰鸦小队>角色出场')) {
@@ -497,8 +501,13 @@ export class CardEffectEngine {
 
     // 2. BP01-002 (露西亚·鸦羽 7费): 【出】消除2同色信号球：直到回合结束为止，该牌获得【突进】及【充能0】
     if (cardNum === 'BP01-002' || cardDef.rulesText.includes('该牌获得【突进】及【充能0】')) {
-      roleCard.grantedKeywords = roleCard.grantedKeywords || [];
-      if (!roleCard.grantedKeywords.includes('突进')) roleCard.grantedKeywords.push('突进');
+      addCardModifier(this.ctx.state, roleCard, {
+        keywords: ['突进'],
+        setCharge: 0,
+        untilTurn: this.ctx.state.turnNumber,
+        source: cardNum,
+        sourceCardInstanceId: roleInstanceId,
+      });
       this.ctx.events.push({
         type: 'ABILITY_ACTIVATED',
         playerId,
@@ -844,7 +853,12 @@ export class CardEffectEngine {
           const directTargetId = selectedIds[1] || (action as any).targetCardId;
           const directTarget = directTargetId ? friendlyRoles.find((r) => r.instanceId === directTargetId) : undefined;
           if (directTarget) {
-            directTarget.tempDPBonus = (directTarget.tempDPBonus || 0) + 1;
+            addCardModifier(this.ctx.state, directTarget, {
+              dp: 1,
+              untilTurn: this.ctx.state.turnNumber,
+              source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
           } else if (friendlyRoles.length > 0) {
             this.ctx.setPendingChoice({
               id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -861,8 +875,8 @@ export class CardEffectEngine {
                     name: def?.name,
                     cardType: def?.cardType,
                     attribute: def?.attribute,
-                    basePP: r.tempPPBonus ? (def?.basePP || 0) + r.tempPPBonus : def?.basePP,
-                    baseDP: r.tempDPBonus ? (def?.baseDP || 0) + r.tempDPBonus : def?.baseDP,
+                    basePP: this.ctx.fieldMgr.calculateRoleEffectivePP(r.instanceId),
+                    baseDP: this.ctx.fieldMgr.calculateRoleEffectiveDP(r.instanceId),
                     slotIndex: r.slotIndex,
                     imageUrl: r.imageUrl || def?.imageUrl,
                     eligible: true,
@@ -875,6 +889,7 @@ export class CardEffectEngine {
                 buffType: 'DP',
                 buffAmount: 1,
                 cardName: choice.metadata?.cardName || choice.metadata?.cardNumber || '信号球',
+                cardNumber: choice.metadata?.cardNumber,
               },
               minSelections: 0,
               maxSelections: 1,
@@ -885,7 +900,12 @@ export class CardEffectEngine {
           const directTargetId = selectedIds[1] || (action as any).targetCardId;
           const directTarget = directTargetId ? friendlyRoles.find((r) => r.instanceId === directTargetId) : undefined;
           if (directTarget) {
-            directTarget.tempPPBonus = (directTarget.tempPPBonus || 0) + 2000;
+            addCardModifier(this.ctx.state, directTarget, {
+              pp: 2000,
+              untilTurn: this.ctx.state.turnNumber,
+              source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
           } else if (friendlyRoles.length > 0) {
             this.ctx.setPendingChoice({
               id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -902,8 +922,8 @@ export class CardEffectEngine {
                     name: def?.name,
                     cardType: def?.cardType,
                     attribute: def?.attribute,
-                    basePP: r.tempPPBonus ? (def?.basePP || 0) + r.tempPPBonus : def?.basePP,
-                    baseDP: r.tempDPBonus ? (def?.baseDP || 0) + r.tempDPBonus : def?.baseDP,
+                    basePP: this.ctx.fieldMgr.calculateRoleEffectivePP(r.instanceId),
+                    baseDP: this.ctx.fieldMgr.calculateRoleEffectiveDP(r.instanceId),
                     slotIndex: r.slotIndex,
                     imageUrl: r.imageUrl || def?.imageUrl,
                     eligible: true,
@@ -916,6 +936,7 @@ export class CardEffectEngine {
                 buffType: 'PP',
                 buffAmount: 2000,
                 cardName: choice.metadata?.cardName || choice.metadata?.cardNumber || '信号球',
+                cardNumber: choice.metadata?.cardNumber,
               },
               minSelections: 0,
               maxSelections: 1,
@@ -924,8 +945,12 @@ export class CardEffectEngine {
         } else if (option === 'opt_grant_sugong_chaoke') {
           const target = this.getFriendlyRoles(playerId).find((r) => this.getCardDef(r)?.name.includes('超刻'));
           if (target) {
-            target.grantedKeywords = target.grantedKeywords || [];
-            if (!target.grantedKeywords.includes('速攻')) target.grantedKeywords.push('速攻');
+            addCardModifier(this.ctx.state, target, {
+              keywords: ['速攻'],
+              untilTurn: this.ctx.state.turnNumber,
+              source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
           }
         } else if (option === 'opt_ready_chaoke') {
           const target = this.getFriendlyRoles(playerId).find((r) => this.getCardDef(r)?.name.includes('超刻'));
@@ -944,11 +969,12 @@ export class CardEffectEngine {
         if (targetId) {
           const role = this.ctx.state.cards[targetId];
           if (role) {
-            if (buffType === 'PP') {
-              role.tempPPBonus = (role.tempPPBonus || 0) + buffAmount;
-            } else {
-              role.tempDPBonus = (role.tempDPBonus || 0) + buffAmount;
-            }
+            addCardModifier(this.ctx.state, role, {
+              ...(buffType === 'PP' ? { pp: buffAmount } : { dp: buffAmount }),
+              untilTurn: this.ctx.state.turnNumber,
+              source: (choice.metadata?.cardNumber as string) || (choice.metadata?.cardName as string) || 'CHARGE_AUTO',
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
             const roleDef = this.getCardDef(role);
             this.ctx.events.push({
               type: 'ABILITY_ACTIVATED',
@@ -965,9 +991,19 @@ export class CardEffectEngine {
       // 角色 PP 增益
       case 'BUFF_ROLE_PP': {
         const bonus = (choice.metadata?.buffPP as number) || 2000;
+        const srcNum = choice.sourceCardInstanceId
+          ? this.ctx.state.cards[choice.sourceCardInstanceId]?.cardNumber
+          : undefined;
         for (const id of selectedIds) {
           const role = this.ctx.state.cards[id];
-          if (role) role.tempPPBonus = (role.tempPPBonus || 0) + bonus;
+          if (role) {
+            addCardModifier(this.ctx.state, role, {
+              pp: bonus,
+              untilTurn: this.ctx.state.turnNumber,
+              source: srcNum,
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
+          }
         }
         if (choice.sourceCardInstanceId) {
           this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -978,9 +1014,19 @@ export class CardEffectEngine {
       // 角色 DP 增益
       case 'BUFF_ROLE_DP': {
         const bonus = (choice.metadata?.buffDP as number) || 1;
+        const srcNum = choice.sourceCardInstanceId
+          ? this.ctx.state.cards[choice.sourceCardInstanceId]?.cardNumber
+          : undefined;
         for (const id of selectedIds) {
           const role = this.ctx.state.cards[id];
-          if (role) role.tempDPBonus = (role.tempDPBonus || 0) + bonus;
+          if (role) {
+            addCardModifier(this.ctx.state, role, {
+              dp: bonus,
+              untilTurn: this.ctx.state.turnNumber,
+              source: srcNum,
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
+          }
         }
         if (choice.sourceCardInstanceId) {
           this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -991,6 +1037,8 @@ export class CardEffectEngine {
       // 角色破坏
       case 'DESTROY_ROLE': {
         for (const id of selectedIds) {
+          const target = this.ctx.state.cards[id];
+          const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
           this.ctx.fieldMgr.handleCardLeaveField(id);
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
           this.ctx.events.push({
@@ -998,6 +1046,17 @@ export class CardEffectEngine {
             cardInstanceId: id,
             reason: 'EFFECT',
           });
+          if (target) {
+            this.ctx.triggerMgr?.emit({
+              type: 'CARD_DESTROYED',
+              playerId: target.controllerPlayerId,
+              cardInstanceId: id,
+              fromZone: 'BATTLEFIELD',
+              toZone: 'GRAVEYARD',
+              destroyReason: 'EFFECT',
+              subjectSnapshot: snapshot,
+            });
+          }
         }
         if (choice.sourceCardInstanceId) {
           this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -1008,18 +1067,36 @@ export class CardEffectEngine {
       // 效果伤害角色
       case 'DEAL_DAMAGE_TO_ROLE': {
         const dmg = (choice.metadata?.damage as number) || 1000;
+        const srcNum = choice.sourceCardInstanceId
+          ? this.ctx.state.cards[choice.sourceCardInstanceId]?.cardNumber
+          : undefined;
         for (const id of selectedIds) {
           const role = this.ctx.state.cards[id];
           if (role) {
-            role.tempPPBonus = (role.tempPPBonus || 0) - dmg;
+            addCardModifier(this.ctx.state, role, {
+              pp: -dmg,
+              untilTurn: this.ctx.state.turnNumber,
+              source: srcNum,
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
             const effectivePP = this.ctx.fieldMgr.calculateRoleEffectivePP(id);
             if (effectivePP <= 0) {
+              const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
               this.ctx.fieldMgr.handleCardLeaveField(id);
               this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
               this.ctx.events.push({
                 type: 'CARD_DESTROYED',
                 cardInstanceId: id,
                 reason: 'PP_ZERO',
+              });
+              this.ctx.triggerMgr?.emit({
+                type: 'CARD_DESTROYED',
+                playerId: role.controllerPlayerId,
+                cardInstanceId: id,
+                fromZone: 'BATTLEFIELD',
+                toZone: 'GRAVEYARD',
+                destroyReason: 'PP_ZERO',
+                subjectSnapshot: snapshot,
               });
             }
           }
@@ -1049,7 +1126,12 @@ export class CardEffectEngine {
         if (targetId) {
           const targetCard = this.ctx.state.cards[targetId];
           if (targetCard) {
-            targetCard.tempPPBonus = (targetCard.tempPPBonus || 0) + 1000;
+            addCardModifier(this.ctx.state, targetCard, {
+              pp: 1000,
+              untilTurn: this.ctx.state.turnNumber,
+              source: 'BUFF_ROLE_CHARGE',
+              sourceCardInstanceId: choice.sourceCardInstanceId,
+            });
             const targetDef = this.getCardDef(targetCard);
             this.ctx.events.push({
               type: 'ABILITY_ACTIVATED',
@@ -1341,7 +1423,12 @@ export class CardEffectEngine {
         const targetRoleId = choice.metadata?.targetRoleId as string;
         const target = this.ctx.state.cards[targetRoleId];
         if (target && count > 0) {
-          target.tempPPBonus = (target.tempPPBonus || 0) + count * 1000;
+          addCardModifier(this.ctx.state, target, {
+            pp: count * 1000,
+            untilTurn: this.ctx.state.turnNumber,
+            source: 'BP01-007',
+            sourceCardInstanceId: choice.sourceCardInstanceId,
+          });
         }
         if (choice.sourceCardInstanceId) {
           this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -1607,12 +1694,32 @@ export class CardEffectEngine {
         const attacker = attackerId ? this.ctx.state.cards[attackerId] : undefined;
         // 10.16.2.2 无法将该角色破坏时，不执行后续效果
         if (!attacker || !this.ctx.fieldMgr.isSlotRole(playerId, attacker.instanceId)) break;
+        const attackerSnapshot = this.ctx.triggerMgr?.snapshotCard(attacker.instanceId);
         this.ctx.zoneMgr.moveCard(attacker.instanceId, 'GRAVEYARD', { isFaceUp: true });
         this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: attacker.instanceId, reason: 'EFFECT' });
+        this.ctx.triggerMgr?.emit({
+          type: 'CARD_DESTROYED',
+          playerId: attacker.controllerPlayerId,
+          cardInstanceId: attacker.instanceId,
+          fromZone: 'BATTLEFIELD',
+          toZone: 'GRAVEYARD',
+          destroyReason: 'EFFECT',
+          subjectSnapshot: attackerSnapshot,
+        });
         const battled = battledId ? this.ctx.state.cards[battledId] : undefined;
         if (battled && this.ctx.fieldMgr.isSlotRole(battled.controllerPlayerId, battled.instanceId)) {
+          const battledSnapshot = this.ctx.triggerMgr?.snapshotCard(battled.instanceId);
           this.ctx.zoneMgr.moveCard(battled.instanceId, 'GRAVEYARD', { isFaceUp: true });
           this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: battled.instanceId, reason: 'EFFECT' });
+          this.ctx.triggerMgr?.emit({
+            type: 'CARD_DESTROYED',
+            playerId: battled.controllerPlayerId,
+            cardInstanceId: battled.instanceId,
+            fromZone: 'BATTLEFIELD',
+            toZone: 'GRAVEYARD',
+            destroyReason: 'EFFECT',
+            subjectSnapshot: battledSnapshot,
+          });
         }
         break;
       }
@@ -1651,10 +1758,18 @@ export class CardEffectEngine {
                 if (equipDef) this.handleEquipmentBuff(targetCard.instanceId, equipDef);
               }
             } else if (choice.prompt.includes('PP-2000')) {
-              targetCard.tempPPBonus = (targetCard.tempPPBonus || 0) - 2000;
+              addCardModifier(this.ctx.state, targetCard, {
+                pp: -2000,
+                untilTurn: this.ctx.state.turnNumber,
+                sourceCardInstanceId: choice.sourceCardInstanceId,
+              });
             } else if (choice.prompt.includes('PP+2000') || choice.prompt.includes('PP+1000')) {
               const val = choice.prompt.includes('PP+2000') ? 2000 : 1000;
-              targetCard.tempPPBonus = (targetCard.tempPPBonus || 0) + val;
+              addCardModifier(this.ctx.state, targetCard, {
+                pp: val,
+                untilTurn: this.ctx.state.turnNumber,
+                sourceCardInstanceId: choice.sourceCardInstanceId,
+              });
             }
           }
         }
@@ -2076,7 +2191,12 @@ export class CardEffectEngine {
     // 3. 自身PP增益
     const selfPPMatch = rules.match(/【出】.*?(?:该牌|自身).*?PP\+(\d+)/);
     if (selfPPMatch && selfPPMatch[1]) {
-      roleCard.tempPPBonus = (roleCard.tempPPBonus || 0) + parseInt(selfPPMatch[1], 10);
+      addCardModifier(this.ctx.state, roleCard, {
+        pp: parseInt(selfPPMatch[1], 10),
+        untilTurn: this.ctx.state.turnNumber,
+        source: roleCard.cardNumber,
+        sourceCardInstanceId: roleCard.instanceId,
+      });
     }
 
     // 4. 全队PP增益
@@ -2084,7 +2204,12 @@ export class CardEffectEngine {
     if (allPPMatch && allPPMatch[1]) {
       const bonus = parseInt(allPPMatch[1], 10);
       for (const r of this.getFriendlyRoles(playerId)) {
-        r.tempPPBonus = (r.tempPPBonus || 0) + bonus;
+        addCardModifier(this.ctx.state, r, {
+          pp: bonus,
+          untilTurn: this.ctx.state.turnNumber,
+          source: roleCard.cardNumber,
+          sourceCardInstanceId: roleCard.instanceId,
+        });
       }
     }
 
