@@ -17,10 +17,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN" className="dark">
-      <body className="min-h-screen bg-background text-foreground antialiased selection:bg-terminalCyan/20 selection:text-terminalCyan">
+      <body className="min-h-screen bg-ink-950 text-fg antialiased selection:bg-crimson-500/30 selection:text-fg">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
 }
-

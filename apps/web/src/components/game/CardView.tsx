@@ -7,6 +7,7 @@ import { Flame, Zap, Moon, Snowflake, Shield, Sparkles } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { sfx } from '@/lib/audio';
 import { getCardThumbnailUrl, getCardFullImageUrl } from '@/lib/card-image';
+import { HudBrackets } from '@/components/ui';
 
 interface CardViewProps {
   card?: CardInstance;
@@ -28,17 +29,17 @@ interface CardViewProps {
 function getElementIcon(attr: ElementAttribute) {
   switch (attr) {
     case ElementAttribute.FIRE:
-      return <span title="火属性"><Flame className="w-3.5 h-3.5 text-red-500" /></span>;
+      return <span title="火属性"><Flame className="w-3.5 h-3.5 text-orb-red" /></span>;
     case ElementAttribute.LIGHTNING:
-      return <span title="雷属性"><Zap className="w-3.5 h-3.5 text-yellow-400" /></span>;
+      return <span title="雷属性"><Zap className="w-3.5 h-3.5 text-orb-yellow" /></span>;
     case ElementAttribute.DARK:
-      return <span title="暗属性"><Moon className="w-3.5 h-3.5 text-purple-400" /></span>;
+      return <span title="暗属性"><Moon className="w-3.5 h-3.5 text-crimson-400" /></span>;
     case ElementAttribute.ICE:
-      return <span title="冰属性"><Snowflake className="w-3.5 h-3.5 text-cyan-300" /></span>;
+      return <span title="冰属性"><Snowflake className="w-3.5 h-3.5 text-teal-400" /></span>;
     case ElementAttribute.PHYSICAL:
-      return <span title="物理属性"><Shield className="w-3.5 h-3.5 text-neutral-300" /></span>;
+      return <span title="物理属性"><Shield className="w-3.5 h-3.5 text-gold-300" /></span>;
     case ElementAttribute.VOID:
-      return <span title="空属性"><Sparkles className="w-3.5 h-3.5 text-cyan-300" /></span>;
+      return <span title="空属性"><Sparkles className="w-3.5 h-3.5 text-steel-300" /></span>;
     default:
       return null;
   }
@@ -62,44 +63,40 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
 }) => {
   const [imageError, setImageError] = useState(false);
 
-  const isCardRested = isRested ?? (card?.isReady === false);
+  const isCardRested = isRested ?? card?.isReady === false;
 
   const longPressHandlers = useLongPress({
     onLongPress: () => {
       if (onLongPress) onLongPress();
     },
-    onClick: onClick,
+    onClick,
   });
 
-  // 尺寸预设
   const sizeClasses = {
-    sm: 'w-20 h-28 text-[10px]',
-    md: 'w-26 sm:w-28 h-36 sm:h-40 text-xs',
-    lg: 'w-36 h-52 text-sm',
-    full: 'w-full h-full text-xs',
+    sm: 'w-20 h-28 text-hud',
+    md: 'w-26 sm:w-28 h-36 sm:h-40 text-caption',
+    lg: 'w-36 h-52 text-body-sm',
+    full: 'w-full h-full text-caption',
   }[size];
 
-  // 背面卡牌 (对手手牌、暗费、牌组)
+  // 卡背渲染 (对手手牌、暗费、牌库)
   if (isFaceDown || !card || !card.isFaceUp) {
     return (
       <div
         onClick={onClick}
         onContextMenu={onContextMenu}
-        style={{
-          ...(isCardRested
-            ? {
-                transform: 'rotate(90deg) scale(0.72)',
-                transformOrigin: 'center center',
-              }
-            : {}),
-        }}
-        className={`${sizeClasses} rounded-lg border border-terminalBorder bg-neutral-900 flex flex-col items-center justify-center relative overflow-hidden shadow-md cursor-pointer transition-all duration-300 ease-out card-interactive ${
+        style={
+          isCardRested
+            ? { transform: 'rotate(90deg) scale(0.74)', transformOrigin: 'center center' }
+            : undefined
+        }
+        className={`${sizeClasses} rounded-card border border-line bg-ink-900 flex flex-col items-center justify-center relative overflow-hidden cursor-pointer card-interactive ${
           isCardRested ? 'card-rested' : ''
         }`}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-neutral-800 to-neutral-950 opacity-90" />
-        <div className="w-10 h-10 rounded-full border border-terminalCyan/30 flex items-center justify-center text-terminalCyan/40 font-mono text-[9px] z-10">
-          PGR
+        <div className="absolute inset-1 border border-crimson-500/25 pointer-events-none" />
+        <div className="h-7 w-7 border border-crimson-500/40 bg-ink-950 flex items-center justify-center font-display text-hud text-crimson-400 z-10">
+          PR
         </div>
       </div>
     );
@@ -115,7 +112,15 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
     sfx.playClick();
   };
 
-  // 1. 如果有官方卡图，优先渲染轻量缩略图并叠加状态徽章
+  // 状态样式严格遵循 design-spec 第 6 节
+  const stateClasses = isSelected
+    ? 'border-fg'
+    : isTargetable
+      ? 'border-crimson-500 shadow-glow-crimson'
+      : isLegalPlay
+        ? 'border-line-strong hover:-translate-y-1 hover:border-teal-400'
+        : 'border-line hover:border-line-strong';
+
   if (!imageError) {
     return (
       <div
@@ -129,25 +134,14 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
         }}
         onMouseLeave={onMouseLeave}
         {...(onLongPress ? longPressHandlers : { onClick })}
-        style={{
-          ...(isCardRested
-            ? {
-                transform: 'rotate(90deg) scale(0.72)',
-                transformOrigin: 'center center',
-              }
-            : {}),
-        }}
-        className={`${sizeClasses} rounded-lg border select-none relative overflow-hidden flex flex-col justify-between cursor-pointer shadow-lg group card-interactive transition-all duration-200 ease-out ${
+        style={
+          isCardRested
+            ? { transform: 'rotate(90deg) scale(0.74)', transformOrigin: 'center center' }
+            : undefined
+        }
+        className={`${sizeClasses} rounded-card border select-none relative overflow-hidden flex flex-col justify-between cursor-pointer group card-interactive bg-ink-950 ${
           isCardRested ? 'card-rested' : ''
-        } ${
-          isSelected
-            ? 'border-cyan-400 ring-2 ring-cyan-400 ring-offset-2 ring-offset-neutral-950 shadow-[0_0_18px_rgba(0,240,255,0.75)]'
-            : isTargetable
-            ? 'border-erosionRed/80 terminal-glow-red animate-pulse'
-            : isLegalPlay
-            ? 'border-terminalCyan/70 shadow-[0_0_12px_rgba(0,240,255,0.35)] hover:-translate-y-1'
-            : 'border-terminalBorder/80 hover:border-terminalCyan/60'
-        }`}
+        } ${stateClasses}`}
       >
         <img
           src={cardImgSrc}
@@ -161,39 +155,43 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
               setImageError(true);
             }
           }}
-          className="absolute inset-0 w-full h-full object-cover rounded-lg pointer-events-none"
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           loading="lazy"
         />
 
-        {/* 横置状态文字标记: 反向旋转-90度以确保在卡面横置时文字依然绝对水平正向展示 */}
+        {/* 可操作：底部 2px teal-400 指示条 (design-spec 6) */}
+        {isLegalPlay && !isTargetable && (
+          <span aria-hidden="true" className="absolute bottom-0 inset-x-0 h-0.5 bg-teal-400 z-20" />
+        )}
+
+        {/* 选中：白色四角 HudBrackets (design-spec 6) */}
+        {isSelected && <HudBrackets color="white" size="sm" className="z-30" />}
+
+        {/* 攻击目标：绯红四角锁定框 */}
+        {isTargetable && <HudBrackets color="crimson" size="sm" className="z-30" />}
+
+        {/* 横置状态标记 */}
         {isCardRested && (
           <div
-            className="absolute top-1 left-1 z-30 px-1 py-0.5 rounded bg-black/90 text-terminalGold text-[9px] font-mono font-bold border border-terminalGold/70 shadow tracking-wider select-none pointer-events-none"
-            style={{
-              transform: 'rotate(-90deg)',
-              transformOrigin: 'center center',
-            }}
+            className="absolute top-1 left-1 z-30 px-1 py-0.5 bg-ink-950/95 text-gold-300 text-hud font-num font-bold border border-gold-300/60 select-none pointer-events-none"
+            style={{ transform: 'rotate(-90deg)', transformOrigin: 'center center' }}
           >
             横置
           </div>
         )}
 
-        {/* 叠层标记 (升变堆叠) */}
+        {/* 升变叠层计数 */}
         {card.underneathCardIds.length > 0 && (
-          <div className="absolute top-1 right-1 z-20 px-1.5 py-0.5 rounded bg-black/85 text-terminalCyan text-[9px] font-mono flex items-center gap-0.5 border border-terminalCyan/40 backdrop-blur-sm">
-            <Sparkles className="w-2.5 h-2.5" /> {card.underneathCardIds.length}
+          <div className="absolute top-1 right-1 z-20 px-1.5 py-0.5 bg-ink-950/90 text-teal-400 text-hud font-num inline-flex items-center gap-0.5 border border-line-strong">
+            <Sparkles className="w-2.5 h-2.5" />
+            <span>{card.underneathCardIds.length}</span>
           </div>
-        )}
-
-        {/* 选中高亮罩层 */}
-        {isSelected && (
-          <div className="absolute inset-0 bg-terminalCyan/15 pointer-events-none z-10" />
         )}
       </div>
     );
   }
 
-  // 2. 备用示意图 HUD 渲染
+  // 无卡图回退方案
   const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
 
   return (
@@ -208,41 +206,35 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
       }}
       onMouseLeave={onMouseLeave}
       {...(onLongPress ? longPressHandlers : { onClick })}
-      style={{
-        ...(isCardRested
-          ? {
-              transform: 'rotate(90deg) scale(0.72)',
-              transformOrigin: 'center center',
-            }
-          : {}),
-      }}
-      className={`${sizeClasses} rounded-lg border select-none relative overflow-hidden flex flex-col justify-between p-2 cursor-pointer shadow-lg card-interactive transition-all duration-300 ease-out ${
+      style={
+        isCardRested
+          ? { transform: 'rotate(90deg) scale(0.74)', transformOrigin: 'center center' }
+          : undefined
+      }
+      className={`${sizeClasses} rounded-card border select-none relative overflow-hidden flex flex-col justify-between p-2 cursor-pointer card-interactive bg-ink-900 ${
         isCardRested ? 'card-rested' : ''
-      } ${
-        isSelected
-          ? 'border-terminalCyan terminal-glow-cyan -translate-y-2 ring-2 ring-terminalCyan'
-          : isTargetable
-          ? 'border-erosionRed/80 terminal-glow-red animate-pulse'
-          : isLegalPlay
-          ? 'border-terminalCyan/70 shadow-[0_0_12px_rgba(0,240,255,0.35)] hover:-translate-y-1.5'
-          : 'border-terminalBorder/80 hover:border-terminalCyan/60 hover:-translate-y-1'
-      }`}
+      } ${stateClasses}`}
     >
+      {isSelected && <HudBrackets color="white" size="sm" className="z-30" />}
+      {isLegalPlay && !isTargetable && (
+        <span aria-hidden="true" className="absolute bottom-0 inset-x-0 h-0.5 bg-teal-400 z-20" />
+      )}
+
       <div className="flex justify-between items-center z-10">
-        <span className="font-mono text-[10px] text-neutral-400 truncate max-w-[70px]">
+        <span className="font-num text-hud text-fg-muted truncate max-w-[70px]">
           {card.cardNumber}
         </span>
         {cardDef?.attribute && getElementIcon(cardDef.attribute)}
       </div>
 
-      <div className="text-center font-bold text-white text-xs truncate z-10">
+      <div className="text-center font-semibold text-fg text-caption truncate z-10">
         {cardDef?.name || card.cardNumber}
       </div>
 
-      <div className="flex justify-between items-center text-[10px] text-neutral-400 font-mono z-10">
-        <span>费:{cardDef?.cost ?? 0}</span>
+      <div className="flex justify-between items-center text-hud font-num z-10">
+        <span className="text-gold-300">{cardDef?.cost ?? 0}费</span>
         {cardDef?.basePP !== undefined && (
-          <span className="text-terminalCyan font-bold">PP:{card.effectivePP ?? cardDef.basePP}</span>
+          <span className="text-fg font-bold">{card.effectivePP ?? cardDef.basePP}</span>
         )}
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { CardInstance, SignalOrbType } from '@zhanshuang/shared';
-import { Layers, Zap, Sparkles } from 'lucide-react';
+import { Layers, Zap } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 
 interface SignalOrbQueueViewProps {
@@ -24,6 +24,8 @@ export interface OrbDisplayInfo {
   name: string;
   index: number;
 }
+
+const ORB_HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y'] as const;
 
 export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(({
   orbs,
@@ -114,7 +116,6 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
     label: string;
     orbIds: [string, string, string];
   } | null>(() => {
-    // 1. 同色三消 (如三颗红球到达3)
     const redOrbs = orbList.filter((o) => o.color === 'RED');
     if (redOrbs.length >= 3) {
       return {
@@ -140,7 +141,6 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
       };
     }
 
-    // 2. 任意连续相邻三消
     if (orbList.length >= 3) {
       return {
         type: 'ADJACENT',
@@ -168,7 +168,6 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
 
     const isAdjacent = idx1 === idx0 + 1 && idx2 === idx1 + 1;
 
-    // 同色判定
     const color0 = orbList.find((o) => o.instanceId === sorted[0])?.color;
     const color1 = orbList.find((o) => o.instanceId === sorted[1])?.color;
     const color2 = orbList.find((o) => o.instanceId === sorted[2])?.color;
@@ -178,7 +177,6 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
     return isAdjacent || isSameColor;
   }, [selectedOrbIds, onEliminate, orbs, orbList]);
 
-  // 获得选中三球的 ID 列表并保证顺序
   const sortedSelectedIds = useMemo<[string, string, string] | null>(() => {
     if (selectedOrbIds.length !== 3) return null;
     const orbIds = orbs.map((o) => o.instanceId);
@@ -191,17 +189,16 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
   function getOrbStyle(color: OrbColorType) {
     switch (color) {
       case 'RED':
-        return 'bg-gradient-to-br from-red-500 via-red-600 to-rose-700 border-red-400 text-white shadow-[0_0_12px_rgba(239,68,68,0.6)]';
+        return 'bg-orb-red border-fg/40 text-fg';
       case 'BLUE':
-        return 'bg-gradient-to-br from-blue-500 via-blue-600 to-cyan-700 border-blue-400 text-white shadow-[0_0_12px_rgba(59,130,246,0.6)]';
+        return 'bg-orb-blue border-fg/40 text-fg';
       case 'YELLOW':
-        return 'bg-gradient-to-br from-amber-400 via-amber-500 to-yellow-600 border-amber-300 text-neutral-950 shadow-[0_0_12px_rgba(245,158,11,0.6)]';
+        return 'bg-orb-yellow border-fg/50 text-ink-950';
       default:
-        return 'bg-neutral-700 border-neutral-400 text-white';
+        return 'bg-ink-700 border-line-strong text-fg';
     }
   }
 
-  // 智能点击：若当前未选满3球且点击的球属于可用三消组合，可一键高亮整组
   function handleOrbClick(clickedId: string) {
     if (onToggleSelectOrb) {
       onToggleSelectOrb(clickedId);
@@ -210,36 +207,36 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
 
   if (compact) {
     return (
-      <div className="flex items-center justify-between px-3 py-1 rounded-xl border border-terminalBorder/60 bg-surface/50 backdrop-blur-sm select-none w-full gap-2 text-xs font-mono h-11 shadow-sm">
-        {/* 左侧：微型标签与计数 */}
+      <div className="flex items-center justify-between px-3 py-1 border border-line bg-ink-900/90 backdrop-blur-sm select-none w-full gap-2 text-caption h-11">
+        {/* 左侧：标签与三色计数 */}
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-neutral-300 font-bold flex items-center gap-1 text-[11px]">
-            <Zap className="w-3.5 h-3.5 text-terminalCyan" />
+          <span className="text-fg-secondary font-semibold flex items-center gap-1 text-hud">
+            <Zap className="w-3.5 h-3.5 text-teal-400" />
             <span>信号球</span>
           </span>
-          <div className="flex items-center gap-1.5 text-[10px]">
+          <div className="flex items-center gap-1.5 text-hud font-num tabular-nums">
             <span
-              className={`px-1 rounded flex items-center gap-0.5 ${
-                counts.red >= 3 ? 'text-red-400 font-bold' : 'text-neutral-400'
+              className={`px-1 flex items-center gap-1 ${
+                counts.red >= 3 ? 'text-orb-red font-bold' : 'text-fg-muted'
               }`}
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              <span className="w-1.5 h-1.5 rounded-full bg-orb-red" />
               <span>{counts.red}</span>
             </span>
             <span
-              className={`px-1 rounded flex items-center gap-0.5 ${
-                counts.blue >= 3 ? 'text-blue-400 font-bold' : 'text-neutral-400'
+              className={`px-1 flex items-center gap-1 ${
+                counts.blue >= 3 ? 'text-orb-blue font-bold' : 'text-fg-muted'
               }`}
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+              <span className="w-1.5 h-1.5 rounded-full bg-orb-blue" />
               <span>{counts.blue}</span>
             </span>
             <span
-              className={`px-1 rounded flex items-center gap-0.5 ${
-                counts.yellow >= 3 ? 'text-amber-400 font-bold' : 'text-neutral-400'
+              className={`px-1 flex items-center gap-1 ${
+                counts.yellow >= 3 ? 'text-orb-yellow font-bold' : 'text-fg-muted'
               }`}
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span className="w-1.5 h-1.5 rounded-full bg-orb-yellow" />
               <span>{counts.yellow}</span>
             </span>
           </div>
@@ -248,39 +245,38 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
         {/* 中间：横向球槽队列 */}
         <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 px-1 flex-1 justify-center">
           {orbList.length === 0 ? (
-            <span className="text-[10px] text-neutral-500 italic">空 (通过战术或出牌充能)</span>
+            <span className="text-hud text-fg-muted">空 · 通过战术或出牌充能</span>
           ) : (
             orbList.map((orb) => {
               const isSelected = selectedOrbIds.includes(orb.instanceId);
               const isPartOfAvailableTriple =
                 availableTriple?.orbIds.includes(orb.instanceId);
 
-              const ORB_HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y'];
               return (
                 <button
                   key={orb.instanceId}
                   type="button"
                   disabled={isOpponent}
                   onClick={() => handleOrbClick(orb.instanceId)}
-                  className={`relative w-7 h-7 rounded-full border transition-all flex items-center justify-center font-bold text-[10px] font-mono select-none shrink-0 ${getOrbStyle(
+                  className={`relative w-7 h-7 rounded-full border transition-all duration-fast flex items-center justify-center font-bold text-hud font-sans select-none shrink-0 cursor-pointer disabled:cursor-default ${getOrbStyle(
                     orb.color
                   )} ${
                     isSelected
-                      ? 'ring-2 ring-white scale-110 shadow-[0_0_10px_rgba(255,255,255,0.85)] z-10'
+                      ? 'ring-2 ring-fg scale-110 z-10'
                       : isPartOfAvailableTriple
-                      ? 'ring-1 ring-terminalGold/70 shadow-[0_0_6px_rgba(255,200,0,0.5)]'
+                      ? 'ring-1 ring-gold-300/80 hover:scale-105'
                       : 'opacity-90 hover:opacity-100 hover:scale-105'
                   }`}
                   title={`${orb.name} (第${orb.index + 1}球${orb.index < ORB_HOTKEYS.length ? `，快捷键: ${ORB_HOTKEYS[orb.index]}` : ''})`}
                 >
                   <span className="leading-none">{orb.label}</span>
                   {!isOpponent && orb.index < ORB_HOTKEYS.length && (
-                    <span className="absolute -bottom-1 -left-1 px-0.5 rounded bg-black/85 border border-cyan-500/50 text-[7px] text-cyan-300 font-mono font-bold leading-tight pointer-events-none shadow">
+                    <span className="absolute -bottom-1 -left-1 px-0.5 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
                       {ORB_HOTKEYS[orb.index]}
                     </span>
                   )}
                   {isPartOfAvailableTriple && !isSelected && (
-                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-yellow-400 border border-neutral-950 animate-ping" />
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-gold-300 border border-ink-950" />
                   )}
                 </button>
               );
@@ -295,7 +291,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
               <button
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
-                className="px-2.5 py-1 rounded-lg bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-black text-[10px] font-mono flex items-center gap-1 shadow animate-bounce active:scale-95"
+                className="pgr-sweep px-2.5 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer"
                 title="消除所选的 3 张信号球并抽 1 张牌 (快捷键: X)"
               >
                 <Layers className="w-3 h-3" />
@@ -306,7 +302,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
               <button
                 type="button"
                 onClick={() => onEliminate(availableTriple.orbIds)}
-                className="px-2.5 py-1 rounded-lg bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-black text-[10px] font-mono flex items-center gap-1 shadow animate-pulse hover:brightness-110 active:scale-95"
+                className="pgr-sweep px-2.5 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer"
                 title="一键发动可用三消组合并抽牌"
               >
                 <Zap className="w-3 h-3 fill-current" />
@@ -320,60 +316,59 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
   }
 
   return (
-    <div className="flex flex-col gap-2 p-3 rounded-2xl border border-terminalBorder/60 bg-surface/40 backdrop-blur-sm select-none w-full">
-      {/* 场地图视觉标题：〔 信号球区 〕 + 球色数量统计 */}
-      <div className="flex justify-between items-center text-xs font-mono">
-        <span className="flex items-center gap-1.5 text-neutral-200 font-bold tracking-wider">
-          <span className="text-terminalCyan font-mono">〔</span>
+    <div className="flex flex-col gap-2 p-3 border border-line bg-ink-900/75 backdrop-blur-sm select-none w-full">
+      {/* 标题 + 球色数量统计 */}
+      <div className="flex justify-between items-center text-caption">
+        <span className="flex items-center gap-1.5 text-fg font-semibold tracking-wider">
+          <span className="text-teal-400 font-num">[</span>
           <span>{isOpponent ? '对方信号球区' : '信号球区'}</span>
-          <span className="text-terminalCyan font-mono">〕</span>
-          <span className="text-[10px] text-neutral-500 font-normal font-sans">
+          <span className="text-teal-400 font-num">]</span>
+          <span className="text-hud text-fg-muted font-display uppercase tracking-widest">
             SIGNAL ORB
           </span>
         </span>
 
-        {/* 信号球存量与三色分类指示 */}
-        <div className="flex items-center gap-2 text-[11px] font-mono">
+        <div className="flex items-center gap-2 text-hud font-num tabular-nums">
           <span
-            className={`px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 border ${
+            className={`px-1.5 py-0.5 flex items-center gap-1 border ${
               counts.red >= 3
-                ? 'bg-red-500/20 border-red-500 text-red-300 font-bold shadow-[0_0_10px_rgba(239,68,68,0.5)] animate-pulse'
-                : 'bg-neutral-900 border-neutral-800 text-neutral-400'
+                ? 'bg-orb-red/20 border-orb-red text-fg font-bold'
+                : 'bg-ink-950 border-line text-fg-muted'
             }`}
             title="红球数量 (达到3球可触发红球三消抽卡与对应红球被动)"
           >
-            <span className="w-2 h-2 rounded-full bg-red-500" />
+            <span className="w-2 h-2 rounded-full bg-orb-red" />
             <span>红 {counts.red}</span>
-            {counts.red >= 3 && <span className="text-[9px] text-yellow-300 font-bold">★可消</span>}
+            {counts.red >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
           <span
-            className={`px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 border ${
+            className={`px-1.5 py-0.5 flex items-center gap-1 border ${
               counts.blue >= 3
-                ? 'bg-blue-500/20 border-blue-500 text-blue-300 font-bold shadow-[0_0_10px_rgba(59,130,246,0.5)] animate-pulse'
-                : 'bg-neutral-900 border-neutral-800 text-neutral-400'
+                ? 'bg-orb-blue/20 border-orb-blue text-fg font-bold'
+                : 'bg-ink-950 border-line text-fg-muted'
             }`}
             title="蓝球数量"
           >
-            <span className="w-2 h-2 rounded-full bg-blue-500" />
+            <span className="w-2 h-2 rounded-full bg-orb-blue" />
             <span>蓝 {counts.blue}</span>
-            {counts.blue >= 3 && <span className="text-[9px] text-yellow-300 font-bold">★可消</span>}
+            {counts.blue >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
           <span
-            className={`px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 border ${
+            className={`px-1.5 py-0.5 flex items-center gap-1 border ${
               counts.yellow >= 3
-                ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold shadow-[0_0_10px_rgba(245,158,11,0.5)] animate-pulse'
-                : 'bg-neutral-900 border-neutral-800 text-neutral-400'
+                ? 'bg-orb-yellow/20 border-orb-yellow text-fg font-bold'
+                : 'bg-ink-950 border-line text-fg-muted'
             }`}
             title="黄球数量"
           >
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="w-2 h-2 rounded-full bg-orb-yellow" />
             <span>黄 {counts.yellow}</span>
-            {counts.yellow >= 3 && <span className="text-[9px] text-yellow-300 font-bold">★可消</span>}
+            {counts.yellow >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
-          <span className="text-neutral-500 text-[10px]">
+          <span className="text-fg-muted">
             共 {orbs.length} 球
           </span>
         </div>
@@ -382,7 +377,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
       {/* 信号球物理队列与操作条 */}
       <div className="flex items-center gap-2 overflow-x-auto py-1 min-h-[50px] px-1">
         {orbList.length === 0 ? (
-          <span className="text-[11px] text-neutral-500 font-mono italic">
+          <span className="text-caption text-fg-muted">
             暂无信号球（通过战斗充能或战术卡牌获得）
           </span>
         ) : (
@@ -391,55 +386,52 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
             const isPartOfAvailableTriple =
               availableTriple?.orbIds.includes(orb.instanceId);
 
-            const ORB_HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y'];
             return (
               <button
                 key={orb.instanceId}
                 type="button"
                 disabled={isOpponent}
                 onClick={() => handleOrbClick(orb.instanceId)}
-                className={`relative w-9 h-9 rounded-full border-2 transition-all duration-200 flex flex-col items-center justify-center font-bold text-xs font-mono select-none shrink-0 ${getOrbStyle(
+                className={`relative w-9 h-9 rounded-full border-2 transition-all duration-fast flex flex-col items-center justify-center font-bold text-caption font-sans select-none shrink-0 cursor-pointer disabled:cursor-default ${getOrbStyle(
                   orb.color
                 )} ${
                   isSelected
-                    ? 'ring-2 ring-white scale-115 -translate-y-1.5 shadow-[0_0_15px_rgba(255,255,255,0.85)] z-10'
+                    ? 'ring-2 ring-fg scale-110 -translate-y-1 z-10'
                     : isPartOfAvailableTriple
-                    ? 'hover:scale-110 ring-1 ring-terminalGold/60 shadow-[0_0_8px_rgba(255,200,0,0.5)]'
-                    : 'hover:scale-110 opacity-90 hover:opacity-100'
+                    ? 'hover:scale-105 ring-1 ring-gold-300/80'
+                    : 'hover:scale-105 opacity-90 hover:opacity-100'
                 }`}
                 title={`第 ${orb.index + 1} 球: ${orb.name} (${orb.cardNumber})${orb.index < ORB_HOTKEYS.length ? `，快捷键: ${ORB_HOTKEYS[orb.index]}` : ''}`}
               >
-                <span className="text-[11px] font-black leading-none">
+                <span className="text-hud font-bold leading-none">
                   {orb.label}
                 </span>
-                <span className="text-[8px] opacity-80 leading-none mt-0.5">
+                <span className="text-hud font-num opacity-80 leading-none scale-75">
                   {orb.index + 1}
                 </span>
 
                 {!isOpponent && orb.index < ORB_HOTKEYS.length && (
-                  <span className="absolute -bottom-1 -left-1 px-1 py-px rounded bg-black/85 border border-cyan-500/50 text-[8px] text-cyan-300 font-mono font-bold leading-tight pointer-events-none shadow">
+                  <span className="absolute -bottom-1 -left-1 px-1 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
                     {ORB_HOTKEYS[orb.index]}
                   </span>
                 )}
 
-                {/* 可三消发光小标记 */}
                 {isPartOfAvailableTriple && !isSelected && (
-                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-yellow-400 border border-neutral-950 flex items-center justify-center animate-ping" />
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gold-300 border border-ink-950" />
                 )}
               </button>
             );
           })
         )}
 
-        {/* ================= 操作按钮区 (智能一键三消与多选三消) ================= */}
+        {/* 操作按钮区 */}
         {!isOpponent && onEliminate && (
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            {/* 1. 已选中 3 球时的消除按钮 */}
             {canEliminateSelected && sortedSelectedIds && (
               <button
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
-                className="px-3.5 py-1.5 rounded-xl bg-terminalGold hover:bg-yellow-400 text-neutral-950 font-bold text-xs font-mono flex items-center gap-1.5 shadow-[0_0_12px_rgba(255,200,0,0.6)] animate-bounce transition-all active:scale-95"
+                className="pgr-sweep px-3.5 py-1.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-caption font-sans flex items-center gap-1.5 transition-all duration-fast active:scale-95 cursor-pointer"
                 title="消除所选的 3 张信号球并抽 1 张牌 (快捷键: X)"
               >
                 <Layers className="w-3.5 h-3.5" />
@@ -447,24 +439,23 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
               </button>
             )}
 
-            {/* 2. 未手动选满 3 球时，若存在可用三消组合 (如红球达到3)，提供一键快速三消 */}
             {!canEliminateSelected && availableTriple && (
               <button
                 type="button"
                 onClick={() => onEliminate(availableTriple.orbIds)}
-                className={`px-3 py-1.5 rounded-xl font-black text-xs font-mono flex items-center gap-1.5 shadow-lg transition-all active:scale-95 hover:scale-105 cursor-pointer ${
+                className={`pgr-sweep px-3 py-1.5 clip-corner-sm font-semibold text-caption font-sans flex items-center gap-1.5 transition-all duration-fast active:scale-95 cursor-pointer border ${
                   availableTriple.type === 'RED'
-                    ? 'bg-erosionRed hover:bg-red-500 text-white shadow-[0_0_14px_rgba(255,50,80,0.6)] border border-red-300/50 animate-pulse'
+                    ? 'bg-crimson-500 hover:bg-crimson-400 text-fg border-fg/30'
                     : availableTriple.type === 'BLUE'
-                    ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_14px_rgba(59,130,246,0.6)] border border-blue-300/50 animate-pulse'
+                    ? 'bg-orb-blue hover:bg-orb-blue/90 text-fg border-fg/30'
                     : availableTriple.type === 'YELLOW'
-                    ? 'bg-amber-500 hover:bg-amber-400 text-neutral-950 shadow-[0_0_14px_rgba(245,158,11,0.6)] border border-amber-200/50 animate-pulse'
-                    : 'bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 shadow-[0_0_14px_rgba(0,240,255,0.6)]'
+                    ? 'bg-orb-yellow hover:bg-orb-yellow/90 text-ink-950 border-ink-950/20'
+                    : 'bg-teal-400 hover:bg-teal-400/90 text-ink-950 border-ink-950/20'
                 }`}
                 title={`一键触发【${availableTriple.label}】并抽 1 张牌 (6.4.1.b.5)`}
               >
                 <Zap className="w-3.5 h-3.5 fill-current" />
-                <span>⚡ {availableTriple.label} (抽1张牌)</span>
+                <span>{availableTriple.label}（抽 1 张牌）</span>
               </button>
             )}
           </div>

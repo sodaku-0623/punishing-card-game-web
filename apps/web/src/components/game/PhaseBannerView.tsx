@@ -3,7 +3,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { GamePhase } from '@zhanshuang/shared';
 import { sfx } from '@/lib/audio';
-import { Swords, Zap, RefreshCw, Layers, ShieldAlert, Flag } from 'lucide-react';
 
 interface PhaseBannerViewProps {
   phase: GamePhase;
@@ -15,11 +14,14 @@ interface PhaseBannerViewProps {
 interface BannerData {
   id: string;
   title: string;
-  subtitle: string;
-  theme: 'cyan' | 'red' | 'gold' | 'purple';
-  icon: React.ReactNode;
+  en: string;
+  accent: 'teal' | 'crimson' | 'gold';
 }
 
+/**
+ * 战双风格阶段切换横幅 (docs/design/design-spec.md 6. 对局界面)
+ * 白色 text-banner，左右各一段细线和英文副标题，水平滑入 -> 停留 -> 滑出，总时长 <= 1.2s，无霓虹 text-shadow
+ */
 export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
   phase,
   turnNumber,
@@ -33,7 +35,6 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
   const bannerTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    // 首次载入初始化，不触发刷屏动画
     if (prevPhaseRef.current === null && prevTurnRef.current === null) {
       prevPhaseRef.current = phase;
       prevTurnRef.current = turnNumber;
@@ -52,47 +53,42 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
       const isMyTurn = activePlayerId === myUserId;
       nextBanner = {
         id: `turn-${turnNumber}-${activePlayerId}-${Date.now()}`,
-        title: isMyTurn ? 'YOUR TURN' : "OPPONENT'S TURN",
-        subtitle: isMyTurn ? '我方指挥回合 // COMMAND READY' : '对方回合 // DEFENSIVE STANCE',
-        theme: isMyTurn ? 'gold' : 'purple',
-        icon: isMyTurn ? <Zap className="w-12 h-12 text-terminalGold" /> : <ShieldAlert className="w-12 h-12 text-purple-400" />,
+        title: isMyTurn ? '我方回合' : '对手回合',
+        en: isMyTurn ? `TURN ${turnNumber} // YOUR TURN` : `TURN ${turnNumber} // OPPONENT TURN`,
+        accent: isMyTurn ? 'teal' : 'crimson',
       };
     } else if (isNewPhase) {
       switch (phase) {
         case 'MULLIGAN_PHASE':
           nextBanner = {
             id: `phase-mulligan-${Date.now()}`,
-            title: 'MULLIGAN PHASE',
-            subtitle: '开局手牌调度 // TACTICAL RESHUFFLE',
-            theme: 'cyan',
-            icon: <RefreshCw className="w-12 h-12 text-terminalCyan animate-spin-slow" />,
+            title: '手牌调度',
+            en: 'MULLIGAN PHASE',
+            accent: 'teal',
           };
           break;
         case 'STAND_PHASE':
           nextBanner = {
             id: `phase-stand-${Date.now()}`,
-            title: 'STAND PHASE',
-            subtitle: '竖直重置阶段 // SYSTEMS RECHARGED',
-            theme: 'cyan',
-            icon: <RefreshCw className="w-12 h-12 text-terminalCyan" />,
+            title: '竖直阶段',
+            en: 'STAND PHASE',
+            accent: 'teal',
           };
           break;
         case 'DRAW_CHARGE_PHASE':
           nextBanner = {
             id: `phase-draw-${Date.now()}`,
-            title: 'DRAW & CHARGE',
-            subtitle: '抽牌充能阶段 // TACTICAL DRAW',
-            theme: 'gold',
-            icon: <Layers className="w-12 h-12 text-terminalGold" />,
+            title: '抽牌充能',
+            en: 'DRAW & CHARGE PHASE',
+            accent: 'gold',
           };
           break;
         case 'MAIN_PHASE':
           nextBanner = {
             id: `phase-main-${Date.now()}`,
-            title: 'MAIN PHASE',
-            subtitle: '主要行动阶段 // MAIN TACTICAL PHASE',
-            theme: 'cyan',
-            icon: <Zap className="w-12 h-12 text-terminalCyan" />,
+            title: '主要阶段',
+            en: 'MAIN PHASE',
+            accent: 'teal',
           };
           break;
         case 'COMBAT_ATTACK_DECLARATION':
@@ -100,7 +96,6 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
         case 'COMBAT_CHARGE':
         case 'COMBAT_DAMAGE':
         case 'COMBAT_BATTLE':
-          // 仅在首次切入战斗时触发 BATTLE PHASE 横幅
           if (
             prevPhaseRef.current !== 'COMBAT_ATTACK_DECLARATION' &&
             prevPhaseRef.current !== 'COMBAT_FREE_TIMING' &&
@@ -110,20 +105,18 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
           ) {
             nextBanner = {
               id: `phase-battle-${Date.now()}`,
-              title: 'BATTLE PHASE',
-              subtitle: '战斗阶段 // COMBAT ENGAGED',
-              theme: 'red',
-              icon: <Swords className="w-12 h-12 text-erosionRed" />,
+              title: '战斗阶段',
+              en: 'BATTLE PHASE',
+              accent: 'crimson',
             };
           }
           break;
         case 'END_PHASE':
           nextBanner = {
             id: `phase-end-${Date.now()}`,
-            title: 'END PHASE',
-            subtitle: '结束阶段 // TURN COMPLETED',
-            theme: 'cyan',
-            icon: <Flag className="w-12 h-12 text-neutral-300" />,
+            title: '结束阶段',
+            en: 'END PHASE',
+            accent: 'crimson',
           };
           break;
         default:
@@ -139,16 +132,15 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
       if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
       setCurrentBanner(nextBanner);
 
-      if (nextBanner.theme === 'red') {
+      if (nextBanner.accent === 'crimson') {
         sfx.playAttack();
       } else {
         sfx.playPhaseChange();
       }
 
-      // 横幅动画持续 1.2s，在 1.25s 后自动卸载
       bannerTimerRef.current = setTimeout(() => {
         setCurrentBanner(null);
-      }, 1250);
+      }, 1180);
     }
 
     return () => {
@@ -158,43 +150,49 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
 
   if (!currentBanner) return null;
 
-  const themeClasses = {
-    cyan: 'border-terminalCyan/40 text-terminalCyan',
-    red: 'border-erosionRed/60 text-erosionRed phase-banner-red',
-    gold: 'border-terminalGold/50 text-terminalGold phase-banner-gold',
-    purple: 'border-purple-500/50 text-purple-400',
-  }[currentBanner.theme];
+  const lineColor =
+    currentBanner.accent === 'crimson'
+      ? 'bg-crimson-500'
+      : currentBanner.accent === 'gold'
+        ? 'bg-gold-300'
+        : 'bg-teal-400';
 
-  const barBgClasses = {
-    cyan: 'from-cyan-950/80 via-black/90 to-cyan-950/80',
-    red: 'from-red-950/85 via-black/95 to-red-950/85',
-    gold: 'from-amber-950/85 via-black/95 to-amber-950/85',
-    purple: 'from-purple-950/85 via-black/95 to-purple-950/85',
-  }[currentBanner.theme];
+  const subColor =
+    currentBanner.accent === 'crimson'
+      ? 'text-crimson-400'
+      : currentBanner.accent === 'gold'
+        ? 'text-gold-300'
+        : 'text-teal-400';
 
   return (
     <div
       key={currentBanner.id}
-      className={`phase-banner ${themeClasses} flex items-center justify-center pointer-events-none select-none`}
+      aria-live="polite"
+      className="fixed inset-x-0 top-1/2 -translate-y-1/2 z-banner pointer-events-none select-none flex justify-center"
     >
-      {/* 赛博宽屏能量光束背景与切线 */}
-      <div className={`relative px-16 py-4 flex items-center gap-6 bg-gradient-to-r ${barBgClasses} border-y-2 backdrop-blur-lg shadow-2xl`}>
-        <div className="absolute inset-x-0 -top-1 h-0.5 bg-gradient-to-r from-transparent via-white/80 to-transparent" />
-        <div className="absolute inset-x-0 -bottom-1 h-0.5 bg-gradient-to-r from-transparent via-white/80 to-transparent" />
+      <div className="pgr-phase-banner relative w-full max-w-3xl bg-ink-950/92 backdrop-blur-md border-y border-line-strong py-5 px-8 overflow-hidden shadow-overlay">
+        {/* 一次性高速扫光线 */}
+        <div
+          aria-hidden="true"
+          className="pgr-phase-scan pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-fg/12 to-transparent"
+        />
 
-        {/* 阶段大图标 */}
-        <div className="flex-shrink-0 animate-pulse">
-          {currentBanner.icon}
-        </div>
+        <div className="relative z-10 flex flex-col items-center gap-2">
+          <div className="flex items-center justify-center gap-4 w-full">
+            <span aria-hidden="true" className={`h-0.5 flex-1 max-w-28 ${lineColor}`} />
+            <span className="text-display sm:text-banner font-bold tracking-widest text-fg whitespace-nowrap">
+              {currentBanner.title}
+            </span>
+            <span aria-hidden="true" className={`h-0.5 flex-1 max-w-28 ${lineColor}`} />
+          </div>
 
-        {/* 阶段名称与副标题 */}
-        <div className="flex flex-col items-start tracking-wider font-mono">
-          <span className="text-4xl sm:text-5xl lg:text-6xl font-black italic tracking-widest drop-shadow-md">
-            {currentBanner.title}
-          </span>
-          <span className="text-xs sm:text-sm font-bold tracking-widest text-neutral-300 opacity-90 -mt-1 font-mono uppercase">
-            {currentBanner.subtitle}
-          </span>
+          <div className="flex items-center gap-3">
+            <span aria-hidden="true" className="h-px w-8 bg-line-strong" />
+            <span className={`font-display text-hud uppercase font-semibold ${subColor}`}>
+              {currentBanner.en}
+            </span>
+            <span aria-hidden="true" className="h-px w-8 bg-line-strong" />
+          </div>
         </div>
       </div>
     </div>

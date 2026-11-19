@@ -124,22 +124,6 @@ const config: Config = {
   theme: {
     extend: {
       ...designTokens,
-      colors: {
-        ...designTokens.colors,
-        // 旧 Token：迁移完成后删除 (见 design-spec.md 第 10 节)
-        background: '#090c10',
-        surface: '#111620',
-        surfaceHover: '#182030',
-        terminalCyan: '#00f0ff',
-        terminalGold: '#ffb703',
-        erosionRed: '#ff2a5f',
-        terminalBorder: '#1e293b',
-      },
-      fontFamily: {
-        ...designTokens.fontFamily,
-        // 旧 Token：迁移时数字改用 font-num，正文去掉 font-mono
-        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
-      },
       // 组件中使用到的非默认尺寸 (Tailwind v3 默认不含 w-26 / h-22 / rounded-xs / shadow-xs)
       spacing: {
         22: '5.5rem',

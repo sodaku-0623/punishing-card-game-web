@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useRouteId } from '@/lib/route-id';
 import {
   Play,
@@ -10,21 +9,21 @@ import {
   SkipBack,
   SkipForward,
   RotateCcw,
-  FastForward,
-  Clock,
-  ChevronRight,
-  Shield,
-  Swords,
-  Trophy,
-  History,
   Activity,
   Terminal,
   Info,
-  Layers,
-  Sparkles,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
-import { ALL_OFFICIAL_CARDS, findCardByNumberOrId } from '@/lib/cards-data';
 import { apiUrl } from '@/lib/api';
+import {
+  AppShell,
+  Button,
+  Badge,
+  Panel,
+  HudBrackets,
+  HudCounter,
+} from '@/components/ui';
 
 interface ReplayEvent {
   seq: number;
@@ -58,16 +57,14 @@ interface ReplayData {
 }
 
 export default function GameReplayPage() {
-  const router = useRouter();
   const gameId = useRouteId();
 
   const [replayData, setReplayData] = useState<ReplayData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 回放播放器控制状态
   const [currentStep, setCurrentStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playSpeed, setPlaySpeed] = useState<number>(1); // 0.5, 1, 2, 4
+  const [playSpeed, setPlaySpeed] = useState<number>(1);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -82,7 +79,6 @@ export default function GameReplayPage() {
           }
         }
       } catch {
-        // 离线开发模拟真实战局回放流
         const simulatedEvents: ReplayEvent[] = [
           { seq: 1, eventType: 'GAME_STARTED', payload: { turnPlayerId: 'alice', roundNumber: 1 }, timestamp: new Date().toISOString() },
           { seq: 2, eventType: 'PHASE_CHANGED', payload: { phase: 'DRAW_PHASE', round: 1 }, timestamp: new Date().toISOString() },
@@ -130,7 +126,6 @@ export default function GameReplayPage() {
 
   const totalSteps = replayData?.events?.length || 0;
 
-  // 自动播放时钟
   useEffect(() => {
     if (isPlaying) {
       const intervalMs = Math.max(250, 1000 / playSpeed);
@@ -143,13 +138,19 @@ export default function GameReplayPage() {
           return prev + 1;
         });
       }, intervalMs);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
+    } else if (timerRef.current) {
+      clearInterval(timerRef.current);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [isPlaying, playSpeed, totalSteps]);
+
+  const currentEvent = replayData?.events?.[currentStep];
+  const historyEvents = useMemo(
+    () => (replayData?.events || []).slice(0, currentStep + 1),
+    [replayData, currentStep],
+  );
 
   const handleStepForward = () => {
     setIsPlaying(false);
@@ -166,240 +167,255 @@ export default function GameReplayPage() {
     setCurrentStep(0);
   };
 
-  // 提取当前步骤之前的战况快照
-  const currentEvent = replayData?.events?.[currentStep];
-  const historyEvents = useMemo(() => {
-    return (replayData?.events || []).slice(0, currentStep + 1);
-  }, [replayData, currentStep]);
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-background text-neutral-200 flex flex-col items-center justify-center p-6 text-center">
-        <Activity className="w-12 h-12 text-terminalCyan animate-spin mb-4" />
-        <h3 className="text-lg font-bold text-white">正在加载确定性回放流...</h3>
-        <p className="text-xs text-neutral-500 font-mono mt-1">
+      <AppShell className="flex flex-col items-center justify-center py-24 text-center">
+        <Activity className="w-8 h-8 text-crimson-500 animate-spin mb-4" />
+        <h2 className="text-title-sm font-semibold text-fg">正在加载确定性回放流...</h2>
+        <p className="text-caption text-fg-muted mt-1">
           读取 RNG Seed 与原子事件审计日志
         </p>
-      </div>
+      </AppShell>
     );
   }
 
   if (!replayData) {
     return (
-      <div className="min-h-screen bg-background text-neutral-200 flex flex-col items-center justify-center p-6 text-center">
-        <Info className="w-16 h-16 text-erosionRed mb-4" />
-        <h2 className="text-2xl font-bold text-white mb-2">未找到回放档案</h2>
-        <p className="text-sm text-neutral-400 max-w-md mb-6">
-          无法检视对局 ID 为 <code className="text-terminalCyan font-mono">{gameId}</code> 的录像。
+      <AppShell className="flex flex-col items-center justify-center py-24 text-center">
+        <Info className="w-12 h-12 text-crimson-400 mb-4" />
+        <h2 className="text-title font-bold text-fg mb-2">未找到回放档案</h2>
+        <p className="text-body-sm text-fg-secondary max-w-md mb-6">
+          无法检视对局 ID 为 <code className="font-num text-teal-400">{gameId}</code> 的录像。
         </p>
-        <Link
-          href="/history"
-          className="px-5 py-2.5 rounded-lg border border-terminalCyan bg-terminalCyan/10 text-terminalCyan font-medium hover:bg-terminalCyan/20 transition-all text-xs font-mono"
-        >
-          返回战局记录列表
+        <Link href="/history">
+          <Button variant="secondary" size="md">
+            <ArrowLeft className="w-4 h-4" />
+            <span>返回战局记录列表</span>
+          </Button>
         </Link>
-      </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background text-neutral-200 p-4 md:p-8 flex flex-col items-center">
-      {/* 顶部状态与导航 */}
-      <header className="w-full max-w-7xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-terminalBorder/60 pb-4 mb-6">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-mono text-neutral-400 mb-1">
-            <Link href="/" className="hover:text-terminalCyan transition-colors">
-              终端首页
+    <AppShell wide className="space-y-6">
+      {/* 顶栏 */}
+      <header className="border-b border-line pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 pgr-enter">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-caption text-fg-muted">
+            <Link href="/history" className="hover:text-fg transition-colors inline-flex items-center gap-1">
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>返回战局归档</span>
             </Link>
-            <ChevronRight className="w-3.5 h-3.5" />
-            <Link href="/history" className="hover:text-terminalCyan transition-colors">
-              战局归档
-            </Link>
-            <ChevronRight className="w-3.5 h-3.5" />
-            <span className="text-terminalCyan font-bold">{replayData.game.id}</span>
+            <span>/</span>
+            <span className="font-num text-fg-secondary">{replayData.game.id}</span>
           </div>
-          <h1 className="text-2xl font-black tracking-wide text-white flex items-center gap-3">
-            <History className="w-7 h-7 text-terminalCyan" />
-            确定性战局全景回放器
-            <span className="text-xs px-2.5 py-0.5 rounded-full border border-terminalCyan/40 bg-terminalCyan/10 text-terminalCyan font-mono">
-              RNG Seed: {replayData.game.rngSeed}
-            </span>
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-title font-bold text-fg">确定性战局全景回放器</h1>
+            <Badge variant="neutral" className="font-num">
+              SEED: {replayData.game.rngSeed}
+            </Badge>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Link
-            href={`/game/${replayData.game.id}`}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-terminalBorder bg-surface hover:border-terminalCyan text-xs font-mono text-neutral-300 transition-colors"
-          >
-            断线恢复实时对局 &rarr;
-          </Link>
-        </div>
+        <Link href={`/game/${replayData.game.id}`}>
+          <Button variant="secondary" size="sm">
+            <span>断线恢复实时对局</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Button>
+        </Link>
       </header>
 
-      {/* 主回放控制台 */}
-      <main className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-12 gap-6 items-start mb-12">
-        {/* 左侧：推演战局动态模拟画板 (Tabletop HUD) */}
-        <section className="lg:col-span-8 flex flex-col gap-4">
-          {/* 对战双方 HUD 标头 */}
-          <div className="p-4 rounded-xl border border-terminalBorder bg-surface/80 backdrop-blur flex justify-between items-center text-xs font-mono">
+      {/* 主控制台 */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* 左侧沙盘与播放控制 */}
+        <section className="lg:col-span-8 space-y-4">
+          {/* 双方指挥官标头 */}
+          <div className="border border-line bg-ink-850 px-5 py-3.5 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-terminalCyan/20 border border-terminalCyan flex items-center justify-center font-bold text-terminalCyan">
+              <div className="h-9 w-9 border border-teal-400/60 bg-teal-400/10 flex items-center justify-center font-num text-body-sm font-bold text-teal-400">
                 P1
               </div>
               <div>
-                <span className="font-bold text-white">指挥官 {replayData.players[0]?.userId || 'Alice'}</span>
-                <p className="text-[10px] text-neutral-500">ST01 灰鸦小队</p>
+                <div className="text-body-sm font-semibold text-fg">
+                  指挥官 {replayData.players[0]?.userId || 'Alice'}
+                </div>
+                <div className="text-caption text-fg-muted font-num">
+                  {replayData.players[0]?.deckId || 'ST01'}
+                </div>
               </div>
             </div>
 
-            <div className="flex flex-col items-center">
-              <span className="px-3 py-1 rounded bg-black/60 border border-terminalBorder text-terminalCyan font-bold text-xs tracking-widest">
+            <div className="text-center">
+              <div className="font-display text-hud uppercase text-crimson-500 font-bold tracking-widest">
                 VS
-              </span>
-              <span className="text-[10px] text-neutral-500 mt-1">
-                步骤 {currentStep + 1} / {totalSteps}
-              </span>
+              </div>
+              <HudCounter
+                current={totalSteps > 0 ? currentStep + 1 : 0}
+                total={totalSteps}
+                prefix="STEP"
+                className="mt-0.5"
+              />
             </div>
 
             <div className="flex items-center gap-3 text-right">
               <div>
-                <span className="font-bold text-white">指挥官 {replayData.players[1]?.userId || 'Bob'}</span>
-                <p className="text-[10px] text-neutral-500">ST02 升格者</p>
+                <div className="text-body-sm font-semibold text-fg">
+                  指挥官 {replayData.players[1]?.userId || 'Bob'}
+                </div>
+                <div className="text-caption text-fg-muted font-num">
+                  {replayData.players[1]?.deckId || 'ST02'}
+                </div>
               </div>
-              <div className="w-8 h-8 rounded-full bg-erosionRed/20 border border-erosionRed flex items-center justify-center font-bold text-erosionRed">
+              <div className="h-9 w-9 border border-crimson-500/60 bg-crimson-700/20 flex items-center justify-center font-num text-body-sm font-bold text-crimson-400">
                 P2
               </div>
             </div>
           </div>
 
-          {/* 战场动态沙盘展示 */}
-          <div className="relative aspect-[16/9] w-full rounded-2xl border-2 border-terminalBorder bg-neutral-950 p-6 flex flex-col justify-between overflow-hidden shadow-2xl">
-            {/* 对手战场区 (Top) */}
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center text-xs font-mono text-neutral-400">
-                <span className="text-erosionRed font-bold">对手席位 (P2)</span>
-                <span>侵蚀度: 1 / 10</span>
+          {/* 战场复盘沙盘 */}
+          <div className="relative aspect-[16/9] w-full border border-line bg-arena-surface p-5 flex flex-col justify-between overflow-hidden">
+            <HudBrackets color="steel" />
+            <div aria-hidden="true" className="absolute top-0 inset-x-0 h-px bg-crimson-500/30" />
+            <div aria-hidden="true" className="absolute bottom-0 inset-x-0 h-px bg-teal-400/30" />
+
+            {/* 对手战场 (Top) */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-caption">
+                <span className="text-crimson-400 font-semibold">对方半场 (P2)</span>
+                <span className="font-num tabular-nums text-fg-muted">侵蚀度 1 / 10</span>
               </div>
-              <div className="grid grid-cols-5 gap-3">
+              <div className="grid grid-cols-5 gap-2.5">
                 {[0, 1, 2, 3, 4].map((slot) => (
                   <div
                     key={slot}
-                    className="aspect-[3/4] rounded-lg border border-neutral-800 bg-neutral-900/60 flex items-center justify-center text-[10px] font-mono text-neutral-600"
+                    className="aspect-[3/4] border border-line bg-ink-900/70 flex items-center justify-center text-caption font-num text-fg-disabled"
                   >
                     {slot === 2 && currentStep >= 11 ? (
-                      <div className="w-full h-full p-1 flex flex-col items-center justify-center bg-purple-950/40 border border-purple-500/60 rounded-lg">
-                        <span className="text-[10px] font-bold text-purple-300">露娜·银冕</span>
-                        <span className="text-[9px] text-neutral-400">2000 PP</span>
+                      <div className="w-full h-full p-2 flex flex-col items-center justify-center bg-crimson-700/25 border border-crimson-500/70 text-center">
+                        <span className="text-caption font-bold text-fg">露娜·银冕</span>
+                        <span className="font-num text-hud text-crimson-400 mt-1">2000 PP</span>
                       </div>
                     ) : (
-                      `槽位 ${slot + 1}`
+                      `0${slot + 1}`
                     )}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* 中场：对局焦点事件全息浮窗 */}
-            <div className="my-auto self-center p-3 rounded-xl bg-black/80 backdrop-blur border border-terminalCyan/40 text-center max-w-md shadow-[0_0_20px_rgba(0,240,255,0.2)]">
-              <span className="text-[10px] font-mono text-terminalCyan font-bold block mb-1">
-                EVENT #{currentEvent?.seq ?? 0}: {currentEvent?.eventType ?? 'READY'}
-              </span>
-              <p className="text-xs text-neutral-200 font-mono">
+            {/* 中场焦点事件浮窗 */}
+            <div className="my-auto self-center px-5 py-3 bg-ink-900/95 backdrop-blur-md border border-line-strong text-center max-w-lg shadow-overlay">
+              <div className="font-num text-hud text-crimson-400 uppercase font-semibold mb-1">
+                {`EVENT #${currentEvent?.seq ?? 0} // ${currentEvent?.eventType ?? 'READY'}`}
+              </div>
+              <p className="text-caption font-num text-fg-secondary break-all">
                 {currentEvent ? JSON.stringify(currentEvent.payload) : '等待回放播放'}
               </p>
             </div>
 
-            {/* 我方战场区 (Bottom) */}
-            <div className="flex flex-col gap-2">
-              <div className="grid grid-cols-5 gap-3">
+            {/* 己方战场 (Bottom) */}
+            <div className="space-y-2">
+              <div className="grid grid-cols-5 gap-2.5">
                 {[0, 1, 2, 3, 4].map((slot) => (
                   <div
                     key={slot}
-                    className="aspect-[3/4] rounded-lg border border-neutral-800 bg-neutral-900/60 flex items-center justify-center text-[10px] font-mono text-neutral-600"
+                    className="aspect-[3/4] border border-line bg-ink-900/70 flex items-center justify-center text-caption font-num text-fg-disabled"
                   >
                     {slot === 2 && currentStep >= 4 ? (
-                      <div className="w-full h-full p-1 flex flex-col items-center justify-center bg-cyan-950/40 border border-terminalCyan/60 rounded-lg">
-                        <span className="text-[10px] font-bold text-terminalCyan">露西亚·红莲</span>
-                        <span className="text-[9px] text-neutral-400">3000 PP</span>
+                      <div className="w-full h-full p-2 flex flex-col items-center justify-center bg-teal-400/15 border border-teal-400/70 text-center">
+                        <span className="text-caption font-bold text-fg">露西亚·红莲</span>
+                        <span className="font-num text-hud text-teal-400 mt-1">3000 PP</span>
                       </div>
                     ) : (
-                      `槽位 ${slot + 1}`
+                      `0${slot + 1}`
                     )}
                   </div>
                 ))}
               </div>
-              <div className="flex justify-between items-center text-xs font-mono text-neutral-400">
-                <span className="text-terminalCyan font-bold">我方席位 (P1)</span>
-                <span>侵蚀度: 0 / 10</span>
+              <div className="flex justify-between items-center text-caption">
+                <span className="text-teal-400 font-semibold">己方半场 (P1)</span>
+                <span className="font-num tabular-nums text-fg-muted">侵蚀度 0 / 10</span>
               </div>
             </div>
           </div>
 
-          {/* 回放控制器操作条 (Player Controls) */}
-          <div className="p-4 rounded-xl border border-terminalBorder bg-surface/90 backdrop-blur flex flex-col gap-3">
-            {/* 时间轴进度条 */}
+          {/* 播放控制条 */}
+          <Panel className="space-y-3">
             <div className="flex items-center gap-3">
-              <span className="text-xs font-mono text-neutral-400">0</span>
+              <span className="font-num tabular-nums text-caption text-fg-muted">00</span>
               <input
                 type="range"
                 min="0"
                 max={Math.max(0, totalSteps - 1)}
                 value={currentStep}
+                aria-label="回放时间轴"
                 onChange={(e) => {
                   setIsPlaying(false);
                   setCurrentStep(Number(e.target.value));
                 }}
-                className="flex-1 accent-terminalCyan cursor-pointer"
+                className="flex-1 accent-crimson-500 cursor-pointer"
               />
-              <span className="text-xs font-mono text-terminalCyan">{totalSteps}</span>
+              <span className="font-num tabular-nums text-caption text-fg">
+                {String(totalSteps).padStart(2, '0')}
+              </span>
             </div>
 
-            {/* 控制按钮组 */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <button
+                <Button
+                  variant="icon"
+                  size="md"
                   onClick={handleReset}
-                  className="p-2 rounded-lg border border-terminalBorder hover:border-terminalCyan text-neutral-300 hover:text-white"
+                  aria-label="回到开局"
                   title="回到开局"
                 >
                   <RotateCcw className="w-4 h-4" />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="icon"
+                  size="md"
                   onClick={handleStepBack}
                   disabled={currentStep <= 0}
-                  className="p-2 rounded-lg border border-terminalBorder hover:border-terminalCyan text-neutral-300 hover:text-white disabled:opacity-40"
+                  aria-label="上一步"
                   title="上一步"
                 >
                   <SkipBack className="w-4 h-4" />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="primary"
+                  size="md"
                   onClick={() => setIsPlaying(!isPlaying)}
-                  className="px-4 py-2 rounded-lg border border-terminalCyan bg-terminalCyan/20 hover:bg-terminalCyan/30 text-terminalCyan font-mono font-bold flex items-center gap-2"
                 >
-                  {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                  {isPlaying ? (
+                    <Pause className="w-4 h-4 fill-current" />
+                  ) : (
+                    <Play className="w-4 h-4 fill-current" />
+                  )}
                   <span>{isPlaying ? '暂停' : '播放'}</span>
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="icon"
+                  size="md"
                   onClick={handleStepForward}
                   disabled={currentStep >= totalSteps - 1}
-                  className="p-2 rounded-lg border border-terminalBorder hover:border-terminalCyan text-neutral-300 hover:text-white disabled:opacity-40"
+                  aria-label="下一步"
                   title="下一步"
                 >
                   <SkipForward className="w-4 h-4" />
-                </button>
+                </Button>
               </div>
 
-              {/* 倍速控制 */}
-              <div className="flex items-center gap-1 font-mono text-xs">
+              <div className="flex items-center gap-1 font-num text-caption">
                 {[0.5, 1, 2, 4].map((spd) => (
                   <button
                     key={spd}
+                    type="button"
                     onClick={() => setPlaySpeed(spd)}
-                    className={`px-2 py-1 rounded border text-[11px] ${
+                    className={`h-7 px-2.5 border transition-colors cursor-pointer ${
                       playSpeed === spd
-                        ? 'border-terminalCyan bg-terminalCyan/20 text-terminalCyan font-bold'
-                        : 'border-terminalBorder text-neutral-400 hover:text-white'
+                        ? 'border-crimson-500 bg-crimson-500/20 text-fg font-semibold'
+                        : 'border-line bg-ink-900 text-fg-muted hover:text-fg'
                     }`}
                   >
                     {spd}x
@@ -407,48 +423,56 @@ export default function GameReplayPage() {
                 ))}
               </div>
             </div>
-          </div>
+          </Panel>
         </section>
 
-        {/* 右侧：按时序流事件日志 (Audit Event Log Inspector) */}
-        <section className="lg:col-span-4 rounded-xl border border-terminalBorder bg-surface/80 backdrop-blur p-4 flex flex-col h-[650px]">
-          <div className="flex justify-between items-center border-b border-terminalBorder/50 pb-3 mb-3">
-            <h3 className="text-xs font-mono font-bold text-white flex items-center gap-2">
-              <Terminal className="w-4 h-4 text-terminalCyan" />
-              确定性事件审计流水 ({historyEvents.length} / {totalSteps})
-            </h3>
-            <span className="text-[10px] font-mono text-neutral-500">EVENT LOGS</span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1 text-xs font-mono">
+        {/* 右侧审计事件流 */}
+        <Panel
+          className="lg:col-span-4"
+          title="确定性事件审计流"
+          subtitle="AUDIT EVENT STREAM"
+          headerRight={
+            <span className="font-num tabular-nums text-caption text-fg-muted">
+              {historyEvents.length} / {totalSteps}
+            </span>
+          }
+          padded={false}
+        >
+          <div className="h-[580px] overflow-y-auto divide-y divide-line">
             {historyEvents.map((evt, idx) => {
               const isCurrent = idx === currentStep;
               return (
-                <div
+                <button
                   key={evt.seq}
+                  type="button"
                   onClick={() => {
                     setIsPlaying(false);
                     setCurrentStep(idx);
                   }}
-                  className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
+                  className={`w-full text-left px-4 py-3 border-l-2 transition-colors duration-fast cursor-pointer ${
                     isCurrent
-                      ? 'border-terminalCyan bg-terminalCyan/15 text-white shadow-[0_0_10px_rgba(0,240,255,0.2)]'
-                      : 'border-terminalBorder/40 bg-black/40 text-neutral-400 hover:border-terminalBorder hover:text-neutral-200'
+                      ? 'border-crimson-500 bg-ink-700 text-fg'
+                      : 'border-transparent bg-ink-850 text-fg-secondary hover:bg-ink-800 hover:text-fg'
                   }`}
                 >
-                  <div className="flex justify-between items-center text-[10px] mb-1">
-                    <span className="text-terminalCyan font-bold">#{evt.seq}</span>
-                    <span className="text-neutral-500">{evt.eventType}</span>
+                  <div className="flex items-center justify-between text-caption mb-1">
+                    <span className="font-num font-semibold text-crimson-400 flex items-center gap-1.5">
+                      <Terminal className="w-3 h-3" />
+                      #{String(evt.seq).padStart(2, '0')}
+                    </span>
+                    <span className="font-display text-hud uppercase text-fg-muted">
+                      {evt.eventType}
+                    </span>
                   </div>
-                  <div className="text-[11px] text-neutral-300 truncate">
+                  <div className="font-num text-caption text-fg-muted truncate">
                     {JSON.stringify(evt.payload)}
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
-        </section>
-      </main>
-    </div>
+        </Panel>
+      </div>
+    </AppShell>
   );
 }

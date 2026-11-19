@@ -90,7 +90,6 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       ? `费用 ${effectiveCost} (原${cardDef.cost})`
       : `费用 ${currentCost}`;
 
-  // 点击菜单外部或按下 Esc 自动关闭
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -109,13 +108,11 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     };
   }, [onClose]);
 
-  // 计算屏幕边界防止菜单溢出
-  const adjustedX = Math.min(Math.max(10, x), typeof window !== 'undefined' ? window.innerWidth - 220 : x);
+  const adjustedX = Math.min(Math.max(10, x), typeof window !== 'undefined' ? window.innerWidth - 230 : x);
   const adjustedY = Math.min(Math.max(10, y), typeof window !== 'undefined' ? window.innerHeight - 260 : y);
 
   const actions: ContextMenuAction[] = [];
 
-  // 1. 手牌动作
   if (isHandCard) {
     if (cardDef?.cardType === CardType.ROLE) {
       actions.push({
@@ -141,7 +138,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
           id: 'ascend_role',
           label: '升变登场 (重叠)',
           subLabel: `升变 ${ascCost} 费`,
-          icon: <ArrowUpRight className="w-3.5 h-3.5 text-terminalGold" />,
+          icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
           variant: 'primary',
           disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < ascCost,
           onClick: () => {
@@ -151,7 +148,6 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
         });
       }
     } else if (cardDef?.cardType === CardType.TACTICS) {
-      // 10.8 瞬时战术牌只能在轮到我方使用【瞬时】时使用 (部分卡牌允许在我方主要阶段使用)
       const isInstantCard = !!cardDef.isInstant || !!cardDef.rulesText?.includes('【瞬时');
       const canUseNow = isInstantCard
         ? !!canUseInstant ||
@@ -199,7 +195,6 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     }
   }
 
-  // 2. 己方战场角色动作
   if (isFriendlyRole) {
     if (canActivateAbility) {
       actions.push({
@@ -244,7 +239,6 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     }
   }
 
-  // 3. 敌方战场角色动作
   if (isOpponentRole && hasSelectedAttacker) {
     actions.push({
       id: 'target_role',
@@ -259,7 +253,6 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     });
   }
 
-  // 4. 通用：查看卡牌全图详情
   actions.push({
     id: 'inspect',
     label: '查看卡面大图 (F)',
@@ -275,17 +268,23 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   return (
     <div
       ref={menuRef}
+      role="menu"
       style={{ left: adjustedX, top: adjustedY }}
-      className="fixed z-50 w-52 rounded-xl bg-neutral-950/95 border border-terminalCyan/60 p-1.5 shadow-[0_10px_35px_rgba(0,0,0,0.8)] backdrop-blur-xl font-mono text-xs animate-in fade-in zoom-in-95 duration-100"
+      className="fixed z-50 w-56 bg-ink-950/95 border border-teal-400/70 p-1.5 shadow-overlay backdrop-blur-md text-caption animate-in fade-in duration-fast"
     >
+      {/* 顶部细红装饰条 */}
+      <div className="h-[2px] w-full bg-crimson-500/80 mb-1" />
+
       {/* 菜单标题 */}
-      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-terminalBorder/50 mb-1 text-[11px] text-neutral-400">
-        <span className="truncate font-bold text-white">
+      <div className="flex items-center justify-between px-2 py-1.5 border-b border-line mb-1 text-hud text-fg-muted">
+        <span className="truncate font-semibold text-fg">
           {cardDef?.name || card.cardNumber}
         </span>
         <button
+          type="button"
           onClick={onClose}
-          className="text-neutral-500 hover:text-white p-0.5"
+          aria-label="关闭菜单"
+          className="text-fg-muted hover:text-fg p-0.5 cursor-pointer"
           title="关闭菜单 (Esc)"
         >
           <X className="w-3 h-3" />
@@ -296,27 +295,29 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       <div className="flex flex-col gap-0.5">
         {actions.map((act) => {
           const variantClasses = {
-            primary: 'text-terminalCyan hover:bg-terminalCyan/15 hover:border-terminalCyan/40',
-            danger: 'text-erosionRed hover:bg-erosionRed/15 hover:border-erosionRed/40 font-bold',
-            warning: 'text-terminalGold hover:bg-terminalGold/15 hover:border-terminalGold/40',
-            default: 'text-neutral-300 hover:bg-neutral-800 hover:text-white',
+            primary: 'text-teal-400 hover:bg-teal-400/15 hover:border-teal-400/40',
+            danger: 'text-crimson-400 hover:bg-crimson-500/15 hover:border-crimson-500/40 font-semibold',
+            warning: 'text-gold-300 hover:bg-gold-300/15 hover:border-gold-300/40',
+            default: 'text-fg-secondary hover:bg-ink-800 hover:text-fg',
           }[act.variant || 'default'];
 
           return (
             <button
               key={act.id}
+              type="button"
+              role="menuitem"
               disabled={act.disabled}
               onClick={act.onClick}
-              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg border border-transparent transition-all text-left group ${
-                act.disabled ? 'opacity-40 cursor-not-allowed text-neutral-600' : variantClasses
+              className={`w-full flex items-center justify-between px-2.5 py-2 border border-transparent transition-colors duration-fast text-left group cursor-pointer ${
+                act.disabled ? 'opacity-40 cursor-not-allowed text-fg-disabled' : variantClasses
               }`}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="flex-shrink-0">{act.icon}</span>
-                <span className="text-xs font-medium">{act.label}</span>
+                <span className="text-caption font-medium truncate">{act.label}</span>
               </div>
               {act.subLabel && (
-                <span className="text-[10px] text-neutral-500 group-hover:text-neutral-300">
+                <span className="text-hud font-num text-fg-muted group-hover:text-fg-secondary shrink-0 ml-2">
                   {act.subLabel}
                 </span>
               )}

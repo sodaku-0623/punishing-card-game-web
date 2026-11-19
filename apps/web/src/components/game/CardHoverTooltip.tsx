@@ -11,11 +11,9 @@ import {
   Moon,
   Snowflake,
   Shield,
-  Layers,
   Sparkles,
-  Swords,
-  Info,
 } from 'lucide-react';
+import { HudBrackets } from '@/components/ui';
 
 interface CardHoverTooltipProps {
   card: CardInstance | null;
@@ -55,7 +53,6 @@ function useCursorPosition(active: boolean): Point | null {
 
 function computeTooltipStyle(position: Point | null): React.CSSProperties {
   if (!position) {
-    // 默认停靠在左下侧偏中
     return {
       left: '16px',
       bottom: '80px',
@@ -71,12 +68,9 @@ function computeTooltipStyle(position: Point | null): React.CSSProperties {
   let posX = x + 18;
   let posY = y - 120;
 
-  // 水平越界修正：若右侧空间不足，则显示在鼠标左侧
   if (posX + tooltipWidth > winWidth - 16) {
     posX = Math.max(16, x - tooltipWidth - 18);
   }
-
-  // 垂直越界修正
   if (posY + tooltipHeight > winHeight - 16) {
     posY = Math.max(16, winHeight - tooltipHeight - 16);
   }
@@ -104,39 +98,39 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
     switch (attr) {
       case ElementAttribute.FIRE:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-red-600/20 text-red-400 border border-red-500/40 text-[10px] flex items-center gap-1 font-bold">
-            <Flame className="w-3 h-3 text-red-500" /> 火
+          <span className="px-1.5 py-0.5 bg-crimson-500/15 text-crimson-400 border border-crimson-500/40 text-hud flex items-center gap-1 font-medium">
+            <Flame className="w-3 h-3 text-crimson-400" /> 火
           </span>
         );
       case ElementAttribute.LIGHTNING:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-yellow-400/20 text-yellow-300 border border-yellow-400/40 text-[10px] flex items-center gap-1 font-bold">
-            <Zap className="w-3 h-3 text-yellow-400" /> 雷
+          <span className="px-1.5 py-0.5 bg-gold-300/15 text-gold-300 border border-gold-300/40 text-hud flex items-center gap-1 font-medium">
+            <Zap className="w-3 h-3 text-gold-300" /> 雷
           </span>
         );
       case ElementAttribute.DARK:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-purple-600/20 text-purple-300 border border-purple-500/40 text-[10px] flex items-center gap-1 font-bold">
-            <Moon className="w-3 h-3 text-purple-400" /> 暗
+          <span className="px-1.5 py-0.5 bg-steel-700/25 text-steel-300 border border-steel-500/50 text-hud flex items-center gap-1 font-medium">
+            <Moon className="w-3 h-3 text-steel-300" /> 暗
           </span>
         );
       case ElementAttribute.ICE:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-cyan-400/20 text-cyan-300 border border-cyan-400/40 text-[10px] flex items-center gap-1 font-bold">
-            <Snowflake className="w-3 h-3 text-cyan-300" /> 冰
+          <span className="px-1.5 py-0.5 bg-teal-400/15 text-teal-400 border border-teal-400/40 text-hud flex items-center gap-1 font-medium">
+            <Snowflake className="w-3 h-3 text-teal-400" /> 冰
           </span>
         );
       case ElementAttribute.PHYSICAL:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-neutral-700/40 text-neutral-300 border border-neutral-600 text-[10px] flex items-center gap-1 font-bold">
-            <Shield className="w-3 h-3 text-neutral-400" /> 物
+          <span className="px-1.5 py-0.5 bg-ink-800 text-fg-secondary border border-line-strong text-hud flex items-center gap-1 font-medium">
+            <Shield className="w-3 h-3 text-fg-muted" /> 物
           </span>
         );
       case ElementAttribute.VOID:
       case 'VOID' as any:
         return (
-          <span className="px-1.5 py-0.5 rounded bg-cyan-400/20 text-cyan-300 border border-cyan-400/40 text-[10px] flex items-center gap-1 font-bold">
-            <Sparkles className="w-3 h-3 text-cyan-300" /> 空
+          <span className="px-1.5 py-0.5 bg-teal-400/15 text-teal-400 border border-teal-400/40 text-hud flex items-center gap-1 font-medium">
+            <Sparkles className="w-3 h-3 text-teal-400" /> 空
           </span>
         );
       default:
@@ -146,7 +140,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
 
   // 格式化规则文本中的关键词高亮
   const formatRulesText = (text: string) => {
-    if (!text) return <span className="text-neutral-500 italic">通常卡牌，无特殊效果记述</span>;
+    if (!text) return <span className="text-fg-muted">通常卡牌，无特殊效果记述</span>;
 
     const parts = text.split(/(\\n|\n)/g);
     return parts.map((part, index) => {
@@ -154,7 +148,6 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
         return <br key={index} />;
       }
 
-      // 高亮标志词
       let content: React.ReactNode = part;
       if (part.includes('【出】')) {
         content = (
@@ -162,7 +155,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             {part.split('【出】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-px rounded bg-terminalCyan/20 text-terminalCyan font-bold border border-terminalCyan/40 text-[10px] mr-1">
+                  <span className="px-1 py-px bg-teal-400/15 text-teal-400 font-semibold border border-teal-400/40 text-hud mr-1">
                     【出】
                   </span>
                 )}
@@ -177,7 +170,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             {part.split('【起】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-px rounded bg-terminalGold/20 text-terminalGold font-bold border border-terminalGold/40 text-[10px] mr-1">
+                  <span className="px-1 py-px bg-gold-300/15 text-gold-300 font-semibold border border-gold-300/40 text-hud mr-1">
                     【起】
                   </span>
                 )}
@@ -193,7 +186,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             {part.split(tag).map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-px rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40 text-[10px] mr-1">
+                  <span className="px-1 py-px bg-crimson-500/15 text-crimson-400 font-semibold border border-crimson-500/40 text-hud mr-1">
                     {tag}
                   </span>
                 )}
@@ -208,7 +201,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             {part.split('【永】').map((chunk, i) => (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="px-1 py-px rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40 text-[10px] mr-1">
+                  <span className="px-1 py-px bg-success/15 text-success font-semibold border border-success/40 text-hud mr-1">
                     【永】
                   </span>
                 )}
@@ -227,25 +220,29 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
 
   return (
     <div
-      className="fixed z-50 pointer-events-none select-none w-80 max-w-[90vw] rounded-xl border border-terminalCyan/70 bg-neutral-950/95 backdrop-blur-md shadow-[0_10px_35px_rgba(0,240,255,0.35)] p-3.5 font-mono text-xs animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2.5"
+      className="fixed z-50 pointer-events-none select-none w-80 max-w-[90vw] border border-teal-400/70 bg-ink-950/95 backdrop-blur-md shadow-overlay p-3.5 text-caption animate-in fade-in duration-fast flex flex-col gap-2.5"
       style={tooltipStyle}
     >
+      <HudBrackets size="sm" color="teal" />
+
       {/* 头部：卡名、卡号、费用、属性 */}
-      <div className="flex items-start justify-between gap-2 border-b border-terminalBorder/60 pb-2">
+      <div className="flex items-start justify-between gap-2 border-b border-line pb-2">
         <div className="flex-1 min-w-0">
-          <div className="text-[10px] text-terminalCyan/80 font-bold flex items-center gap-1.5">
+          <div className="text-hud font-num text-teal-400 flex items-center gap-1.5">
             <span>{card.cardNumber || cardDef?.cardNumber}</span>
-            <span className="text-neutral-600">•</span>
-            <span className="text-neutral-400">{formatCardType(cardDef?.cardType || CardType.ROLE)}</span>
+            <span className="text-fg-disabled">/</span>
+            <span className="text-fg-muted font-sans">
+              {formatCardType(cardDef?.cardType || CardType.ROLE)}
+            </span>
           </div>
-          <h4 className="text-sm font-bold text-white truncate mt-0.5">
+          <h4 className="text-body-sm font-semibold text-fg truncate mt-0.5">
             {cardDef?.name || card.cardNumber}
           </h4>
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
           {cardDef?.attribute && getElementBadge(cardDef.attribute)}
-          <span className="px-2 py-0.5 rounded bg-terminalGold/20 border border-terminalGold/50 text-terminalGold font-black text-xs">
+          <span className="px-2 py-0.5 bg-gold-300/15 border border-gold-300/50 text-gold-300 font-num tabular-nums font-bold text-hud">
             {cardDef?.cost ?? 0}费
           </span>
         </div>
@@ -253,7 +250,8 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
 
       {/* 中部：微型卡图预览与战斗力数据 */}
       <div className="flex items-center gap-3">
-        <div className="w-16 h-22 rounded-md overflow-hidden border border-neutral-700 bg-neutral-900 flex-shrink-0 shadow relative">
+        <div className="w-16 h-22 rounded-card overflow-hidden border border-line-strong bg-ink-900 flex-shrink-0 relative">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={cardImgSrc}
             alt={cardDef?.name || card.cardNumber}
@@ -263,19 +261,18 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
         </div>
 
         <div className="flex-1 flex flex-col justify-center gap-1.5">
-          {/* PP / DP 战斗数据 (仅角色牌) */}
           {cardDef?.cardType === CardType.ROLE && (
-            <div className="grid grid-cols-2 gap-1.5 bg-neutral-900/80 p-1.5 rounded-lg border border-neutral-800">
+            <div className="grid grid-cols-2 gap-1.5 bg-ink-900 p-1.5 border border-line">
               <div className="flex flex-col">
-                <span className="text-[9px] text-neutral-400">攻击力 (PP)</span>
-                <span className={`text-xs font-black ${ppBonus ? 'text-terminalCyan animate-pulse' : 'text-white'}`}>
+                <span className="text-hud text-fg-muted">攻击力 PP</span>
+                <span className={`text-caption font-num tabular-nums font-bold ${ppBonus ? 'text-teal-400' : 'text-fg'}`}>
                   {totalPP}
                   {formatBonus(ppBonus)}
                 </span>
               </div>
               <div className="flex flex-col">
-                <span className="text-[9px] text-neutral-400">伤害值 (DP)</span>
-                <span className={`text-xs font-black ${dpBonus ? 'text-terminalGold animate-pulse' : 'text-white'}`}>
+                <span className="text-hud text-fg-muted">破坏力 DP</span>
+                <span className={`text-caption font-num tabular-nums font-bold ${dpBonus ? 'text-gold-300' : 'text-fg'}`}>
                   {totalDP}
                   {formatBonus(dpBonus)}
                 </span>
@@ -283,13 +280,12 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             </div>
           )}
 
-          {/* 特征词条标签 */}
           {cardDef?.traits && cardDef.traits.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {cardDef.traits.map((trait, i) => (
                 <span
                   key={i}
-                  className="px-1.5 py-px rounded bg-neutral-800/90 text-neutral-300 text-[9px] border border-neutral-700"
+                  className="px-1.5 py-px bg-ink-850 text-fg-secondary text-hud border border-line"
                 >
                   &lt;{trait}&gt;
                 </span>
@@ -299,17 +295,17 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
         </div>
       </div>
 
-      {/* 下部：效果规则文本 (全文滚动检视) */}
-      <div className="bg-neutral-900/90 p-2.5 rounded-lg border border-neutral-800/80 text-[11px] leading-relaxed text-neutral-200 max-h-40 overflow-y-auto">
+      {/* 下部：效果规则文本 */}
+      <div className="bg-ink-900 p-2.5 border border-line text-hud leading-relaxed text-fg-secondary max-h-40 overflow-y-auto">
         {formatRulesText(cardDef?.rulesText || '')}
       </div>
 
-      {/* 底部：卡牌系列与状态 */}
-      <div className="flex items-center justify-between text-[9px] text-neutral-500 pt-0.5">
-        <span>{cardDef?.flavorText || '战双帕弥什 TCG'}</span>
+      {/* 底部：状态 */}
+      <div className="flex items-center justify-between text-hud text-fg-muted pt-0.5 border-t border-line">
+        <span className="truncate max-w-[180px]">{cardDef?.flavorText || '战双帕弥什 TCG'}</span>
         {card.isReady !== undefined && (
-          <span className={`font-bold ${card.isReady ? 'text-emerald-400' : 'text-amber-400'}`}>
-            {card.isReady ? '竖直状态 [Ready]' : '横置状态 [Rest]'}
+          <span className={`font-medium shrink-0 ${card.isReady ? 'text-success' : 'text-gold-300'}`}>
+            {card.isReady ? '竖直 · READY' : '横置 · REST'}
           </span>
         )}
       </div>

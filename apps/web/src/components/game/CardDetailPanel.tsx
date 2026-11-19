@@ -1,10 +1,11 @@
 'use client';
 
 import React from 'react';
-import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
+import { ElementAttribute } from '@zhanshuang/shared';
 import { CardData, findCardByNumberOrId, getCardVariants, CardVariant, formatCardType } from '@/lib/cards-data';
-import { Sparkles, Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Info, Layers, Star } from 'lucide-react';
+import { Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Info, Star } from 'lucide-react';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
+import { HudBrackets } from '@/components/ui';
 
 interface CardDetailPanelProps {
   card: CardData | any | null;
@@ -20,7 +21,7 @@ function getElementBadge(attr: ElementAttribute | string, attrName?: string) {
     return {
       label: '空',
       icon: null,
-      badge: 'text-cyan-300 border-cyan-400/40 bg-cyan-950/40',
+      badge: 'text-teal-400 border-teal-400/40 bg-teal-400/10',
     };
   }
   switch (attr) {
@@ -28,42 +29,42 @@ function getElementBadge(attr: ElementAttribute | string, attrName?: string) {
     case 'FIRE':
       return {
         label: '火',
-        icon: <Flame className="w-3 h-3 text-red-500" />,
-        badge: 'text-red-400 border-red-500/40 bg-red-950/40',
+        icon: <Flame className="w-3 h-3 text-crimson-400" />,
+        badge: 'text-crimson-400 border-crimson-500/40 bg-crimson-500/10',
       };
     case ElementAttribute.LIGHTNING:
     case 'LIGHTNING':
       return {
         label: '雷',
-        icon: <Zap className="w-3 h-3 text-yellow-400" />,
-        badge: 'text-yellow-400 border-yellow-500/40 bg-yellow-950/40',
+        icon: <Zap className="w-3 h-3 text-gold-300" />,
+        badge: 'text-gold-300 border-gold-300/40 bg-gold-300/10',
       };
     case ElementAttribute.DARK:
     case 'DARK':
       return {
         label: '暗',
-        icon: <Moon className="w-3 h-3 text-purple-400" />,
-        badge: 'text-purple-400 border-purple-500/40 bg-purple-950/40',
+        icon: <Moon className="w-3 h-3 text-steel-300" />,
+        badge: 'text-steel-300 border-steel-500/50 bg-steel-700/20',
       };
     case ElementAttribute.ICE:
     case 'ICE':
       return {
         label: '冰',
-        icon: <Snowflake className="w-3 h-3 text-cyan-300" />,
-        badge: 'text-cyan-300 border-cyan-500/40 bg-cyan-950/40',
+        icon: <Snowflake className="w-3 h-3 text-teal-400" />,
+        badge: 'text-teal-400 border-teal-400/40 bg-teal-400/10',
       };
     case ElementAttribute.PHYSICAL:
     case 'PHYSICAL':
       return {
         label: '物理',
-        icon: <Shield className="w-3 h-3 text-amber-300" />,
-        badge: 'text-amber-300 border-amber-500/40 bg-amber-950/40',
+        icon: <Shield className="w-3 h-3 text-fg-secondary" />,
+        badge: 'text-fg-secondary border-line-strong bg-ink-800',
       };
     default:
       return {
         label: '无',
         icon: null,
-        badge: 'text-neutral-400 border-neutral-700 bg-neutral-900',
+        badge: 'text-fg-muted border-line bg-ink-900',
       };
   }
 }
@@ -85,20 +86,20 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
   if (!card) {
     return (
       <div
-        className={`flex flex-col items-center justify-center p-4 rounded-xl border border-terminalBorder/60 bg-neutral-950/60 text-center font-mono select-none ${className}`}
+        className={`relative flex flex-col items-center justify-center p-4 border border-line bg-ink-900/80 text-center select-none ${className}`}
       >
-        <div className="w-10 h-10 rounded-full border border-dashed border-terminalBorder flex items-center justify-center text-neutral-600 mb-2">
-          <Info className="w-5 h-5 text-terminalCyan/40" />
+        <HudBrackets size="sm" color="steel" />
+        <div className="w-10 h-10 border border-dashed border-line-strong flex items-center justify-center text-fg-muted mb-2">
+          <Info className="w-4 h-4 text-teal-400/60" />
         </div>
-        <span className="text-xs text-neutral-400 font-bold">未选中卡牌</span>
-        <span className="text-[11px] text-neutral-600 mt-1 max-w-[220px]">
-          点击手牌或战场卡牌查看战术详情，长按卡牌可查看超清大图
+        <span className="text-caption text-fg-secondary font-semibold">未选中卡牌</span>
+        <span className="text-hud text-fg-muted mt-1 max-w-[220px]">
+          点击手牌或战场卡牌查看战术详情，长按卡牌可查看高清大图
         </span>
       </div>
     );
   }
 
-  // 尝试匹配完整静态卡牌信息
   const resolvedCard: CardData =
     card.cost !== undefined && card.rulesText !== undefined
       ? card
@@ -116,54 +117,56 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
 
   return (
     <div
-      className={`flex flex-col gap-2.5 p-3 rounded-xl border border-terminalBorder bg-neutral-950/80 backdrop-blur-md font-mono select-none shadow-lg ${className}`}
+      className={`relative flex flex-col gap-2.5 p-3 border border-line-strong bg-ink-900/95 backdrop-blur-md select-none ${className}`}
     >
+      <HudBrackets size="sm" color="steel" />
+
       {/* 顶部简明信息栏 */}
-      <div className="flex items-start justify-between gap-3 border-b border-terminalBorder/60 pb-2">
+      <div className="flex items-start justify-between gap-3 border-b border-line pb-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          {/* 微型卡图略缩图 (点击可放大) */}
           <div
             onClick={onOpenModal}
-            className="w-11 h-16 rounded-lg overflow-hidden border border-terminalCyan/60 shrink-0 bg-neutral-900 relative cursor-pointer group shadow"
+            className="w-11 h-16 rounded-card overflow-hidden border border-teal-400/60 shrink-0 bg-ink-950 relative cursor-pointer group"
             title="点击放大查看大图"
           >
             {cardImgSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={getCardThumbnailUrl(cardImgSrc, resolvedCard.cardNumber)}
                 alt={resolvedCard.name}
-                className="w-full h-full object-fill block group-hover:scale-110 transition-transform"
+                className="w-full h-full object-fill block group-hover:scale-105 transition-transform duration-fast"
                 loading="lazy"
                 onError={(e) => {
                   handleThumbnailError(e, cardImgSrc || `/cards/${resolvedCard.cardNumber}.png`);
                 }}
               />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-[9px] text-neutral-400">
+              <div className="w-full h-full flex items-center justify-center text-hud font-display text-fg-muted">
                 PGR
               </div>
             )}
-            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-              <ZoomIn className="w-3.5 h-3.5 text-terminalCyan" />
+            <div className="absolute inset-0 bg-ink-950/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity duration-fast">
+              <ZoomIn className="w-3.5 h-3.5 text-teal-400" />
             </div>
           </div>
 
           <div className="flex flex-col min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40">
+              <span className="px-1.5 py-0.5 text-hud font-num font-semibold bg-teal-400/15 text-teal-400 border border-teal-400/40">
                 {resolvedCard.cardNumber}
               </span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-neutral-900 border border-neutral-700 text-neutral-300">
+              <span className="px-1.5 py-0.5 text-hud font-sans font-medium bg-ink-850 border border-line text-fg-secondary">
                 {formatCardType(resolvedCard.cardType, resolvedCard.isInstant)}
               </span>
-              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border flex items-center gap-0.5 ${elem.badge}`}>
+              <span className={`px-1.5 py-0.5 text-hud font-sans font-medium border flex items-center gap-0.5 ${elem.badge}`}>
                 {elem.icon}
                 {elem.label}
               </span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-neutral-900 border border-neutral-700 text-terminalCyan">
+              <span className="px-1.5 py-0.5 text-hud font-num font-semibold bg-ink-850 border border-line text-gold-300">
                 {resolvedCard.cost ?? 0}费
               </span>
             </div>
-            <h4 className="text-sm font-bold text-white truncate mt-1">
+            <h4 className="text-body-sm font-semibold text-fg truncate mt-1">
               {resolvedCard.name}
             </h4>
           </div>
@@ -171,8 +174,10 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
 
         {onOpenModal && (
           <button
+            type="button"
             onClick={onOpenModal}
-            className="p-1.5 rounded-lg border border-neutral-700 text-neutral-400 hover:text-terminalCyan hover:border-terminalCyan/60 transition-colors"
+            aria-label="放大查看卡图"
+            className="p-1.5 border border-line text-fg-muted hover:text-teal-400 hover:border-teal-400/60 transition-colors cursor-pointer"
             title="长按或点击查看大图"
           >
             <ZoomIn className="w-4 h-4" />
@@ -180,12 +185,12 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
         )}
       </div>
 
-      {/* 卡图版本切换器 (0星 / 1星 / 2星) */}
+      {/* 卡图版本切换器 */}
       {variants.length > 1 && (
-        <div className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg bg-black/60 border border-terminalBorder/60 text-xs">
-          <span className="text-[11px] text-neutral-400 font-bold flex items-center gap-1">
-            <Star className="w-3 h-3 text-terminalGold" />
-            <span>卡图版本:</span>
+        <div className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 bg-ink-950 border border-line text-caption">
+          <span className="text-hud text-fg-secondary font-medium flex items-center gap-1">
+            <Star className="w-3 h-3 text-gold-300" />
+            <span>卡图版本</span>
           </span>
           <div className="flex items-center gap-1">
             {variants.map((v) => {
@@ -198,10 +203,10 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
                     setInternalVariantImg(v.imageUrl);
                     if (onSelectVariant) onSelectVariant(v);
                   }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                  className={`px-2 py-0.5 text-hud font-num font-semibold transition-colors cursor-pointer border ${
                     isActive
-                      ? 'bg-terminalGold text-neutral-950 font-black shadow-[0_0_10px_rgba(255,200,0,0.5)] scale-105'
-                      : 'bg-neutral-900 border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500'
+                      ? 'bg-gold-300 text-ink-950 border-gold-300'
+                      : 'bg-ink-850 border-line text-fg-muted hover:text-fg hover:border-line-strong'
                   }`}
                   title={`${v.name} (${v.imageUrl})`}
                 >
@@ -215,25 +220,25 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
 
       {/* 数值指标 (PP / DP) */}
       {(resolvedCard.basePP !== undefined || resolvedCard.baseDP !== undefined) && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="px-2 py-1 rounded bg-neutral-900 border border-neutral-800 flex justify-between items-center">
-            <span className="text-neutral-500 font-bold text-[10px]">PP力量</span>
-            <span className="text-white font-bold">{resolvedCard.basePP ?? '--'}</span>
+        <div className="grid grid-cols-2 gap-2 text-caption">
+          <div className="px-2.5 py-1 bg-ink-950 border border-line flex justify-between items-center">
+            <span className="text-fg-muted text-hud">PP 力量</span>
+            <span className="text-fg font-num tabular-nums font-bold">{resolvedCard.basePP ?? '--'}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-neutral-900 border border-neutral-800 flex justify-between items-center">
-            <span className="text-neutral-500 font-bold text-[10px]">DP破坏</span>
-            <span className="text-terminalGold font-bold">{resolvedCard.baseDP ?? '--'}</span>
+          <div className="px-2.5 py-1 bg-ink-950 border border-line flex justify-between items-center">
+            <span className="text-fg-muted text-hud">DP 破坏</span>
+            <span className="text-gold-300 font-num tabular-nums font-bold">{resolvedCard.baseDP ?? '--'}</span>
           </div>
         </div>
       )}
 
       {/* 卡牌特征标签 */}
       {resolvedCard.traits && resolvedCard.traits.length > 0 && (
-        <div className="flex flex-wrap gap-1 text-[10px]">
+        <div className="flex flex-wrap gap-1 text-hud">
           {resolvedCard.traits.map((t: string, i: number) => (
             <span
               key={i}
-              className="px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 text-neutral-400"
+              className="px-1.5 py-0.5 bg-ink-850 border border-line text-fg-secondary"
             >
               &lt;{t}&gt;
             </span>
@@ -242,15 +247,16 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
       )}
 
       {/* 卡牌规则效果 */}
-      <div className="max-h-28 overflow-y-auto p-2 rounded-lg bg-neutral-950 border border-terminalBorder/60 text-[11px] leading-relaxed text-neutral-300 font-sans whitespace-pre-wrap">
+      <div className="max-h-28 overflow-y-auto p-2.5 bg-ink-950 border border-line text-caption leading-relaxed text-fg-secondary whitespace-pre-wrap">
         {resolvedCard.rulesText || '此卡牌无特殊规则文本。'}
       </div>
 
-      {/* 快捷操作区 (例如投入卡组、放大检视) */}
-      <div className="flex items-center justify-between gap-2 pt-1 border-t border-terminalBorder/40">
+      {/* 快捷操作区 */}
+      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-line">
         <button
+          type="button"
           onClick={onOpenModal}
-          className="text-[11px] text-terminalCyan hover:underline flex items-center gap-1 font-bold"
+          className="text-hud text-teal-400 hover:underline flex items-center gap-1 font-medium cursor-pointer"
         >
           <ZoomIn className="w-3 h-3" /> 放大立绘与详情 (长按)
         </button>

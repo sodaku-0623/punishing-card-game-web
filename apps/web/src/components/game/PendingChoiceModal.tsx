@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl } from '@/lib/card-image';
+import { Button } from '@/components/ui';
 
 interface PendingChoiceModalProps {
   choice: PendingChoice;
@@ -39,22 +40,21 @@ interface CardPayload {
   ineligibleReason?: string;
 }
 
-// 属性图标辅助
 function getAttributeBadge(attr?: string) {
   if (!attr || attr === 'NONE') return null;
   switch (attr) {
     case 'FIRE':
-      return <span className="text-[9px] px-1 rounded bg-red-950/80 border border-red-500/50 text-red-400 font-mono">火</span>;
+      return <span className="text-hud px-1 bg-crimson-500/15 border border-crimson-500/50 text-crimson-400">火</span>;
     case 'LIGHTNING':
-      return <span className="text-[9px] px-1 rounded bg-yellow-950/80 border border-yellow-500/50 text-yellow-400 font-mono">雷</span>;
+      return <span className="text-hud px-1 bg-gold-300/15 border border-gold-300/50 text-gold-300">雷</span>;
     case 'DARK':
-      return <span className="text-[9px] px-1 rounded bg-purple-950/80 border border-purple-500/50 text-purple-400 font-mono">暗</span>;
+      return <span className="text-hud px-1 bg-steel-700/25 border border-steel-500/50 text-steel-300">暗</span>;
     case 'ICE':
-      return <span className="text-[9px] px-1 rounded bg-cyan-950/80 border border-cyan-500/50 text-cyan-400 font-mono">冰</span>;
+      return <span className="text-hud px-1 bg-teal-400/15 border border-teal-400/50 text-teal-400">冰</span>;
     case 'PHYSICAL':
-      return <span className="text-[9px] px-1 rounded bg-neutral-900 border border-neutral-600 text-neutral-300 font-mono">物</span>;
+      return <span className="text-hud px-1 bg-ink-850 border border-line-strong text-fg-secondary">物</span>;
     case 'VOID':
-      return <span className="text-[9px] px-1 rounded bg-cyan-950/80 border border-cyan-400/50 text-cyan-300 font-mono">空</span>;
+      return <span className="text-hud px-1 bg-teal-400/15 border border-teal-400/50 text-teal-400">空</span>;
     default:
       return null;
   }
@@ -77,7 +77,6 @@ function RevealedCardItem({
   const [imageError, setImageError] = useState(false);
   const payload = (option.payload as CardPayload) || {};
 
-  // 尝试从静态卡库补全元数据
   const fallbackDef = findCardByNumberOrId(payload.cardNumber || option.id);
 
   const isEligible = payload.eligible !== false;
@@ -104,27 +103,27 @@ function RevealedCardItem({
     <div
       onClick={handleClick}
       style={{ width: `${cardWidth}px`, height: `${cardHeight}px` }}
-      className={`relative flex-shrink-0 flex flex-col rounded-xl border-2 transition-all duration-200 select-none overflow-hidden group ${
+      className={`relative flex-shrink-0 flex flex-col rounded-card border-2 transition-all duration-fast select-none overflow-hidden group ${
         isEligible
           ? isSelected
-            ? 'border-terminalCyan bg-terminalCyan/15 ring-2 ring-terminalCyan shadow-[0_0_25px_rgba(0,240,255,0.5)] -translate-y-2 cursor-pointer z-10'
-            : 'border-terminalCyan/70 bg-neutral-900/90 hover:border-terminalCyan hover:shadow-[0_0_20px_rgba(0,240,255,0.3)] hover:-translate-y-1.5 cursor-pointer'
-          : 'border-neutral-800 bg-neutral-950/80 opacity-40 grayscale-[60%] cursor-not-allowed'
+            ? 'border-teal-400 bg-teal-400/15 ring-2 ring-teal-400/60 shadow-glow-teal -translate-y-2 cursor-pointer z-10'
+            : 'border-line-strong bg-ink-900 hover:border-teal-400 hover:-translate-y-1 cursor-pointer'
+          : 'border-line bg-ink-950 opacity-40 grayscale-[60%] cursor-not-allowed'
       }`}
     >
       {/* 顶部状态徽章 */}
       <div
-        className={`px-1.5 py-0.5 text-[9px] font-mono font-bold flex items-center justify-between border-b flex-shrink-0 ${
+        className={`px-1.5 py-0.5 text-hud font-sans font-semibold flex items-center justify-between border-b flex-shrink-0 ${
           isEligible
             ? isSelected
-              ? 'bg-terminalCyan text-neutral-950 border-terminalCyan font-black'
-              : 'bg-terminalCyan/20 text-terminalCyan border-terminalCyan/40'
-            : 'bg-neutral-900 text-neutral-500 border-neutral-800'
+              ? 'bg-teal-400 text-ink-950 border-teal-400'
+              : 'bg-teal-400/15 text-teal-400 border-teal-400/30'
+            : 'bg-ink-900 text-fg-muted border-line'
         }`}
       >
         <span className="flex items-center gap-0.5 truncate max-w-[80%]">
           {slotIndex !== undefined && (
-            <span className="px-1 py-px rounded bg-neutral-950 text-neutral-300 border border-neutral-700 text-[8px] mr-0.5">
+            <span className="px-1 py-px bg-ink-950 text-fg-secondary border border-line font-num mr-0.5">
               位{slotIndex + 1}
             </span>
           )}
@@ -136,26 +135,26 @@ function RevealedCardItem({
           ) : (
             <>
               <X className="w-2.5 h-2.5 flex-shrink-0" />
-              <span className="truncate text-[8px]">{ineligibleReason}</span>
+              <span className="truncate">{ineligibleReason}</span>
             </>
           )}
         </span>
 
         {isSelected && (
-          <span className="flex items-center gap-0.5 text-[8px] bg-neutral-950 text-terminalCyan px-1 rounded font-mono shadow">
+          <span className="flex items-center bg-ink-950 text-teal-400 px-1">
             <Check className="w-2.5 h-2.5 stroke-[3]" />
           </span>
         )}
       </div>
 
-      {/* 卡面画廊区域 (使用 object-contain 确保全卡面完整显示不被裁剪) */}
-      <div className="relative flex-1 w-full bg-neutral-950 overflow-hidden flex flex-col justify-between p-1 min-h-0">
+      {/* 卡面画廊区域 */}
+      <div className="relative flex-1 w-full bg-ink-950 overflow-hidden flex flex-col justify-between p-1 min-h-0">
         {imgSrc && !imageError ? (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={getCardThumbnailUrl(imgSrc)}
             alt={name}
             onError={(e) => {
-              // 先回退到原图，原图也失败时再显示文字占位
               if (!e.currentTarget.dataset.fallbackTried) {
                 e.currentTarget.dataset.fallbackTried = 'true';
                 e.currentTarget.src = imgSrc;
@@ -163,21 +162,21 @@ function RevealedCardItem({
                 setImageError(true);
               }
             }}
-            className="absolute inset-0 w-full h-full object-contain group-hover:scale-105 transition-transform duration-300"
+            className="absolute inset-0 w-full h-full object-contain group-hover:scale-105 transition-transform duration-base"
             loading="lazy"
           />
         ) : (
-          <div className="absolute inset-0 bg-gradient-to-b from-neutral-900 via-neutral-950 to-neutral-900 flex flex-col items-center justify-center p-2 text-center">
-            <Shield className="w-6 h-6 text-neutral-700 mb-1" />
-            <span className="text-[10px] font-bold text-neutral-300 line-clamp-2">{name}</span>
-            <span className="text-[8px] text-neutral-500 font-mono mt-0.5">{cardNumber}</span>
+          <div className="absolute inset-0 bg-ink-900 flex flex-col items-center justify-center p-2 text-center">
+            <Shield className="w-6 h-6 text-fg-disabled mb-1" />
+            <span className="text-hud font-semibold text-fg-secondary line-clamp-2">{name}</span>
+            <span className="text-hud text-fg-muted font-num mt-0.5">{cardNumber}</span>
           </div>
         )}
 
         {/* 顶部标签层：费用、卡种与属性 */}
         <div className="relative z-10 flex items-center justify-between pointer-events-none">
           {cost !== undefined ? (
-            <div className="w-5 h-5 rounded-full bg-neutral-950/85 border border-terminalCyan/80 flex items-center justify-center text-terminalCyan font-mono font-bold text-[10px] shadow">
+            <div className="w-5 h-5 bg-ink-950/90 border border-teal-400/80 flex items-center justify-center text-teal-400 font-num font-bold text-hud">
               {cost}
             </div>
           ) : (
@@ -187,50 +186,50 @@ function RevealedCardItem({
           <div className="flex items-center gap-0.5">
             {!isCompact && getAttributeBadge(attribute)}
             {cardType && !isCompact && (
-              <div className="px-1 py-px rounded bg-neutral-950/85 border border-neutral-700 text-neutral-300 font-mono text-[8px] shadow backdrop-blur-sm">
+              <div className="px-1 py-px bg-ink-950/90 border border-line text-fg-secondary font-sans text-hud">
                 {formatCardType(cardType)}
               </div>
             )}
           </div>
         </div>
 
-        {/* 选中高亮半透明辉光蒙层 */}
+        {/* 选中高亮蒙层 */}
         {isSelected && (
-          <div className="absolute inset-0 bg-terminalCyan/20 pointer-events-none z-10 border border-terminalCyan" />
+          <div className="absolute inset-0 bg-teal-400/15 pointer-events-none z-10 border border-teal-400" />
         )}
 
         {/* 不可选遮罩 */}
         {!isEligible && (
-          <div className="absolute inset-0 bg-black/60 pointer-events-none z-10 flex items-center justify-center">
-            <span className="px-1.5 py-0.5 rounded bg-neutral-950/90 border border-neutral-700 text-[9px] text-neutral-400 font-mono">
+          <div className="absolute inset-0 bg-ink-950/65 pointer-events-none z-10 flex items-center justify-center">
+            <span className="px-1.5 py-0.5 bg-ink-950/95 border border-line text-hud text-fg-muted">
               不可选
             </span>
           </div>
         )}
 
         {/* 底部卡牌简讯小条 */}
-        <div className="relative z-10 px-1 py-0.5 rounded bg-neutral-950/90 border border-neutral-800 backdrop-blur-md flex flex-col gap-0.2 pointer-events-none">
-          <div className="text-[9px] font-bold text-white truncate font-sans">{name}</div>
-          <div className="flex items-center justify-between text-[8px] font-mono text-neutral-400">
-            <span className="truncate">{traits.length > 0 ? `<${traits[0]}>` : cardNumber}</span>
+        <div className="relative z-10 px-1.5 py-0.5 bg-ink-950/90 border border-line flex flex-col pointer-events-none">
+          <div className="text-hud font-semibold text-fg truncate">{name}</div>
+          <div className="flex items-center justify-between text-hud font-num text-fg-muted">
+            <span className="truncate font-sans">{traits.length > 0 ? `<${traits[0]}>` : cardNumber}</span>
             {basePP !== undefined && (
-              <span className="text-terminalCyan font-bold">PP {basePP}</span>
+              <span className="text-teal-400 font-bold shrink-0 ml-1">PP {basePP}</span>
             )}
           </div>
         </div>
       </div>
 
-      {/* 底部卡牌点击交互条 */}
+      {/* 底部交互条 */}
       <div
-        className={`py-1 text-center text-[9px] font-mono font-semibold transition-colors flex-shrink-0 ${
+        className={`py-1 text-center text-hud font-sans font-semibold transition-colors flex-shrink-0 ${
           isEligible
             ? isSelected
-              ? 'bg-terminalCyan text-neutral-950 font-bold'
-              : 'bg-neutral-900/90 text-neutral-300 group-hover:text-terminalCyan group-hover:bg-neutral-800'
-            : 'bg-neutral-950 text-neutral-600'
+              ? 'bg-teal-400 text-ink-950'
+              : 'bg-ink-900 text-fg-secondary group-hover:text-teal-400 group-hover:bg-ink-850'
+            : 'bg-ink-950 text-fg-disabled'
         }`}
       >
-        {isEligible ? (isSelected ? '✓ 已选中' : '点击选择') : '不可选'}
+        {isEligible ? (isSelected ? '已选中' : '点击选择') : '不可选'}
       </div>
     </div>
   );
@@ -241,7 +240,6 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
 
   const isMulti = choice.maxSelections > 1;
 
-  // 只要是 SELECT_CARDS 或者包含卡牌选项，全部激活卡牌卡面画廊模式
   const isCardGalleryMode =
     choice.choiceType === 'SELECT_CARDS' ||
     choice.effectType === 'SEARCH_TOP_CARDS' ||
@@ -265,13 +263,10 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
     if (isMulti) {
       if (selectedIds.includes(id)) {
         setSelectedIds(selectedIds.filter((item) => item !== id));
-      } else {
-        if (selectedIds.length < choice.maxSelections) {
-          setSelectedIds([...selectedIds, id]);
-        }
+      } else if (selectedIds.length < choice.maxSelections) {
+        setSelectedIds([...selectedIds, id]);
       }
     } else {
-      // 单选模式：再次点击已选中的可取消，点击其他则选中该卡
       if (selectedIds.includes(id)) {
         setSelectedIds([]);
       } else {
@@ -285,7 +280,6 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
       selectedIds.length <= choice.maxSelections) ||
     (!hasEligibleCards && selectedIds.length === 0);
 
-  // 获得已选卡牌名称提示
   const selectedCardsNames = selectedIds
     .map((id) => {
       const opt = choice.options.find((o) => o.id === id);
@@ -295,31 +289,26 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
     })
     .join(', ');
 
-  // 标题文字适配
-  const modalTitle = choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
-    ? '对手公开卡牌查阅 • REVEALED CARDS INSPECTION'
-    : choice.effectType === 'ST01_002_INSPECT_ORB' || choice.effectType === 'INSPECT_REVEALED_CARDS'
-    ? '翻开卡牌检视 • REVEALED CARDS INSPECTION'
-    : choice.effectType === 'SEARCH_TOP_CARDS' || choice.effectType === 'RESOLVE_REVEALED_SELECTION'
-    ? '战术效果处理 • 卡牌检索与检视'
-    : choice.choiceType === 'SELECT_CARDS'
-    ? '目标卡牌选择 • TARGET SELECTION'
-    : '效果处理窗口 • EFFECT RESOLUTION';
+  const modalTitle =
+    choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
+      ? '对手公开卡牌查阅'
+      : choice.effectType === 'ST01_002_INSPECT_ORB' || choice.effectType === 'INSPECT_REVEALED_CARDS'
+      ? '翻开卡牌检视'
+      : choice.effectType === 'SEARCH_TOP_CARDS' || choice.effectType === 'RESOLVE_REVEALED_SELECTION'
+      ? '战术效果处理 · 卡牌检索与检视'
+      : choice.choiceType === 'SELECT_CARDS'
+      ? '目标卡牌选择'
+      : '效果处理窗口';
 
-  // 动态横向等比缩放几何计算:
-  // 固定窗口大小下，单行横向排列所有卡片，根据卡牌总数自动缩放卡面尺寸适应窗口
   const { cardWidth, cardHeight } = useMemo(() => {
     const count = Math.max(1, choice.options.length);
-    // 可用最大容器宽度 (约 900px)
     const availableWidth = 880;
     const gap = 12;
     const totalGaps = (count - 1) * gap;
     const computedWidth = Math.floor((availableWidth - totalGaps) / count);
 
-    // 标准卡牌比例 1 : 1.395 (0.716)
-    // 可用最大卡牌高度约 280px (总窗口 530px - 标题 50px - 描述 65px - 底部 65px - 状态栏 30px)
     const maxHeight = 280;
-    const maxWidthFromHeight = Math.floor(maxHeight * 0.716); // 约 200px
+    const maxWidthFromHeight = Math.floor(maxHeight * 0.716);
 
     const finalWidth = Math.max(90, Math.min(maxWidthFromHeight, computedWidth, 185));
     const finalHeight = Math.round(finalWidth / 0.716);
@@ -328,24 +317,33 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
   }, [choice.options.length]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 select-none">
-      {/* 固定尺寸窗口容器 (w-[960px] max-w-[96vw] h-[530px] max-h-[92vh]) */}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={modalTitle}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-ink-950/85 backdrop-blur-md animate-in fade-in duration-fast select-none"
+    >
       <div
         className={`w-full ${
           isCardGalleryMode ? 'w-[960px] max-w-[96vw] h-[530px] max-h-[92vh]' : 'max-w-lg h-auto max-h-[90vh]'
-        } bg-surface border-2 border-terminalCyan/70 rounded-2xl shadow-[0_0_50px_rgba(0,240,255,0.3)] overflow-hidden flex flex-col`}
+        } bg-ink-900 border border-teal-400/70 clip-corner-md shadow-overlay overflow-hidden flex flex-col animate-in zoom-in-95 duration-fast`}
       >
+        <div className="h-[2px] w-full bg-crimson-500 shrink-0" />
+
         {/* 顶部标题栏 */}
-        <div className="px-5 py-3 bg-neutral-900 border-b border-terminalCyan/30 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2 text-terminalCyan">
-            <Zap className="w-5 h-5 animate-pulse" />
-            <span className="font-bold text-sm tracking-wider font-mono">
+        <div className="px-5 py-3 bg-ink-950 border-b border-line flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2 text-teal-400">
+            <Zap className="w-4 h-4 fill-current" />
+            <span className="font-semibold text-body-sm tracking-wide text-fg">
               {modalTitle}
+            </span>
+            <span className="text-hud font-display uppercase tracking-widest text-fg-muted hidden sm:inline">
+              EFFECT RESOLUTION
             </span>
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="text-[11px] font-mono px-2 py-0.5 rounded bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40">
+            <div className="text-hud font-num px-2 py-0.5 bg-teal-400/15 text-teal-400 border border-teal-400/40">
               {isCardGalleryMode
                 ? `可选卡牌 (${choice.options.length}张)`
                 : choice.choiceType}
@@ -354,7 +352,8 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               <button
                 type="button"
                 onClick={onCancel}
-                className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+                aria-label="放弃并关闭"
+                className="p-1 text-fg-muted hover:text-fg hover:bg-ink-800 transition-colors cursor-pointer"
                 title="放弃 / 关闭"
               >
                 <X className="w-4 h-4" />
@@ -364,35 +363,33 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
         </div>
 
         {/* 效果描述与卡牌展示主体 */}
-        <div className="p-3 sm:p-4 flex flex-col flex-1 min-h-0 gap-2.5 overflow-hidden">
+        <div className="p-3 sm:p-4 flex flex-col flex-1 min-h-0 gap-3 overflow-hidden">
           {/* 效果描述条 */}
-          <div className="p-2.5 rounded-xl border border-neutral-700/80 bg-neutral-900/80 flex items-start gap-2.5 flex-shrink-0">
-            <AlertCircle className="w-4 h-4 text-terminalGold flex-shrink-0 mt-0.5" />
-            <div className="text-xs font-mono text-neutral-200 whitespace-pre-wrap leading-relaxed">
+          <div className="p-2.5 border border-line bg-ink-950 flex items-start gap-2.5 flex-shrink-0">
+            <AlertCircle className="w-4 h-4 text-gold-300 flex-shrink-0 mt-0.5" />
+            <div className="text-caption text-fg whitespace-pre-wrap leading-relaxed">
               {choice.prompt}
             </div>
           </div>
 
-          {/* 模式 A：单行横向等比缩放排列 (窗口固定，根据卡牌数自动缩放卡图) */}
           {isCardGalleryMode ? (
             <div className="flex flex-col flex-1 min-h-0 justify-between gap-1.5">
-              <div className="flex items-center justify-between text-xs font-mono text-neutral-400 px-1 flex-shrink-0">
+              <div className="flex items-center justify-between text-caption text-fg-muted px-1 flex-shrink-0">
                 <span className="flex items-center gap-1.5">
-                  <Layers className="w-3.5 h-3.5 text-terminalCyan" />
-                  <span>点击卡牌完成选取 (单行自适应展示):</span>
+                  <Layers className="w-3.5 h-3.5 text-teal-400" />
+                  <span>点击卡牌完成选取</span>
                 </span>
-                <span>
+                <span className="font-num tabular-nums">
                   {hasEligibleCards ? (
-                    <span className="text-terminalCyan font-bold">
+                    <span className="text-teal-400 font-bold">
                       {selectedIds.length} / {choice.maxSelections} 已选
                     </span>
                   ) : (
-                    <span className="text-terminalGold font-bold">未检出符合条件的目标</span>
+                    <span className="text-gold-300 font-semibold font-sans">未检出符合条件的目标</span>
                   )}
                 </span>
               </div>
 
-              {/* 单行横向排列容器 */}
               <div className="flex flex-row items-center justify-center gap-3 w-full flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-2 py-1">
                 {choice.options.map((opt) => (
                   <RevealedCardItem
@@ -407,11 +404,10 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               </div>
             </div>
           ) : (
-            /* 模式 B：纯选项/文本分支模式 (如选择分支或Yes/No) */
             <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
-              <div className="text-[11px] font-mono text-neutral-400 flex justify-between">
-                <span>请选择选项 ({selectedIds.length} / 最多 {choice.maxSelections}):</span>
-                {choice.minSelections === 0 && <span className="text-neutral-500">可跳过</span>}
+              <div className="text-hud text-fg-muted flex justify-between font-num">
+                <span>请选择选项 ({selectedIds.length} / 最多 {choice.maxSelections})</span>
+                {choice.minSelections === 0 && <span className="font-sans">可跳过</span>}
               </div>
 
               {choice.options.map((opt) => {
@@ -421,29 +417,29 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                     key={opt.id}
                     type="button"
                     onClick={() => handleToggle(opt.id)}
-                    className={`w-full p-2.5 rounded-xl border text-left transition-all flex items-center justify-between gap-3 text-xs font-mono ${
+                    className={`w-full p-2.5 border text-left transition-colors duration-fast flex items-center justify-between gap-3 text-caption cursor-pointer ${
                       isSelected
-                        ? 'border-terminalCyan bg-terminalCyan/15 text-white shadow-[0_0_12px_rgba(0,240,255,0.2)]'
-                        : 'border-terminalBorder bg-neutral-900/80 text-neutral-300 hover:border-terminalCyan/50 hover:bg-neutral-800'
+                        ? 'border-teal-400 bg-teal-400/15 text-fg'
+                        : 'border-line bg-ink-950 text-fg-secondary hover:border-teal-400/50 hover:bg-ink-850'
                     }`}
                   >
                     <div className="flex items-center gap-2.5">
                       <div
-                        className={`w-4 h-4 rounded ${
-                          isMulti ? 'rounded-sm' : 'rounded-full'
+                        className={`w-4 h-4 ${
+                          isMulti ? '' : 'rounded-full'
                         } border flex items-center justify-center transition-colors ${
                           isSelected
-                            ? 'border-terminalCyan bg-terminalCyan text-neutral-950 font-bold'
-                            : 'border-neutral-600 bg-neutral-950'
+                            ? 'border-teal-400 bg-teal-400 text-ink-950'
+                            : 'border-line-strong bg-ink-900'
                         }`}
                       >
                         {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                       </div>
-                      <span className="font-semibold">{opt.label}</span>
+                      <span className="font-medium">{opt.label}</span>
                     </div>
                     <ChevronRight
-                      className={`w-4 h-4 transition-transform ${
-                        isSelected ? 'text-terminalCyan rotate-90' : 'text-neutral-600'
+                      className={`w-4 h-4 transition-transform duration-fast ${
+                        isSelected ? 'text-teal-400 rotate-90' : 'text-fg-disabled'
                       }`}
                     />
                   </button>
@@ -453,66 +449,54 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
           )}
 
           {/* 底部操作与确认栏 */}
-          <div className="flex items-center justify-between gap-3 pt-2 border-t border-terminalBorder/60 flex-shrink-0">
-            {/* 状态与已选反馈 */}
-            <div className="text-xs font-mono text-neutral-300 flex items-center gap-1.5 truncate">
+          <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-line flex-shrink-0">
+            <div className="text-caption text-fg-secondary flex items-center gap-1.5 truncate">
               {isCardGalleryMode && (
                 <>
-                  <Info className="w-3.5 h-3.5 text-terminalCyan flex-shrink-0" />
+                  <Info className="w-3.5 h-3.5 text-teal-400 flex-shrink-0" />
                   {selectedIds.length > 0 ? (
                     <span className="truncate">
-                      已选择: <strong className="text-white font-bold">{selectedCardsNames}</strong>
+                      已选择：<strong className="text-fg">{selectedCardsNames}</strong>
                     </span>
                   ) : hasEligibleCards ? (
-                    <span className="text-neutral-400">
-                      请点击高亮卡牌选取
-                    </span>
+                    <span className="text-fg-muted">请点击高亮卡牌选取</span>
                   ) : (
-                    <span className="text-terminalGold">
-                      无符合条件的目标卡牌，点击确认继续
-                    </span>
+                    <span className="text-gold-300">无符合条件的目标卡牌，点击确认继续</span>
                   )}
                 </>
               )}
             </div>
 
-            {/* 按钮群 */}
             <div className="flex items-center gap-2 flex-shrink-0">
               {choice.minSelections === 0 && onCancel && (
-                <button
-                  type="button"
-                  onClick={() => onConfirm([])}
-                  className="px-3.5 py-1.5 rounded-xl border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500 text-xs font-mono transition-colors"
-                >
+                <Button variant="secondary" size="sm" onClick={() => onConfirm([])}>
                   放弃 / 跳过
-                </button>
+                </Button>
               )}
 
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 disabled={!isValid && hasEligibleCards}
                 onClick={() => onConfirm(selectedIds)}
-                className={`px-5 py-2 rounded-xl font-bold font-mono text-xs shadow-lg transition-all flex items-center gap-1.5 ${
-                  isValid || !hasEligibleCards
-                    ? 'bg-terminalCyan text-neutral-950 hover:scale-105 hover:bg-terminalCyan/90 shadow-[0_0_20px_rgba(0,240,255,0.4)] cursor-pointer'
-                    : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700'
-                }`}
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>
                   {choice.effectType === 'OPPONENT_CONFIRM_REVEAL'
-                    ? '已阅确认 • PROCEED'
+                    ? '已阅确认'
                     : choice.effectType === 'ST01_002_INSPECT_ORB'
-                    ? ((choice.metadata as any)?.hasOrb ? '确认 • 下一步选择角色' : '确认 • 送入墓地')
+                    ? (choice.metadata as any)?.hasOrb
+                      ? '确认 · 选择角色'
+                      : '确认 · 送入墓地'
                     : choice.effectType === 'INSPECT_REVEALED_CARDS'
-                    ? '已阅确认 • PROCEED'
+                    ? '已阅确认'
                     : isCardGalleryMode
                     ? hasEligibleCards
                       ? `确认选择 (${selectedIds.length}/${choice.maxSelections})`
                       : '确认继续'
-                    : '确认执行处理'}
+                    : '确认执行'}
                 </span>
-              </button>
+              </Button>
             </div>
           </div>
         </div>

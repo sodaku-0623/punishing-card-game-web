@@ -8,17 +8,12 @@ import {
   ALL_OFFICIAL_CARDS,
   ALL_CARD_VARIANT_ENTRIES,
   CardData,
-  CardVariant,
   CardVariantEntry,
-  getCardVariants,
   formatCardType,
+  getAttributeDisplay,
 } from '@/lib/cards-data';
 import { findOfficialStarterDeck } from '@/lib/starter-decks';
-import {
-  CardType,
-  ElementAttribute,
-  SignalOrbType,
-} from '@zhanshuang/shared';
+import { CardType, ElementAttribute } from '@zhanshuang/shared';
 import {
   validateDeck,
   extractCoreCardNumber,
@@ -32,26 +27,18 @@ import {
   Minus,
   Trash2,
   Search,
-  CheckCircle2,
-  AlertCircle,
-  Shield,
-  Layers,
   Sparkles,
-  Info,
   Check,
-  Flame,
-  Moon,
-  Zap,
-  Snowflake,
   ZoomIn,
-  X,
   LayoutGrid,
   List,
+  X,
 } from 'lucide-react';
 import { CardDetailPanel } from '@/components/game/CardDetailPanel';
 import { CardDetailModal } from '@/components/game/CardDetailModal';
 import { useLongPress } from '@/hooks/useLongPress';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
+import { Button, Badge, HudBrackets } from '@/components/ui';
 
 interface DeckEntry {
   cardId: string;
@@ -64,84 +51,43 @@ interface DeckEntry {
   variantStar?: number;
 }
 
-// 针对暂无扫描图卡牌的高精度赛博卡牌渲染框架（严格贴合 63:88 实体卡比例）
-function CyberCardFallback({ card }: { card: CardData }) {
-  const getTheme = () => {
-    switch (card.attribute) {
-      case ElementAttribute.DARK:
-        return {
-          border: 'border-purple-500/80',
-          bg: 'from-purple-950/60 via-neutral-950 to-black',
-          badge: 'text-purple-400 border-purple-500/40',
-        };
-      case ElementAttribute.FIRE:
-        return {
-          border: 'border-red-500/80',
-          bg: 'from-red-950/60 via-neutral-950 to-black',
-          badge: 'text-red-400 border-red-500/40',
-        };
-      case ElementAttribute.PHYSICAL:
-        return {
-          border: 'border-amber-500/80',
-          bg: 'from-amber-950/60 via-neutral-950 to-black',
-          badge: 'text-amber-400 border-amber-500/40',
-        };
-      default:
-        return {
-          border: 'border-terminalCyan/80',
-          bg: 'from-cyan-950/60 via-neutral-950 to-black',
-          badge: 'text-terminalCyan border-terminalCyan/40',
-        };
-    }
-  };
-
-  const theme = getTheme();
-
+function CardFallback({ card }: { card: CardData }) {
+  const attr = getAttributeDisplay(card.attribute, card.attributeName);
   return (
-    <div
-      className={`w-full h-full p-3 flex flex-col justify-between border-2 rounded-2xl bg-gradient-to-b ${theme.bg} ${theme.border} font-mono select-none shadow-inner`}
-    >
-      {/* 顶部：费用球与编号 */}
-      <div className="flex justify-between items-center pb-1.5 border-b border-white/10">
+    <div className="w-full h-full p-2.5 flex flex-col justify-between border border-line bg-ink-900 select-none">
+      <div className="flex justify-between items-center pb-1.5 border-b border-line">
         <div className="flex items-center gap-1.5">
-          <div className="w-5 h-5 rounded-full bg-terminalCyan text-neutral-950 font-bold text-xs flex items-center justify-center shadow">
+          <span className="h-5 min-w-5 px-1 bg-ink-950 border border-line-strong text-gold-300 font-num text-caption font-bold inline-flex items-center justify-center">
             {card.cost}
-          </div>
-          <span className="text-[11px] text-neutral-300 font-bold">{card.cardNumber}</span>
+          </span>
+          <span className="font-num text-hud text-fg-secondary">{card.cardNumber}</span>
         </div>
-        <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${theme.badge}`}>
+        <span className={`px-1 border text-hud ${attr.tagColor}`}>
           {card.attributeName || (card.attribute === ElementAttribute.VOID ? '空' : card.attribute)}
         </span>
       </div>
 
-      {/* 中部角色名称立绘框 */}
-      <div className="flex-1 my-2.5 rounded-xl bg-black/75 border border-white/10 flex flex-col items-center justify-center p-3 text-center relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,240,255,0.08)_0,transparent_75%)]" />
-        <span className="text-sm font-bold text-white mb-1 relative z-10 leading-tight">
-          {card.name}
-        </span>
-        <span className="text-[10px] text-neutral-400 relative z-10 font-sans">
+      <div className="flex-1 my-2 bg-ink-950 border border-line flex flex-col items-center justify-center p-2 text-center">
+        <span className="text-body-sm font-semibold text-fg leading-tight">{card.name}</span>
+        <span className="text-hud text-fg-muted mt-1">
           {formatCardType(card.cardType, card.isInstant)}
         </span>
       </div>
 
-      {/* 效果描述 */}
-      <div className="text-[10px] text-neutral-200 line-clamp-4 bg-black/60 p-2 rounded-lg border border-white/10 mb-1.5 leading-snug font-sans">
+      <div className="text-hud text-fg-secondary line-clamp-3 bg-ink-950/80 p-1.5 border border-line leading-snug">
         {card.rulesText || '无特殊效果'}
       </div>
 
-      {/* 底部战斗数值 */}
       {card.basePP !== undefined && (
-        <div className="flex justify-between items-center text-xs pt-1.5 border-t border-white/10 font-bold">
-          <span className="text-terminalCyan">{card.basePP} PP</span>
-          <span className="text-erosionRed">{card.baseDP ?? 0} DP</span>
+        <div className="flex justify-between items-center font-num text-caption pt-1.5 border-t border-line font-semibold">
+          <span className="text-fg">{card.basePP} PP</span>
+          <span className="text-crimson-400">{card.baseDP ?? 0} DP</span>
         </div>
       )}
     </div>
   );
 }
 
-// 支持点击检视与长按放大的网格卡牌组件 (独立展示各异画版本，共用卡号投入上限)
 function DeckCardGridItem({
   card,
   inDeckCountForThisVariant,
@@ -173,129 +119,124 @@ function DeckCardGridItem({
   return (
     <div
       {...handlers}
-      className={`group relative aspect-[63/88] w-full rounded-2xl overflow-hidden border-2 transition-all duration-200 cursor-pointer select-none bg-black shadow-lg ${
+      className={`group relative aspect-[63/88] w-full rounded-card overflow-hidden border transition-all duration-fast ease-enter cursor-pointer select-none bg-ink-950 ${
         isSelected
-          ? 'border-terminalCyan ring-2 ring-terminalCyan shadow-[0_0_24px_rgba(0,240,255,0.45)] scale-[1.02]'
+          ? 'border-fg'
           : isMax
-          ? 'border-amber-500/60 opacity-80'
-          : inDeckCountForThisVariant > 0
-          ? 'border-terminalCyan shadow-[0_0_18px_rgba(0,240,255,0.35)] hover:scale-[1.02]'
-          : totalCountForCardNumber > 0
-          ? 'border-terminalCyan/50 hover:border-terminalCyan hover:scale-[1.02]'
-          : 'border-terminalBorder/80 hover:border-terminalCyan hover:shadow-[0_0_22px_rgba(0,240,255,0.3)] hover:scale-[1.02]'
+            ? 'border-gold-300/60'
+            : inDeckCountForThisVariant > 0
+              ? 'border-teal-400'
+              : 'border-line hover:border-line-strong hover:-translate-y-0.5'
       }`}
-      title={`${card.name} (${card.cardNumber} • ${card.variantBadge || card.variantName}) - 点击查看详情，长按查看大图`}
+      title={`${card.name} (${card.cardNumber} · ${card.variantBadge || card.variantName}) - 点击查看详情，长按查看大图`}
     >
-      {/* 完整卡图 (优先加载轻量缩略图) */}
+      {isSelected && <HudBrackets color="white" size="md" className="z-30" />}
+
       {card.imageUrl ? (
         <img
           src={getCardThumbnailUrl(card.imageUrl, card.cardNumber)}
           alt={card.name}
-          className="w-full h-full object-fill block"
+          className={`w-full h-full object-fill block transition-transform duration-base ease-enter group-hover:scale-[1.03] ${
+            isMax ? 'brightness-[0.65]' : ''
+          }`}
           loading="lazy"
           onError={(e) => {
             handleThumbnailError(e, card.imageUrl || `/cards/${card.cardNumber}.png`);
           }}
         />
       ) : (
-        <CyberCardFallback card={card} />
+        <CardFallback card={card} />
       )}
 
-      {/* 左上角：本异画版本专属徽章 (不再显示多形态切换，直接展示此特定异画) */}
+      {/* 已投入底部 2px teal 指示条 (design-spec 6) */}
+      {inDeckCountForThisVariant > 0 && (
+        <span aria-hidden="true" className="absolute bottom-0 inset-x-0 h-0.5 bg-teal-400 z-20" />
+      )}
+
+      {/* 左上角形态徽章 */}
       <div
-        className={`absolute top-2.5 left-2.5 z-20 px-2 py-0.5 rounded-lg border backdrop-blur-md text-[10px] font-mono font-bold flex items-center gap-1 shadow-lg ${
+        className={`absolute top-2 left-2 z-20 px-1.5 h-5 border backdrop-blur-md font-num text-hud inline-flex items-center gap-1 ${
           isFoil
-            ? 'bg-black/85 border-amber-400/80 text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.35)]'
-            : 'bg-black/80 border-neutral-700 text-neutral-300'
+            ? 'bg-ink-950/90 border-gold-300/70 text-gold-300 font-semibold'
+            : 'bg-ink-950/85 border-line text-fg-secondary'
         }`}
       >
-        {isFoil && <Sparkles className="w-2.5 h-2.5 text-amber-300" />}
-        <span>{card.variantBadge || (card.variantRarity || card.rarity) || '原画'}</span>
+        {isFoil && <Sparkles className="w-2.5 h-2.5" />}
+        <span>{card.variantBadge || card.variantRarity || card.rarity || '原画'}</span>
       </div>
 
-      {/* 右上角：投入卡组数量角标 (展示本异画张数与同卡号累计张数) */}
+      {/* 右上角投入张数角标 */}
       {totalCountForCardNumber > 0 && (
         <div
-          className={`absolute top-2.5 right-2.5 px-2 py-0.5 rounded-full backdrop-blur-md border-2 text-xs font-mono font-bold flex items-center gap-1 shadow-2xl z-20 ${
+          className={`absolute top-2 right-2 px-1.5 h-5 backdrop-blur-md border font-num tabular-nums text-hud font-semibold inline-flex items-center gap-1 z-20 ${
             isMax
-              ? 'bg-black/95 border-amber-400 text-amber-300'
-              : 'bg-black/90 border-terminalCyan text-terminalCyan'
+              ? 'bg-ink-950/95 border-gold-300 text-gold-300'
+              : 'bg-ink-950/90 border-teal-400 text-teal-400'
           }`}
         >
-          {inDeckCountForThisVariant > 0 ? (
+          {inDeckCountForThisVariant > 0 && (
             <>
-              <span className="text-[10px] text-neutral-400">本版</span>
-              <span className="text-white font-extrabold">{inDeckCountForThisVariant}</span>
-              <span className="text-[10px] text-neutral-500">|</span>
-              <span className="text-[10px] text-neutral-400">同号</span>
-              <span className={isMax ? 'text-amber-300 font-extrabold' : 'text-terminalCyan font-extrabold'}>
-                {totalCountForCardNumber}/4
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="text-[10px] text-neutral-400">同号</span>
-              <span className={isMax ? 'text-amber-300 font-extrabold' : 'text-terminalCyan font-extrabold'}>
-                {totalCountForCardNumber}/4
-              </span>
+              <span className="text-fg">{inDeckCountForThisVariant}</span>
+              <span className="text-fg-disabled">/</span>
             </>
           )}
+          <span>同号 {totalCountForCardNumber}/4</span>
         </div>
       )}
 
-      {/* 达到同编号上限4张时的遮罩 */}
+      {/* 达 4 张上限标识 */}
       {isMax && (
-        <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px] flex items-center justify-center pointer-events-none z-20">
-          <span className="px-3.5 py-1.5 rounded-xl bg-black/95 border-2 border-amber-400 text-amber-300 font-mono font-black text-xs tracking-wider shadow-2xl flex flex-col items-center">
-            <span>同号 MAX (4/4)</span>
-            <span className="text-[9px] text-neutral-400 font-normal mt-0.5">该编号投入已达上限</span>
+        <div className="absolute inset-0 bg-ink-950/45 flex items-center justify-center pointer-events-none z-20">
+          <span className="px-3 py-1 bg-ink-950/95 border border-gold-300 text-gold-300 font-num text-caption font-bold tracking-wider">
+            MAX 4/4
           </span>
         </div>
       )}
 
-      {/* 悬浮操作浮层 */}
-      <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/95 via-black/85 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-between gap-2 z-30">
+      {/* 悬浮快捷加减与放大 */}
+      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-ink-950 via-ink-950/90 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-fast flex items-center justify-between gap-2 z-30">
         <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           {inDeckCountForThisVariant > 0 && (
             <button
+              type="button"
               onClick={onRemove}
-              className="w-8 h-8 rounded-lg bg-black/90 border border-neutral-600 hover:border-erosionRed hover:text-erosionRed text-white flex items-center justify-center transition-all shadow-md active:scale-95"
-              title="从卡组移除1张本异画"
+              aria-label="移除一张"
+              className="h-7 w-7 bg-ink-900 border border-line-strong hover:border-crimson-500 hover:text-crimson-400 text-fg inline-flex items-center justify-center transition-colors cursor-pointer"
             >
-              <Minus className="w-4 h-4" />
+              <Minus className="w-3.5 h-3.5" />
             </button>
           )}
           <button
+            type="button"
             onClick={onAdd}
             disabled={isMax}
-            className={`h-8 px-3 rounded-lg font-mono text-xs font-bold flex items-center gap-1 transition-all shadow-md active:scale-95 ${
+            className={`h-7 px-2.5 font-medium text-caption inline-flex items-center gap-1 transition-colors cursor-pointer ${
               isMax
-                ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700'
-                : 'bg-terminalCyan text-neutral-950 hover:bg-terminalCyan/90 font-extrabold'
+                ? 'bg-ink-600 text-fg-disabled cursor-not-allowed'
+                : 'bg-crimson-500 text-fg hover:bg-crimson-hover clip-corner-sm'
             }`}
-            title={isMax ? '该卡牌编号所有异画合计已达4张上限' : '投入卡组+1'}
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
             <span>投入</span>
           </button>
         </div>
 
         <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation();
             onLongPress();
           }}
-          className="w-8 h-8 rounded-lg bg-black/90 border border-neutral-600 hover:border-terminalCyan hover:text-terminalCyan text-neutral-300 flex items-center justify-center transition-all shadow-md active:scale-95"
-          title="查看高清大图与效果细节 (长按也可查看)"
+          aria-label="查看大图"
+          className="h-7 w-7 bg-ink-900 border border-line-strong hover:border-teal-400 hover:text-teal-400 text-fg-secondary inline-flex items-center justify-center transition-colors cursor-pointer"
         >
-          <ZoomIn className="w-4 h-4" />
+          <ZoomIn className="w-3.5 h-3.5" />
         </button>
       </div>
     </div>
   );
 }
 
-// 支持点击检视与长按放大的清单卡牌组件 (独立展示各异画版本，共用卡号投入上限)
 function DeckCardListItem({
   card,
   inDeckCountForThisVariant,
@@ -327,18 +268,15 @@ function DeckCardListItem({
   return (
     <div
       {...handlers}
-      className={`p-3.5 rounded-2xl border-2 transition-all flex items-center gap-5 bg-surface/75 hover:border-terminalCyan cursor-pointer select-none shadow-md ${
+      className={`p-3 border transition-colors duration-fast flex items-center gap-4 cursor-pointer select-none ${
         isSelected
-          ? 'border-terminalCyan ring-2 ring-terminalCyan bg-terminalCyan/10 shadow-[0_0_20px_rgba(0,240,255,0.3)]'
-          : isMax
-          ? 'border-amber-500/50 opacity-80'
+          ? 'border-fg bg-ink-800 border-l-2 border-l-crimson-500'
           : inDeckCountForThisVariant > 0
-          ? 'border-terminalCyan/70 bg-terminalCyan/5'
-          : 'border-terminalBorder'
+            ? 'border-teal-400/60 bg-ink-850'
+            : 'border-line bg-ink-850 hover:border-line-strong hover:bg-ink-800'
       }`}
     >
-      {/* 左侧：严格 63:88 比例完整卡图 (优先加载轻量缩略图) */}
-      <div className="w-24 sm:w-28 aspect-[63/88] rounded-xl overflow-hidden border-2 border-terminalBorder/80 shrink-0 bg-black relative shadow group">
+      <div className="w-20 aspect-[63/88] rounded-card overflow-hidden border border-line shrink-0 bg-ink-950 relative">
         {card.imageUrl ? (
           <img
             src={getCardThumbnailUrl(card.imageUrl, card.cardNumber)}
@@ -350,130 +288,80 @@ function DeckCardListItem({
             }}
           />
         ) : (
-          <CyberCardFallback card={card} />
+          <CardFallback card={card} />
         )}
         <button
+          type="button"
+          aria-label="放大查看"
           onClick={(e) => {
             e.stopPropagation();
             onLongPress();
           }}
-          className="absolute inset-0 bg-black/60 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center text-white"
-          title="点击或长按放大检视"
+          className="absolute inset-0 bg-ink-950/60 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center text-fg cursor-pointer"
         >
-          <ZoomIn className="w-5 h-5 text-terminalCyan" />
+          <ZoomIn className="w-4 h-4" />
         </button>
       </div>
 
-      {/* 中部：结构化卡牌信息与效果 */}
-      <div className="flex-1 min-w-0 flex flex-col justify-between py-1">
-        <div>
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40 font-bold">
-              {card.cardNumber}
-            </span>
-            <span
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
-                isFoil
-                  ? 'border-amber-400 bg-amber-400/20 text-amber-300'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-300'
-              }`}
-            >
-              {isFoil && '★ '}
-              {card.variantBadge || (card.variantRarity || card.rarity) || '原画'}
-            </span>
-            <span className="text-xs text-neutral-400 font-mono">
-              {formatCardType(card.cardType, card.isInstant)} • {card.attributeName || (card.attribute === ElementAttribute.VOID ? '空' : card.attribute)}
-            </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-neutral-900 border border-neutral-700 text-neutral-300">
-              {card.cost} 费
-            </span>
-            {card.basePP !== undefined && (
-              <span className="text-xs font-mono font-bold text-terminalCyan">
-                {card.basePP} PP
-              </span>
-            )}
-            {card.baseDP !== undefined && (
-              <span className="text-xs font-mono font-bold text-erosionRed">
-                {card.baseDP} DP
-              </span>
-            )}
-          </div>
-
-          <h3 className="text-base font-bold text-white mb-1.5 flex items-center gap-2">
-            <span>{card.name}</span>
-            {card.variantName && card.variantName !== '基础标准' && (
-              <span className="text-xs text-amber-300/80 font-normal font-mono">
-                ({card.variantName})
-              </span>
-            )}
-          </h3>
-
-          <p className="text-xs text-neutral-300 line-clamp-2 font-sans leading-relaxed bg-black/40 p-2 rounded-lg border border-white/5">
-            {card.rulesText || '无特殊规则效果。'}
-          </p>
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap text-caption">
+          <Badge variant="crimson" className="font-num">{card.cardNumber}</Badge>
+          <Badge variant={isFoil ? 'gold' : 'neutral'} className="font-num">
+            {card.variantBadge || card.variantRarity || card.rarity || '原画'}
+          </Badge>
+          <span className="text-fg-muted">
+            {formatCardType(card.cardType, card.isInstant)} · {card.attributeName || card.attribute}
+          </span>
+          <span className="font-num text-gold-300 font-semibold">{card.cost}费</span>
+          {card.basePP !== undefined && (
+            <span className="font-num text-fg font-semibold">{card.basePP} PP</span>
+          )}
+          {card.baseDP !== undefined && (
+            <span className="font-num text-crimson-400 font-semibold">{card.baseDP} DP</span>
+          )}
         </div>
 
-        {card.traits.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-2">
-            {card.traits.map((t, i) => (
-              <span
-                key={i}
-                className="px-2 py-0.5 rounded text-[10px] font-mono bg-neutral-900 text-neutral-400 border border-neutral-800"
-              >
-                #{t}
-              </span>
-            ))}
-          </div>
-        )}
+        <h3 className="text-body font-semibold text-fg truncate">
+          {card.name}
+          {card.variantName && card.variantName !== '基础标准' && (
+            <span className="ml-2 text-caption text-gold-300 font-normal">
+              ({card.variantName})
+            </span>
+          )}
+        </h3>
+
+        <p className="text-caption text-fg-secondary line-clamp-2 bg-ink-900 px-2.5 py-1.5 border border-line">
+          {card.rulesText || '无特殊规则效果。'}
+        </p>
       </div>
 
-      {/* 右侧：投入数量快捷调节 */}
       <div
-        className="flex flex-col items-end gap-2.5 shrink-0 pl-3 border-l border-terminalBorder/60"
+        className="flex flex-col items-end gap-2 shrink-0 pl-3 border-l border-line"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-xs font-mono flex flex-col items-end">
-          <span className="text-neutral-400 text-[11px]">
-            本版已投: <strong className="text-white text-xs font-bold">{inDeckCountForThisVariant}</strong> 张
-          </span>
-          <span className="text-[11px] mt-0.5">
-            同号总计:{' '}
-            <strong className={isMax ? 'text-amber-300 text-xs font-bold' : 'text-terminalCyan text-xs font-bold'}>
-              {totalCountForCardNumber}
-            </strong>{' '}
-            / 4
-          </span>
+        <div className="text-caption font-num tabular-nums text-right">
+          <div className="text-fg-muted">
+            本版 <strong className="text-fg">{inDeckCountForThisVariant}</strong>
+          </div>
+          <div className={isMax ? 'text-gold-300' : 'text-teal-400'}>
+            同号 {totalCountForCardNumber}/4
+          </div>
         </div>
-
         <div className="flex items-center gap-1.5">
           {inDeckCountForThisVariant > 0 && (
-            <button
-              onClick={onRemove}
-              className="p-1.5 rounded-lg border border-terminalBorder hover:border-erosionRed hover:text-erosionRed text-white transition-colors"
-              title="减少1张"
-            >
-              <Minus className="w-4 h-4" />
-            </button>
+            <Button variant="icon" size="sm" aria-label="减少一张" onClick={onRemove}>
+              <Minus className="w-3.5 h-3.5" />
+            </Button>
           )}
-          <button
-            onClick={onAdd}
-            disabled={isMax}
-            className={`px-3 py-1.5 rounded-lg font-mono text-xs font-bold transition-all ${
-              isMax
-                ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700'
-                : 'bg-terminalCyan text-neutral-950 hover:bg-terminalCyan/90'
-            }`}
-            title={isMax ? '该卡牌编号所有异画合计已达4张上限' : '增加1张'}
-          >
-            +1 投入
-          </button>
+          <Button variant="primary" size="sm" disabled={isMax} onClick={onAdd}>
+            +1
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
-// 支持点击检视、显示具体异画星级与长按放大的已投入卡组清单项
 function DeckEntryListItem({
   card,
   entry,
@@ -507,15 +395,14 @@ function DeckEntryListItem({
   return (
     <div
       {...handlers}
-      className={`flex items-center justify-between p-2 rounded-lg border transition-all cursor-pointer group ${
+      className={`flex items-center justify-between px-2.5 py-2 border transition-colors duration-fast cursor-pointer ${
         isSelected
-          ? 'border-terminalCyan bg-terminalCyan/15 ring-1 ring-terminalCyan'
-          : 'border-terminalBorder bg-surface/60 hover:border-terminalCyan/50'
+          ? 'border-line-strong border-l-2 border-l-crimson-500 bg-ink-700'
+          : 'border-line bg-ink-850 hover:bg-ink-800'
       }`}
-      title="点击查看卡牌效果详情，长按查看大图"
     >
       <div className="flex items-center gap-2.5 overflow-hidden flex-1 mr-2">
-        <div className="w-9 aspect-[63/88] rounded-md border border-terminalBorder overflow-hidden shrink-0 bg-black flex items-center justify-center p-0 group-hover:border-terminalCyan transition-colors">
+        <div className="w-8 aspect-[63/88] rounded-card border border-line overflow-hidden shrink-0 bg-ink-950 flex items-center justify-center">
           {currentImg ? (
             <img
               src={getCardThumbnailUrl(currentImg, entry.cardNumber)}
@@ -527,49 +414,43 @@ function DeckEntryListItem({
               }}
             />
           ) : (
-            <span className="text-[9px] text-terminalCyan font-bold">{card.cost}</span>
+            <span className="font-num text-hud text-gold-300 font-bold">{card.cost}</span>
           )}
         </div>
 
-        <div className="overflow-hidden flex-1 min-w-0">
-          <div className="text-xs font-bold text-white group-hover:text-terminalCyan transition-colors truncate max-w-[150px] xl:max-w-[190px]">
+        <div className="min-w-0 flex-1">
+          <div className="text-caption font-semibold text-fg truncate">
             {entry.name || card.name}
           </div>
-          <div className="flex items-center gap-1.5 text-[10px] text-neutral-400 mt-0.5">
-            <span className="font-bold text-neutral-300">{entry.cardNumber || card.cardNumber}</span>
-            <span>•</span>
-            <span
-              className={`px-1 py-px rounded border text-[9px] font-mono ${
-                isFoil
-                  ? 'border-amber-400/60 bg-amber-400/10 text-amber-300'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-300'
-              }`}
-            >
-              {badge}
-            </span>
-            <span>•</span>
-            <span>{card.cost}费</span>
+          <div className="flex items-center gap-1.5 text-hud text-fg-muted mt-0.5 font-num">
+            <span>{entry.cardNumber || card.cardNumber}</span>
+            <span className={isFoil ? 'text-gold-300' : 'text-fg-disabled'}>{badge}</span>
+            <span className="text-gold-300">{card.cost}费</span>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center bg-neutral-950 rounded border border-terminalBorder">
+      <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center bg-ink-950 border border-line">
           <button
+            type="button"
             onClick={onRemove}
-            className="p-1 hover:text-white text-neutral-400"
-            title="减少1张"
+            aria-label="减少一张"
+            className="h-6 w-6 inline-flex items-center justify-center text-fg-muted hover:text-fg cursor-pointer"
           >
-            <Minus className="w-3.5 h-3.5" />
+            <Minus className="w-3 h-3" />
           </button>
-          <span className="px-2 text-xs font-bold text-terminalCyan">{count}</span>
+          <span className="px-2 font-num tabular-nums text-caption font-bold text-teal-400">
+            {count}
+          </span>
           <button
+            type="button"
             onClick={onAdd}
             disabled={isCardNumberMax}
-            className="p-1 hover:text-white text-neutral-400 disabled:opacity-30 disabled:cursor-not-allowed"
-            title={isCardNumberMax ? '该卡牌编号所有异画合计已达4张上限' : '增加1张'}
+            aria-label="增加一张"
+            className="h-6 w-6 inline-flex items-center justify-center text-fg-muted hover:text-fg disabled:text-fg-disabled disabled:cursor-not-allowed cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3 h-3" />
           </button>
         </div>
       </div>
@@ -609,7 +490,6 @@ const KIND_OPTIONS = [
   { id: '辅助机', label: '辅助机' },
   { id: '协战', label: '协战' },
 ];
-
 const ATTR_OPTIONS = [
   { id: 'ALL', label: '全属性' },
   { id: '物理', label: '物理' },
@@ -620,7 +500,6 @@ const ATTR_OPTIONS = [
   { id: '空', label: '空' },
   { id: '无', label: '无' },
 ];
-
 const COST_OPTIONS = ['ALL', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 
 export default function DeckBuilderEditorPage() {
@@ -631,7 +510,6 @@ export default function DeckBuilderEditorPage() {
   const [deckDesc, setDeckDesc] = useState('灰鸦/升格者战术联调构筑');
   const [deckEntries, setDeckEntries] = useState<DeckEntry[]>([]);
 
-  // 多维筛选器状态
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPackage, setSelectedPackage] = useState<string>('ALL');
   const [selectedRarity, setSelectedRarity] = useState<string>('ALL');
@@ -640,14 +518,16 @@ export default function DeckBuilderEditorPage() {
   const [selectedAttr, setSelectedAttr] = useState<string>('ALL');
   const [selectedCost, setSelectedCost] = useState<string>('ALL');
 
-  // 浏览展示模式：卡图大网格 (GRID) 或 图文清单列表 (LIST)
   const [viewMode, setViewMode] = useState<'GRID' | 'LIST'>('GRID');
-
+  const [mobileTab, setMobileTab] = useState<'POOL' | 'DECK'>('POOL');
   const [inspectedCard, setInspectedCard] = useState<CardVariantEntry | CardData | null>(null);
-  const [selectedCardForDetail, setSelectedCardForDetail] = useState<CardVariantEntry | CardData | null>(null);
+  const [selectedCardForDetail, setSelectedCardForDetail] = useState<
+    CardVariantEntry | CardData | null
+  >(null);
   const [saveToast, setSaveToast] = useState(false);
 
-  // 初始化加载已保存卡组
+  const isOfficialPreset = Boolean(findOfficialStarterDeck(deckId));
+
   useEffect(() => {
     if (deckId === 'new') return;
 
@@ -665,7 +545,7 @@ export default function DeckBuilderEditorPage() {
           variantKey: c.variantKey,
           variantBadge: c.variantBadge,
           variantStar: c.variantStar,
-        }))
+        })),
       );
       return;
     }
@@ -678,9 +558,7 @@ export default function DeckBuilderEditorPage() {
         if (found) {
           setDeckName(found.name);
           setDeckDesc(found.description || '');
-          if (found.cards) {
-            setDeckEntries(found.cards);
-          }
+          if (found.cards) setDeckEntries(found.cards);
         }
       } catch (e) {
         console.error(e);
@@ -688,7 +566,6 @@ export default function DeckBuilderEditorPage() {
     }
   }, [deckId]);
 
-  // 卡牌快速映射表 (支持基础卡与 808 张独立异画)
   const cardMap = useMemo(() => {
     const map = new Map<string, CardVariantEntry | CardData>();
     for (const c of ALL_OFFICIAL_CARDS) {
@@ -698,14 +575,11 @@ export default function DeckBuilderEditorPage() {
     for (const v of ALL_CARD_VARIANT_ENTRIES) {
       map.set(v.id, v);
       map.set(v.variantKey, v);
-      if (v.imageUrl) {
-        map.set(v.imageUrl, v);
-      }
+      if (v.imageUrl) map.set(v.imageUrl, v);
     }
     return map;
   }, []);
 
-  // 核心卡牌编号总投入数量 (按 extractCoreCardNumber 聚合计算，用于严格限制每种编号 <= 4 张)
   const cardNumberTotalCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of deckEntries) {
@@ -714,14 +588,14 @@ export default function DeckBuilderEditorPage() {
         cardMap.get(entry.cardId) ||
         (entry.imageUrl ? cardMap.get(entry.imageUrl) : undefined) ||
         (entry.cardNumber ? cardMap.get(entry.cardNumber) : undefined);
-      const rawNum = entry.cardNumber || card?.cardNumber || entry.cardId.replace(/^c-/, '').toUpperCase();
+      const rawNum =
+        entry.cardNumber || card?.cardNumber || entry.cardId.replace(/^c-/, '').toUpperCase();
       const coreNum = extractCoreCardNumber(rawNum);
       counts.set(coreNum, (counts.get(coreNum) || 0) + entry.count);
     }
     return counts;
   }, [deckEntries, cardMap]);
 
-  // 各独立异画版本的具体投入张数 (按 variantKey, cardId, imageUrl 索引)
   const variantSpecificCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of deckEntries) {
@@ -732,51 +606,41 @@ export default function DeckBuilderEditorPage() {
     return counts;
   }, [deckEntries]);
 
-  // 过滤后的卡池 (直接基于全量 808 张独立异画卡牌清单进行检索与过滤)
   const filteredCards = useMemo(() => {
     return ALL_CARD_VARIANT_ENTRIES.filter((card) => {
-      // 1. 关键字搜索 (编号、异画编号、角色名、效果文本、特征)
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const matchNumber = card.cardNumber.toLowerCase().includes(q);
-        const matchVariantKey = card.variantKey.toLowerCase().includes(q);
-        const matchName = card.name.toLowerCase().includes(q);
-        const matchTrait = card.traits.some((t) => t.toLowerCase().includes(q));
-        const matchRules = card.rulesText.toLowerCase().includes(q);
-        if (!matchNumber && !matchVariantKey && !matchName && !matchTrait && !matchRules) return false;
+        const match =
+          card.cardNumber.toLowerCase().includes(q) ||
+          card.variantKey.toLowerCase().includes(q) ||
+          card.name.toLowerCase().includes(q) ||
+          card.traits.some((t) => t.toLowerCase().includes(q)) ||
+          card.rulesText.toLowerCase().includes(q);
+        if (!match) return false;
       }
 
-      // 2. 卡包筛选
       if (selectedPackage !== 'ALL') {
         const p = selectedPackage;
         const code = p.split('-')[0] || '';
         const pkg = card.packageName || card.flavorText || '';
         if (pkg) {
-          const matchPkg = pkg.includes(p) || pkg.includes(code);
-          if (!matchPkg) return false;
-        } else {
-          if (!card.cardNumber.startsWith(code)) return false;
+          if (!pkg.includes(p) && !pkg.includes(code)) return false;
+        } else if (!card.cardNumber.startsWith(code)) {
+          return false;
         }
       }
 
-      // 3. 稀有度筛选 (C、R、SR、PR、ST、U)
-      if (selectedRarity !== 'ALL') {
-        const r = card.variantRarity || card.rarity;
-        if (r !== selectedRarity) return false;
+      if (selectedRarity !== 'ALL' && (card.variantRarity || card.rarity) !== selectedRarity) {
+        return false;
       }
 
-      // 4. 异画形态筛选 (C★、R★、R★★、SR★、SR★★、SR★★★)
       if (selectedVariant !== 'ALL') {
         const starCount = (selectedVariant.match(/★+/)?.[0] || '').length;
         const targetR = selectedVariant.replace(/★+/g, '').trim();
         if (starCount > 0 && card.variantStar !== starCount) return false;
-        if (targetR) {
-          const r = card.variantRarity || card.rarity;
-          if (r !== targetR) return false;
-        }
+        if (targetR && (card.variantRarity || card.rarity) !== targetR) return false;
       }
 
-      // 5. 卡牌种类筛选
       if (selectedKind !== 'ALL') {
         const raw = (card.rawCardType || '').split(',').map((s) => s.trim());
         const rules = card.rulesText || '';
@@ -816,22 +680,26 @@ export default function DeckBuilderEditorPage() {
         }
       }
 
-      // 6. 属性筛选
-      if (selectedAttr !== 'ALL') {
-        const currentAttr = card.attributeName || card.attribute;
-        if (currentAttr !== selectedAttr) return false;
+      if (selectedAttr !== 'ALL' && (card.attributeName || card.attribute) !== selectedAttr) {
+        return false;
       }
 
-      // 7. 费用筛选
-      if (selectedCost !== 'ALL') {
-        if (card.cost !== Number(selectedCost)) return false;
+      if (selectedCost !== 'ALL' && card.cost !== Number(selectedCost)) {
+        return false;
       }
 
       return true;
     });
-  }, [searchQuery, selectedPackage, selectedRarity, selectedVariant, selectedKind, selectedAttr, selectedCost]);
+  }, [
+    searchQuery,
+    selectedPackage,
+    selectedRarity,
+    selectedVariant,
+    selectedKind,
+    selectedAttr,
+    selectedCost,
+  ]);
 
-  // 5.1 规则书合法性实时验证 (所有异画共用同一个卡牌编号，上限4张)
   const validationResult: DeckValidationResult = useMemo(() => {
     const inputs: DeckCardInput[] = [];
     for (const entry of deckEntries) {
@@ -840,21 +708,19 @@ export default function DeckBuilderEditorPage() {
         cardMap.get(entry.cardId) ||
         (entry.imageUrl ? cardMap.get(entry.imageUrl) : undefined) ||
         (entry.cardNumber ? cardMap.get(entry.cardNumber) : undefined);
-      const rawNum = entry.cardNumber || card?.cardNumber || entry.cardId.replace(/^c-/, '').toUpperCase();
-      const name = entry.name || card?.name || rawNum;
-      const orb = card?.signalOrb;
+      const rawNum =
+        entry.cardNumber || card?.cardNumber || entry.cardId.replace(/^c-/, '').toUpperCase();
       inputs.push({
         cardId: entry.cardId,
         cardNumber: rawNum,
-        name,
-        signalOrb: orb,
+        name: entry.name || card?.name || rawNum,
+        signalOrb: card?.signalOrb,
         count: entry.count,
       });
     }
     return validateDeck(inputs);
   }, [deckEntries, cardMap]);
 
-  // 费用曲线统计 (0..7+)
   const costCurve = useMemo(() => {
     const counts = [0, 0, 0, 0, 0, 0, 0, 0];
     for (const entry of deckEntries) {
@@ -881,7 +747,6 @@ export default function DeckBuilderEditorPage() {
     filteredCards[0] ||
     null;
 
-  // 添加特定异画版本到卡组 (严格限制同一核心卡号所有异画合计 <= 4 张)
   function handleAddCard(card: CardVariantEntry) {
     const coreNum = extractCoreCardNumber(card.cardNumber);
     const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
@@ -889,14 +754,13 @@ export default function DeckBuilderEditorPage() {
 
     const targetKey = card.variantKey || card.id;
     const existingIdx = deckEntries.findIndex(
-      (e) => (e.variantKey || e.cardId) === targetKey || (e.imageUrl && e.imageUrl === card.imageUrl)
+      (e) =>
+        (e.variantKey || e.cardId) === targetKey ||
+        (e.imageUrl && e.imageUrl === card.imageUrl),
     );
     if (existingIdx >= 0) {
       const next = [...deckEntries];
-      next[existingIdx] = {
-        ...next[existingIdx]!,
-        count: next[existingIdx]!.count + 1,
-      };
+      next[existingIdx] = { ...next[existingIdx]!, count: next[existingIdx]!.count + 1 };
       setDeckEntries(next);
     } else {
       setDeckEntries([
@@ -915,10 +779,12 @@ export default function DeckBuilderEditorPage() {
     }
   }
 
-  // 减少特定异画版本投入数量
   function handleRemoveCard(entryKeyOrId: string) {
     const existingIdx = deckEntries.findIndex(
-      (e) => (e.variantKey || e.cardId) === entryKeyOrId || e.cardId === entryKeyOrId || e.imageUrl === entryKeyOrId
+      (e) =>
+        (e.variantKey || e.cardId) === entryKeyOrId ||
+        e.cardId === entryKeyOrId ||
+        e.imageUrl === entryKeyOrId,
     );
     if (existingIdx < 0) return;
 
@@ -932,12 +798,14 @@ export default function DeckBuilderEditorPage() {
     }
   }
 
-  // 删除该卡牌异画条目
   function handleDeleteEntry(entryKeyOrId: string) {
     setDeckEntries(
       deckEntries.filter(
-        (e) => (e.variantKey || e.cardId) !== entryKeyOrId && e.cardId !== entryKeyOrId && e.imageUrl !== entryKeyOrId
-      )
+        (e) =>
+          (e.variantKey || e.cardId) !== entryKeyOrId &&
+          e.cardId !== entryKeyOrId &&
+          e.imageUrl !== entryKeyOrId,
+      ),
     );
   }
 
@@ -947,12 +815,12 @@ export default function DeckBuilderEditorPage() {
     if (saved) {
       try {
         list = JSON.parse(saved);
-      } catch (e) {
+      } catch {
         list = [];
       }
     }
 
-    const currentId = deckId === 'new' ? `deck-${Date.now()}` : deckId;
+    const currentId = deckId === 'new' || isOfficialPreset ? `deck-${Date.now()}` : deckId;
     const firstRole = deckEntries.find((e) => {
       const c =
         cardMap.get(e.variantKey || '') ||
@@ -961,12 +829,12 @@ export default function DeckBuilderEditorPage() {
       return c?.cardType === CardType.ROLE;
     });
     const coverImage = firstRole
-      ? (firstRole.imageUrl || cardMap.get(firstRole.cardId)?.imageUrl)
+      ? firstRole.imageUrl || cardMap.get(firstRole.cardId)?.imageUrl
       : undefined;
 
     const updatedDeck = {
       id: currentId,
-      name: deckName,
+      name: isOfficialPreset ? `${deckName} (自定义)` : deckName,
       description: deckDesc,
       cards: deckEntries,
       coverImage,
@@ -984,18 +852,20 @@ export default function DeckBuilderEditorPage() {
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 2500);
 
-    // 同步持久化至服务端数据库，确保联机房间与实战加载一致
     try {
       fetch('/api/decks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: currentId,
-          name: deckName,
+          name: updatedDeck.name,
           description: deckDesc,
           cards: deckEntries.map((e) => ({
             cardId: e.cardId,
-            cardNumber: e.cardNumber || cardMap.get(e.cardId)?.cardNumber || e.cardId.replace(/^c-/, '').toUpperCase(),
+            cardNumber:
+              e.cardNumber ||
+              cardMap.get(e.cardId)?.cardNumber ||
+              e.cardId.replace(/^c-/, '').toUpperCase(),
             count: e.count,
             imageUrl: e.imageUrl,
             variantKey: e.variantKey,
@@ -1006,215 +876,245 @@ export default function DeckBuilderEditorPage() {
       }).catch(() => {});
     } catch {}
 
-    if (deckId === 'new') {
+    if (deckId === 'new' || isOfficialPreset) {
       router.replace(`/decks/${currentId}`);
     }
   }
 
+  const hasFilters =
+    Boolean(searchQuery) ||
+    selectedPackage !== 'ALL' ||
+    selectedRarity !== 'ALL' ||
+    selectedVariant !== 'ALL' ||
+    selectedKind !== 'ALL' ||
+    selectedAttr !== 'ALL' ||
+    selectedCost !== 'ALL';
+
+  const miniChip = (active: boolean) =>
+    `h-6 px-2 text-hud transition-colors cursor-pointer ${
+      active
+        ? 'bg-crimson-500 text-fg font-semibold'
+        : 'text-fg-muted hover:text-fg'
+    }`;
+
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col h-screen overflow-hidden">
-      {/* 顶部状态与保存条 */}
-      <header className="h-16 px-6 border-b border-terminalBorder bg-surface flex items-center justify-between shrink-0 z-30 shadow-md">
-        <div className="flex items-center gap-4">
-          <Link
-            href="/decks"
-            className="p-2 rounded-lg border border-terminalBorder hover:border-terminalCyan text-neutral-400 hover:text-white transition-all flex items-center gap-1.5 text-xs font-mono"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>返回库</span>
+    <div className="min-h-screen h-screen bg-ink-950 text-fg flex flex-col overflow-hidden">
+      {/* 顶部 56px 构筑工作台栏 */}
+      <header className="h-14 px-4 md:px-6 border-b border-line bg-ink-900 flex items-center justify-between gap-3 shrink-0 z-sticky">
+        <div className="flex items-center gap-3 min-w-0">
+          <Link href="/decks" className="shrink-0">
+            <Button variant="secondary" size="sm">
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">返回卡组库</span>
+            </Button>
           </Link>
 
-          <div>
+          <div className="min-w-0">
             <input
               type="text"
               value={deckName}
+              aria-label="卡组名称"
               onChange={(e) => setDeckName(e.target.value)}
-              className="text-base font-bold bg-transparent border-b border-transparent hover:border-terminalBorder focus:border-terminalCyan outline-none text-white px-1 py-0.5"
+              className="text-body font-bold bg-transparent border-b border-transparent hover:border-line focus:border-teal-400 focus:outline-none text-fg px-1 max-w-44 sm:max-w-72 truncate"
             />
-            <div className="text-[11px] text-neutral-400 font-mono px-1">
-              构筑校验:{' '}
-              {validationResult.isValid ? (
-                <span className="text-terminalCyan font-bold">● 符合5.1规则 (50张)</span>
-              ) : (
-                <span className="text-erosionRed font-bold">
-                  ● 规则不满足 ({validationResult.totalCards}/50张)
-                </span>
-              )}
+            <div className="flex items-center gap-2 px-1 text-hud">
+              <span
+                className={`font-num tabular-nums ${
+                  validationResult.isValid ? 'text-teal-400' : 'text-crimson-400'
+                }`}
+              >
+                {validationResult.isValid
+                  ? '● 5.1 规则合规 (50/50)'
+                  : `● 未达构筑标准 (${validationResult.totalCards}/50)`}
+              </span>
+              {isOfficialPreset && <Badge variant="gold">官方预组（保存将存为新副本）</Badge>}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* 窄屏视图切换 */}
+          <div className="flex lg:hidden border border-line bg-ink-950">
+            <button
+              type="button"
+              onClick={() => setMobileTab('POOL')}
+              className={`h-8 px-2.5 text-caption cursor-pointer ${
+                mobileTab === 'POOL' ? 'bg-crimson-500 text-fg' : 'text-fg-muted'
+              }`}
+            >
+              卡池
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileTab('DECK')}
+              className={`h-8 px-2.5 text-caption font-num cursor-pointer ${
+                mobileTab === 'DECK' ? 'bg-crimson-500 text-fg' : 'text-fg-muted'
+              }`}
+            >
+              卡单 ({validationResult.totalCards})
+            </button>
+          </div>
+
           {saveToast && (
-            <span className="text-xs font-mono text-terminalCyan flex items-center gap-1 animate-pulse">
-              <Check className="w-4 h-4" /> 保存成功
+            <span className="hidden sm:inline-flex items-center gap-1 text-caption text-success animate-in fade-in duration-fast">
+              <Check className="w-3.5 h-3.5" />
+              <span>已保存</span>
             </span>
           )}
 
-          <button
-            onClick={handleSaveDeck}
-            className="px-5 py-2 rounded-lg bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold text-xs font-mono flex items-center gap-2 shadow-lg transition-transform hover:scale-105"
-          >
+          <Button variant="primary" size="md" onClick={handleSaveDeck}>
             <Save className="w-4 h-4" />
-            <span>保存牌组</span>
-          </button>
+            <span>{isOfficialPreset ? '另存为副本' : '保存牌组'}</span>
+          </Button>
         </div>
       </header>
 
-      {/* 主体工作区: 左侧卡池 65% + 右侧当前构筑 35% */}
+      {/* 主体左右工作区 */}
       <div className="flex-1 flex overflow-hidden">
-        {/* ================= 左侧卡池检索与上下滚动浏览区 (65%) ================= */}
-        <div className="flex-1 flex flex-col border-r border-terminalBorder bg-background/50 overflow-hidden">
-          {/* 筛选过滤工具条 */}
-          <div className="p-3.5 border-b border-terminalBorder bg-surface/80 flex flex-col gap-2.5 shrink-0 shadow-sm">
-            {/* 第一行：搜索框 + 卡包下拉 + 视图切换 + 结果计数 */}
-            <div className="flex gap-2.5 items-center flex-wrap">
+        {/* ================= 左侧卡池浏览区 (钢蓝微网格) ================= */}
+        <div
+          className={`flex-1 flex-col border-r border-line bg-steel-grid overflow-hidden ${
+            mobileTab === 'POOL' ? 'flex' : 'hidden lg:flex'
+          }`}
+        >
+          {/* 筛选工具条 */}
+          <div className="p-3 border-b border-line bg-ink-900/95 space-y-2.5 shrink-0">
+            <div className="flex gap-2 items-center flex-wrap">
               <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-4 h-4 text-fg-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   value={searchQuery}
+                  aria-label="搜索卡池"
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="搜索卡牌编号、异画编号、名称、特征词条 (如 露西亚、BP01-001SR★)..."
-                  className="w-full pl-9 pr-4 py-1.5 rounded-lg bg-neutral-950 border border-terminalBorder text-white text-xs font-mono focus:border-terminalCyan outline-none"
+                  placeholder="搜索卡号、异画编号、角色名、特征词条..."
+                  className="w-full h-8 pl-9 pr-8 bg-ink-800 border border-line text-fg text-caption focus:border-teal-400 focus:outline-none"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    aria-label="清空搜索"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-muted hover:text-fg cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
-              {/* 卡包筛选下拉 */}
               <select
                 value={selectedPackage}
+                aria-label="筛选卡包"
                 onChange={(e) => setSelectedPackage(e.target.value)}
-                className="bg-neutral-950 border border-terminalBorder text-white text-xs font-mono rounded-lg px-2.5 py-1.5 focus:border-terminalCyan outline-none"
+                className="h-8 bg-ink-800 border border-line text-fg text-caption px-2.5 focus:border-teal-400 focus:outline-none"
               >
                 {PACKAGE_OPTIONS.map((pkg) => (
-                  <option key={pkg.id} value={pkg.id} className="bg-neutral-900 text-white">
+                  <option key={pkg.id} value={pkg.id} className="bg-ink-900">
                     {pkg.label}
                   </option>
                 ))}
               </select>
 
-              {/* 卡牌浏览展示模式切换 */}
-              <div className="flex items-center bg-neutral-950 rounded-lg p-0.5 border border-terminalBorder text-xs font-mono shrink-0">
+              <div className="inline-flex border border-line bg-ink-950">
                 <button
+                  type="button"
                   onClick={() => setViewMode('GRID')}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded transition-colors ${
-                    viewMode === 'GRID'
-                      ? 'bg-terminalCyan text-neutral-950 font-bold'
-                      : 'text-neutral-400 hover:text-white'
+                  className={`h-8 px-2.5 inline-flex items-center gap-1 text-caption transition-colors cursor-pointer ${
+                    viewMode === 'GRID' ? 'bg-crimson-500 text-fg' : 'text-fg-muted hover:text-fg'
                   }`}
-                  title="完整卡图网格列表"
                 >
                   <LayoutGrid className="w-3.5 h-3.5" />
-                  <span>卡图瀑布流</span>
+                  <span>卡图</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() => setViewMode('LIST')}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded transition-colors ${
-                    viewMode === 'LIST'
-                      ? 'bg-terminalCyan text-neutral-950 font-bold'
-                      : 'text-neutral-400 hover:text-white'
+                  className={`h-8 px-2.5 inline-flex items-center gap-1 text-caption transition-colors cursor-pointer ${
+                    viewMode === 'LIST' ? 'bg-crimson-500 text-fg' : 'text-fg-muted hover:text-fg'
                   }`}
-                  title="详细图文上下滚动清单"
                 >
                   <List className="w-3.5 h-3.5" />
-                  <span>图文清单</span>
+                  <span>清单</span>
                 </button>
               </div>
 
-              <div className="text-xs font-mono text-neutral-400 shrink-0">
-                检索结果: <span className="text-terminalCyan font-bold">{filteredCards.length}</span> 张
-              </div>
+              <span className="font-num tabular-nums text-caption text-fg-muted">
+                <strong className="text-fg">{filteredCards.length}</strong> 张
+              </span>
             </div>
 
-            {/* 第二行：稀有度、异画、种类、属性、费用多维快捷标签 */}
-            <div className="flex flex-wrap gap-2 text-xs font-mono items-center">
-              {/* 稀有度 */}
-              <div className="flex items-center bg-neutral-950 rounded-lg p-0.5 border border-terminalBorder">
-                <span className="px-1.5 text-[10px] text-neutral-500 font-bold">稀有度</span>
+            <div className="flex flex-wrap gap-1.5 items-center">
+              <div className="inline-flex items-center bg-ink-950 border border-line">
+                <span className="px-2 text-hud text-fg-muted">稀有度</span>
                 {RARITY_OPTIONS.map((r) => (
                   <button
                     key={r}
+                    type="button"
                     onClick={() => setSelectedRarity(r)}
-                    className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                      selectedRarity === r
-                        ? 'bg-terminalCyan text-neutral-950 font-bold'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
+                    className={`${miniChip(selectedRarity === r)} font-num`}
                   >
-                    {r === 'ALL' ? '全部' : r}
+                    {r === 'ALL' ? '全' : r}
                   </button>
                 ))}
               </div>
 
-              {/* 异画 */}
-              <div className="flex items-center bg-neutral-950 rounded-lg p-0.5 border border-terminalBorder">
-                <span className="px-1.5 text-[10px] text-amber-500/80 font-bold">★异画</span>
+              <div className="inline-flex items-center bg-ink-950 border border-line">
+                <span className="px-2 text-hud text-gold-300">异画</span>
                 {VARIANT_OPTIONS.map((v) => (
                   <button
                     key={v}
+                    type="button"
                     onClick={() => setSelectedVariant(v)}
-                    className={`px-1.5 py-0.5 rounded text-[11px] transition-colors ${
-                      selectedVariant === v
-                        ? 'bg-amber-400 text-neutral-950 font-bold'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
+                    className={`${miniChip(selectedVariant === v)} font-num`}
                   >
-                    {v === 'ALL' ? '全部' : v}
+                    {v === 'ALL' ? '全' : v}
                   </button>
                 ))}
               </div>
 
-              {/* 卡牌种类 */}
               <select
                 value={selectedKind}
+                aria-label="筛选种类"
                 onChange={(e) => setSelectedKind(e.target.value)}
-                className="bg-neutral-950 border border-terminalBorder text-white text-[11px] font-mono rounded-lg px-2 py-1 focus:border-terminalCyan outline-none"
+                className="h-6 bg-ink-950 border border-line text-fg text-hud px-2 focus:border-teal-400 focus:outline-none"
               >
                 {KIND_OPTIONS.map((k) => (
-                  <option key={k.id} value={k.id} className="bg-neutral-900 text-white">
+                  <option key={k.id} value={k.id} className="bg-ink-900">
                     {k.label}
                   </option>
                 ))}
               </select>
 
-              {/* 属性 */}
-              <div className="flex items-center bg-neutral-950 rounded-lg p-0.5 border border-terminalBorder">
+              <div className="inline-flex items-center bg-ink-950 border border-line">
                 {ATTR_OPTIONS.map((a) => (
                   <button
                     key={a.id}
+                    type="button"
                     onClick={() => setSelectedAttr(a.id)}
-                    className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                      selectedAttr === a.id
-                        ? 'bg-terminalCyan text-neutral-950 font-bold'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
+                    className={miniChip(selectedAttr === a.id)}
                   >
                     {a.label}
                   </button>
                 ))}
               </div>
 
-              {/* 费用 */}
-              <div className="flex items-center bg-neutral-950 rounded-lg p-0.5 border border-terminalBorder">
-                <span className="px-1.5 text-[10px] text-neutral-500 font-bold">费用</span>
+              <div className="inline-flex items-center bg-ink-950 border border-line">
+                <span className="px-2 text-hud text-fg-muted">费</span>
                 {COST_OPTIONS.map((c) => (
                   <button
                     key={c}
+                    type="button"
                     onClick={() => setSelectedCost(c)}
-                    className={`px-1.5 py-0.5 rounded text-[11px] transition-colors ${
-                      selectedCost === c
-                        ? 'bg-terminalCyan text-neutral-950 font-bold'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
+                    className={`${miniChip(selectedCost === c)} font-num`}
                   >
                     {c === 'ALL' ? '全' : c}
                   </button>
                 ))}
               </div>
 
-              {/* 重置筛选 */}
-              {(searchQuery || selectedPackage !== 'ALL' || selectedRarity !== 'ALL' || selectedVariant !== 'ALL' || selectedKind !== 'ALL' || selectedAttr !== 'ALL' || selectedCost !== 'ALL') && (
+              {hasFilters && (
                 <button
+                  type="button"
                   onClick={() => {
                     setSearchQuery('');
                     setSelectedPackage('ALL');
@@ -1224,19 +1124,18 @@ export default function DeckBuilderEditorPage() {
                     setSelectedAttr('ALL');
                     setSelectedCost('ALL');
                   }}
-                  className="px-2 py-1 rounded text-[11px] text-erosionRed hover:bg-erosionRed/10 border border-erosionRed/30 transition-colors"
+                  className="h-6 px-2 border border-crimson-500/60 text-hud text-crimson-400 hover:bg-crimson-700/20 cursor-pointer"
                 >
-                  重置筛选
+                  重置
                 </button>
               )}
             </div>
           </div>
 
-          {/* ================= 上下垂直滚动卡牌列表 ================= */}
-          <div className="flex-1 overflow-y-auto p-6">
+          {/* 卡池内容滚动区 */}
+          <div className="flex-1 overflow-y-auto p-4 md:p-5 bg-ink-950/65">
             {viewMode === 'GRID' ? (
-              /* 1. 卡图画廊模式：严格按照 63:88 比例，独立展示各个异画版本，同卡号共用4张上限 */
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4 gap-6">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                 {filteredCards.map((card) => {
                   const coreNum = extractCoreCardNumber(card.cardNumber);
                   const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
@@ -1268,8 +1167,7 @@ export default function DeckBuilderEditorPage() {
                 })}
               </div>
             ) : (
-              /* 2. 图文清单列表模式：上下垂直滚动列表，独立展示各个异画版本，同卡号共用4张上限 */
-              <div className="flex flex-col gap-4">
+              <div className="space-y-3">
                 {filteredCards.map((card) => {
                   const coreNum = extractCoreCardNumber(card.cardNumber);
                   const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
@@ -1304,90 +1202,87 @@ export default function DeckBuilderEditorPage() {
           </div>
         </div>
 
-        {/* ================= 右侧当前卡组编排与统计面板 (35%) ================= */}
-        <div className="w-[380px] xl:w-[440px] flex flex-col border-l border-terminalBorder bg-surface shrink-0 overflow-hidden font-mono shadow-xl">
-          {/* 卡组规则统计指示 */}
-          <div className="p-4 border-b border-terminalBorder bg-neutral-950/60 flex flex-col gap-3 shrink-0">
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-neutral-400 font-bold">5.1 牌组规则状态</span>
-              <span
-                className={`px-2 py-0.5 rounded font-bold ${
-                  validationResult.isValid
-                    ? 'bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40'
-                    : 'bg-erosionRed/20 text-erosionRed border border-erosionRed/40'
-                }`}
-              >
-                {validationResult.isValid ? '完全合规 (LEGAL)' : '构筑未完成'}
+        {/* ================= 右侧当前卡组编排与统计面板 ================= */}
+        <aside
+          className={`w-full lg:w-[380px] xl:w-[430px] flex-col bg-ink-900 shrink-0 overflow-hidden ${
+            mobileTab === 'DECK' ? 'flex' : 'hidden lg:flex'
+          }`}
+        >
+          {/* 5.1 规则状态与曲线 */}
+          <div className="p-4 border-b border-line bg-ink-950/70 space-y-3 shrink-0">
+            <div className="flex justify-between items-center">
+              <span className="font-display text-hud uppercase text-fg-muted">
+                RULE 5.1 // VALIDATOR
               </span>
+              <Badge variant={validationResult.isValid ? 'teal' : 'crimson'}>
+                {validationResult.isValid ? '完全合规 LEGAL' : '构筑未完成'}
+              </Badge>
             </div>
 
-            {/* 张数进度 */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2 rounded bg-surface border border-terminalBorder flex justify-between items-center">
-                <span className="text-neutral-400">总卡牌数</span>
+            <div className="grid grid-cols-2 gap-2 text-caption">
+              <div className="px-3 py-2 bg-ink-850 border border-line flex justify-between items-center">
+                <span className="text-fg-muted">总张数</span>
                 <span
-                  className={`font-bold ${
-                    validationResult.totalCards === 50
-                      ? 'text-terminalCyan'
-                      : 'text-erosionRed'
+                  className={`font-num tabular-nums font-bold ${
+                    validationResult.totalCards === 50 ? 'text-teal-400' : 'text-crimson-400'
                   }`}
                 >
-                  {validationResult.totalCards} / 50 张
+                  {validationResult.totalCards} / 50
                 </span>
               </div>
 
-              <div className="p-2 rounded bg-surface border border-terminalBorder flex justify-between items-center">
-                <span className="text-neutral-400">信号球 (各4张)</span>
-                <span className="font-bold flex items-center gap-1">
-                  <span className="text-red-400">红{validationResult.redOrbCount}</span>
-                  <span className="text-blue-400">蓝{validationResult.blueOrbCount}</span>
-                  <span className="text-amber-400">黄{validationResult.yellowOrbCount}</span>
+              <div className="px-3 py-2 bg-ink-850 border border-line flex justify-between items-center">
+                <span className="text-fg-muted">信号球</span>
+                <span className="font-num tabular-nums font-bold inline-flex items-center gap-1.5">
+                  <span className="text-orb-red">R{validationResult.redOrbCount}</span>
+                  <span className="text-orb-blue">B{validationResult.blueOrbCount}</span>
+                  <span className="text-orb-yellow">Y{validationResult.yellowOrbCount}</span>
                 </span>
               </div>
             </div>
 
-            {/* 费用曲线柱状图 */}
-            <div className="flex flex-col gap-1">
-              <div className="text-[10px] text-neutral-500 flex justify-between">
-                <span>费用分布曲线 (0..7+)</span>
+            {/* 费用分布柱状图 */}
+            <div className="space-y-1">
+              <div className="font-display text-hud uppercase text-fg-muted flex justify-between">
+                <span>COST CURVE (0..7+)</span>
               </div>
-              <div className="h-14 flex items-end gap-1 px-1 bg-surface rounded border border-terminalBorder pt-1">
+              <div className="h-14 flex items-end gap-1 px-2 pt-2 pb-1 bg-ink-850 border border-line">
                 {costCurve.map((count, cost) => {
                   const heightPercent = Math.min((count / 15) * 100, 100);
                   return (
-                    <div key={cost} className="flex-1 flex flex-col items-center h-full justify-end">
+                    <div
+                      key={cost}
+                      className="flex-1 flex flex-col items-center h-full justify-end"
+                      title={`${cost}费: ${count}张`}
+                    >
                       <div
                         style={{ height: `${heightPercent}%` }}
-                        className="w-full bg-terminalCyan/80 rounded-t min-h-[2px] transition-all duration-300"
-                        title={`${cost}费: ${count}张`}
+                        className="w-full bg-teal-400/80 min-h-[2px] transition-all duration-base ease-enter"
                       />
-                      <span className="text-[9px] text-neutral-400 mt-0.5">{cost}</span>
+                      <span className="font-num text-hud text-fg-muted mt-0.5">{cost}</span>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* 校验错误提示 */}
             {!validationResult.isValid && validationResult.errors.length > 0 && (
-              <div className="p-2.5 rounded bg-erosionRed/10 border border-erosionRed/30 text-erosionRed text-[11px] flex flex-col gap-1 max-h-20 overflow-y-auto">
+              <div className="p-2.5 bg-crimson-700/20 border border-crimson-500/50 text-crimson-400 text-caption space-y-0.5 max-h-20 overflow-y-auto">
                 {validationResult.errors.map((err, i) => (
-                  <div key={i} className="flex items-start gap-1">
-                    <span>•</span>
-                    <span>{err}</span>
-                  </div>
+                  <div key={i}>· {err}</div>
                 ))}
               </div>
             )}
           </div>
 
-          {/* 当前卡组投入列表 */}
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-            <div className="flex justify-between items-center text-xs text-neutral-400 pb-1 border-b border-terminalBorder/40">
-              <span>已投入卡单 ({deckEntries.length} 种)</span>
+          {/* 已投入卡单列表 */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+            <div className="flex justify-between items-center text-caption text-fg-muted pb-1.5 border-b border-line">
+              <span className="font-num">已投入卡单 ({deckEntries.length} 种)</span>
               <button
+                type="button"
                 onClick={() => setDeckEntries([])}
-                className="text-neutral-500 hover:text-erosionRed text-[11px] transition-colors"
+                className="text-fg-muted hover:text-crimson-400 transition-colors cursor-pointer"
               >
                 清空卡单
               </button>
@@ -1419,29 +1314,27 @@ export default function DeckBuilderEditorPage() {
                       onSelect={() => setSelectedCardForDetail(card as any)}
                       onLongPress={() => setInspectedCard(card as any)}
                       onAdd={() => {
-                        const variantEntry =
-                          (card as any).variantKey
-                            ? (card as CardVariantEntry)
-                            : ALL_CARD_VARIANT_ENTRIES.find(
-                                (v) => v.imageUrl === entry.imageUrl || v.cardNumber === card.cardNumber
-                              );
+                        const variantEntry = (card as any).variantKey
+                          ? (card as CardVariantEntry)
+                          : ALL_CARD_VARIANT_ENTRIES.find(
+                              (v) => v.imageUrl === entry.imageUrl || v.cardNumber === card.cardNumber,
+                            );
                         if (variantEntry) {
                           handleAddCard(variantEntry);
-                        } else {
-                          if (totalCount < 4) {
-                            const next = [...deckEntries];
-                            next[idx] = { ...next[idx]!, count: next[idx]!.count + 1 };
-                            setDeckEntries(next);
-                          }
+                        } else if (totalCount < 4) {
+                          const next = [...deckEntries];
+                          next[idx] = { ...next[idx]!, count: next[idx]!.count + 1 };
+                          setDeckEntries(next);
                         }
                       }}
                       onRemove={() => handleRemoveCard(entry.variantKey || entry.cardId)}
                     />
                   </div>
                   <button
+                    type="button"
+                    aria-label="删除该卡全部投入"
                     onClick={() => handleDeleteEntry(entry.variantKey || entry.cardId)}
-                    className="text-neutral-500 hover:text-erosionRed p-1.5 transition-colors rounded-lg border border-transparent hover:border-erosionRed/40 hover:bg-erosionRed/10"
-                    title="删除此卡全部投入"
+                    className="h-7 w-7 inline-flex items-center justify-center text-fg-muted hover:text-crimson-400 hover:bg-ink-800 transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1450,16 +1343,19 @@ export default function DeckBuilderEditorPage() {
             })}
           </div>
 
-          {/* 重点新特性：卡牌效果详情面板 */}
-          <div className="p-3 border-t border-terminalBorder bg-neutral-950/80 shrink-0">
-            <div className="flex items-center justify-between text-xs text-neutral-300 font-bold mb-1.5 font-mono">
-              <span>卡牌战术详情 (点击卡牌查看)</span>
+          {/* 底部卡牌战术详情面板 */}
+          <div className="p-3 border-t border-line bg-ink-950 shrink-0">
+            <div className="flex items-center justify-between text-caption text-fg-secondary mb-1.5">
+              <span className="font-display text-hud uppercase text-fg-muted">
+                CARD INSPECTOR
+              </span>
               {activeCardForPanel && (
                 <button
+                  type="button"
                   onClick={() => setInspectedCard(activeCardForPanel)}
-                  className="text-[10px] text-terminalCyan hover:underline font-bold"
+                  className="text-caption text-teal-400 hover:underline cursor-pointer"
                 >
-                  放大大图 (长按)
+                  放大大图
                 </button>
               )}
             </div>
@@ -1470,99 +1366,113 @@ export default function DeckBuilderEditorPage() {
                 if (activeCardForPanel) setInspectedCard(activeCardForPanel);
               }}
               customAction={
-                activeCardForPanel ? (() => {
-                  const coreNum = extractCoreCardNumber(activeCardForPanel.cardNumber);
-                  const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
-                  const variantKey = (activeCardForPanel as any).variantKey || activeCardForPanel.id;
-                  const inDeckVariant =
-                    variantSpecificCounts.get(variantKey) ||
-                    (activeCardForPanel.imageUrl ? variantSpecificCounts.get(activeCardForPanel.imageUrl) : 0) ||
-                    0;
-                  const isMax = totalCount >= 4;
+                activeCardForPanel
+                  ? (() => {
+                      const coreNum = extractCoreCardNumber(activeCardForPanel.cardNumber);
+                      const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
+                      const variantKey =
+                        (activeCardForPanel as any).variantKey || activeCardForPanel.id;
+                      const inDeckVariant =
+                        variantSpecificCounts.get(variantKey) ||
+                        (activeCardForPanel.imageUrl
+                          ? variantSpecificCounts.get(activeCardForPanel.imageUrl)
+                          : 0) ||
+                        0;
+                      const isMax = totalCount >= 4;
 
-                  return (
-                    <div className="flex items-center gap-1.5 font-mono">
-                      {inDeckVariant > 0 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveCard(variantKey);
-                          }}
-                          className="px-2 py-0.5 rounded border border-neutral-700 hover:border-erosionRed hover:text-erosionRed text-xs"
-                          title="从卡组移除1张本异画"
-                        >
-                          -1
-                        </button>
-                      )}
-                      <span className="text-xs text-neutral-300 font-bold px-1">
-                        已入 {inDeckVariant} (同号 {totalCount}/4)
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const targetVariant = (activeCardForPanel as any).variantKey
-                            ? (activeCardForPanel as CardVariantEntry)
-                            : ALL_CARD_VARIANT_ENTRIES.find((v) => v.cardNumber === activeCardForPanel.cardNumber);
-                          if (targetVariant) handleAddCard(targetVariant);
-                        }}
-                        disabled={isMax}
-                        className="px-2.5 py-0.5 rounded bg-terminalCyan text-neutral-950 font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={isMax ? '该卡牌编号所有异画合计已达4张上限' : '投入卡组+1'}
-                      >
-                        +1 投入
-                      </button>
-                    </div>
-                  );
-                })() : undefined
+                      return (
+                        <div className="flex items-center gap-1.5 font-num text-caption">
+                          {inDeckVariant > 0 && (
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveCard(variantKey);
+                              }}
+                            >
+                              -1
+                            </Button>
+                          )}
+                          <span className="text-fg-secondary px-1">
+                            本版 {inDeckVariant} · 同号 {totalCount}/4
+                          </span>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            disabled={isMax}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const targetVariant = (activeCardForPanel as any).variantKey
+                                ? (activeCardForPanel as CardVariantEntry)
+                                : ALL_CARD_VARIANT_ENTRIES.find(
+                                    (v) => v.cardNumber === activeCardForPanel.cardNumber,
+                                  );
+                              if (targetVariant) handleAddCard(targetVariant);
+                            }}
+                          >
+                            +1 投入
+                          </Button>
+                        </div>
+                      );
+                    })()
+                  : undefined
               }
             />
           </div>
-        </div>
+        </aside>
       </div>
 
-      {/* 超清卡牌大图与完整效果检视弹窗 (长按卡牌触发) */}
+      {/* 高清检视弹窗 */}
       <CardDetailModal
         card={inspectedCard}
-        isOpen={!!inspectedCard}
+        isOpen={Boolean(inspectedCard)}
         selectedImageUrl={inspectedCard?.imageUrl}
         onClose={() => setInspectedCard(null)}
         actionButton={
-          inspectedCard ? (() => {
-            const coreNum = extractCoreCardNumber(inspectedCard.cardNumber);
-            const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
-            const variantKey = (inspectedCard as any).variantKey || inspectedCard.id;
-            const inDeckVariant =
-              variantSpecificCounts.get(variantKey) ||
-              (inspectedCard.imageUrl ? variantSpecificCounts.get(inspectedCard.imageUrl) : 0) ||
-              0;
-            const isMax = totalCount >= 4;
+          inspectedCard
+            ? (() => {
+                const coreNum = extractCoreCardNumber(inspectedCard.cardNumber);
+                const totalCount = cardNumberTotalCounts.get(coreNum) || 0;
+                const variantKey = (inspectedCard as any).variantKey || inspectedCard.id;
+                const inDeckVariant =
+                  variantSpecificCounts.get(variantKey) ||
+                  (inspectedCard.imageUrl
+                    ? variantSpecificCounts.get(inspectedCard.imageUrl)
+                    : 0) ||
+                  0;
+                const isMax = totalCount >= 4;
 
-            return (
-              <div className="flex items-center gap-2">
-                {inDeckVariant > 0 && (
-                  <button
-                    onClick={() => handleRemoveCard(variantKey)}
-                    className="px-4 py-2 rounded-xl border border-neutral-700 hover:border-erosionRed hover:text-erosionRed text-xs font-mono font-bold transition-colors"
-                  >
-                    移除 1 张 (本版已入 {inDeckVariant})
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    const targetVariant = (inspectedCard as any).variantKey
-                      ? (inspectedCard as CardVariantEntry)
-                      : ALL_CARD_VARIANT_ENTRIES.find((v) => v.cardNumber === inspectedCard.cardNumber);
-                    if (targetVariant) handleAddCard(targetVariant);
-                  }}
-                  disabled={isMax}
-                  className="px-5 py-2 rounded-xl bg-terminalCyan hover:bg-terminalCyan/90 text-neutral-950 font-bold text-xs font-mono disabled:opacity-40 disabled:cursor-not-allowed transition-transform hover:scale-105"
-                  title={isMax ? '该卡牌编号所有异画合计已达4张上限' : '投入卡组+1'}
-                >
-                  {isMax ? '同编号已达4张上限' : `投入卡组 (+1, 同号 ${totalCount}/4)`}
-                </button>
-              </div>
-            );
-          })() : undefined
+                return (
+                  <div className="flex items-center gap-2">
+                    {inDeckVariant > 0 && (
+                      <Button
+                        variant="danger"
+                        size="md"
+                        onClick={() => handleRemoveCard(variantKey)}
+                      >
+                        移除 1 张 (本版 {inDeckVariant})
+                      </Button>
+                    )}
+                    <Button
+                      variant="primary"
+                      size="md"
+                      disabled={isMax}
+                      onClick={() => {
+                        const targetVariant = (inspectedCard as any).variantKey
+                          ? (inspectedCard as CardVariantEntry)
+                          : ALL_CARD_VARIANT_ENTRIES.find(
+                              (v) => v.cardNumber === inspectedCard.cardNumber,
+                            );
+                        if (targetVariant) handleAddCard(targetVariant);
+                      }}
+                    >
+                      {isMax ? '同编号已达 4 张上限' : `投入卡组 (+1 · 同号 ${totalCount}/4)`}
+                    </Button>
+                  </div>
+                );
+              })()
+            : undefined
         }
       />
     </div>

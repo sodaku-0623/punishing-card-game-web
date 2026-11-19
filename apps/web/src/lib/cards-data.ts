@@ -20633,8 +20633,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
       fullName: '空属性',
       text: '空 VOID',
       badgeText: '空 VOID',
-      color: 'text-cyan-300 border-cyan-400/40 bg-cyan-400/10',
-      tagColor: 'text-cyan-300 border-cyan-500/40 bg-cyan-950/40',
+      color: 'text-steel-300 border-steel-500/60 bg-steel-700/30',
+      tagColor: 'text-steel-300 border-steel-500/50 bg-steel-700/40',
     };
   }
   switch (attr) {
@@ -20645,8 +20645,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '物理属性',
         text: '物理 PHYSICAL',
         badgeText: '物理 PHYSICAL',
-        color: 'text-amber-400 border-amber-500/40 bg-amber-500/10',
-        tagColor: 'text-amber-300 border-amber-500/40 bg-amber-950/40',
+        color: 'text-gold-300 border-gold-300/50 bg-gold-300/10',
+        tagColor: 'text-gold-300 border-gold-300/40 bg-ink-850',
       };
     case ElementAttribute.DARK:
     case 'DARK':
@@ -20655,8 +20655,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '暗属性',
         text: '暗 DARK',
         badgeText: '暗 DARK',
-        color: 'text-purple-400 border-purple-500/40 bg-purple-500/10',
-        tagColor: 'text-purple-400 border-purple-500/40 bg-purple-950/40',
+        color: 'text-crimson-400 border-crimson-500/50 bg-crimson-700/20',
+        tagColor: 'text-crimson-400 border-crimson-500/40 bg-ink-850',
       };
     case ElementAttribute.FIRE:
     case 'FIRE':
@@ -20665,8 +20665,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '火属性',
         text: '火 FIRE',
         badgeText: '火 FIRE',
-        color: 'text-red-400 border-red-500/40 bg-red-500/10',
-        tagColor: 'text-red-400 border-red-500/40 bg-red-950/40',
+        color: 'text-orb-red border-orb-red/50 bg-orb-red/10',
+        tagColor: 'text-orb-red border-orb-red/40 bg-ink-850',
       };
     case ElementAttribute.ICE:
     case 'ICE':
@@ -20675,8 +20675,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '冰属性',
         text: '冰 ICE',
         badgeText: '冰 ICE',
-        color: 'text-blue-400 border-blue-500/40 bg-blue-500/10',
-        tagColor: 'text-cyan-300 border-cyan-500/40 bg-cyan-950/40',
+        color: 'text-teal-400 border-teal-400/50 bg-teal-400/10',
+        tagColor: 'text-teal-400 border-teal-400/40 bg-ink-850',
       };
     case ElementAttribute.LIGHTNING:
     case 'LIGHTNING':
@@ -20685,8 +20685,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '雷属性',
         text: '雷 LIGHTNING',
         badgeText: '雷 LIGHTNING',
-        color: 'text-yellow-400 border-yellow-500/40 bg-yellow-500/10',
-        tagColor: 'text-yellow-400 border-yellow-500/40 bg-yellow-950/40',
+        color: 'text-orb-yellow border-orb-yellow/50 bg-orb-yellow/10',
+        tagColor: 'text-orb-yellow border-orb-yellow/40 bg-ink-850',
       };
     default:
       return {
@@ -20694,8 +20694,8 @@ export function getAttributeDisplay(attr?: ElementAttribute | string, attrName?:
         fullName: '无属性',
         text: '无属性 NONE',
         badgeText: '无属性 NONE',
-        color: 'text-neutral-400 border-neutral-600 bg-neutral-800/40',
-        tagColor: 'text-neutral-400 border-neutral-700 bg-neutral-900',
+        color: 'text-fg-secondary border-line-strong bg-ink-800',
+        tagColor: 'text-fg-secondary border-line bg-ink-850',
       };
   }
 }

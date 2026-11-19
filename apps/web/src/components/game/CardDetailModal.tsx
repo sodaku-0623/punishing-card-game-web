@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
+import { CardType, ElementAttribute } from '@zhanshuang/shared';
 import { CardData, findCardByNumberOrId, getCardVariants, getCardSeries, CardVariant } from '@/lib/cards-data';
 import { getCardFullImageUrl } from '@/lib/card-image';
-import { X, Sparkles, Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Star } from 'lucide-react';
+import { X, Sparkles, Shield, Flame, Zap, Moon, Snowflake, Star } from 'lucide-react';
+import { Button, HudBrackets } from '@/components/ui';
 
 interface CardDetailModalProps {
   card: CardData | any | null;
@@ -19,8 +20,8 @@ function getElementInfo(attr: ElementAttribute | string, attrName?: string) {
   if (attrName === '空' || attr === ElementAttribute.VOID || attr === 'VOID') {
     return {
       label: '空属性',
-      icon: <Sparkles className="w-4 h-4 text-cyan-300" />,
-      badge: 'text-cyan-300 border-cyan-400/40 bg-cyan-950/40',
+      icon: <Sparkles className="w-3.5 h-3.5 text-teal-400" />,
+      badge: 'text-teal-400 border-teal-400/40 bg-teal-400/10',
     };
   }
   switch (attr) {
@@ -28,42 +29,42 @@ function getElementInfo(attr: ElementAttribute | string, attrName?: string) {
     case 'FIRE':
       return {
         label: '火属性',
-        icon: <Flame className="w-4 h-4 text-red-500" />,
-        badge: 'text-red-400 border-red-500/40 bg-red-950/40',
+        icon: <Flame className="w-3.5 h-3.5 text-crimson-400" />,
+        badge: 'text-crimson-400 border-crimson-500/40 bg-crimson-500/10',
       };
     case ElementAttribute.LIGHTNING:
     case 'LIGHTNING':
       return {
         label: '雷属性',
-        icon: <Zap className="w-4 h-4 text-yellow-400" />,
-        badge: 'text-yellow-400 border-yellow-500/40 bg-yellow-950/40',
+        icon: <Zap className="w-3.5 h-3.5 text-gold-300" />,
+        badge: 'text-gold-300 border-gold-300/40 bg-gold-300/10',
       };
     case ElementAttribute.DARK:
     case 'DARK':
       return {
         label: '暗属性',
-        icon: <Moon className="w-4 h-4 text-purple-400" />,
-        badge: 'text-purple-400 border-purple-500/40 bg-purple-950/40',
+        icon: <Moon className="w-3.5 h-3.5 text-steel-300" />,
+        badge: 'text-steel-300 border-steel-500/50 bg-steel-700/20',
       };
     case ElementAttribute.ICE:
     case 'ICE':
       return {
         label: '冰属性',
-        icon: <Snowflake className="w-4 h-4 text-cyan-300" />,
-        badge: 'text-cyan-300 border-cyan-500/40 bg-cyan-950/40',
+        icon: <Snowflake className="w-3.5 h-3.5 text-teal-400" />,
+        badge: 'text-teal-400 border-teal-400/40 bg-teal-400/10',
       };
     case ElementAttribute.PHYSICAL:
     case 'PHYSICAL':
       return {
         label: '物理属性',
-        icon: <Shield className="w-4 h-4 text-amber-300" />,
-        badge: 'text-amber-300 border-amber-500/40 bg-amber-950/40',
+        icon: <Shield className="w-3.5 h-3.5 text-fg-secondary" />,
+        badge: 'text-fg-secondary border-line-strong bg-ink-800',
       };
     default:
       return {
         label: '无属性',
         icon: null,
-        badge: 'text-neutral-400 border-neutral-700 bg-neutral-900',
+        badge: 'text-fg-muted border-line bg-ink-850',
       };
   }
 }
@@ -113,7 +114,6 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
   if (!isOpen || !card) return null;
 
-  // 如果传入的是 CardInstance，尝试查表获得完整的规则详情
   const resolvedCard: CardData =
     card.cost !== undefined && card.rulesText !== undefined
       ? card
@@ -131,26 +131,35 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 select-none animate-in fade-in duration-200"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${resolvedCard.name} 卡牌详情`}
+      className="fixed inset-0 z-50 bg-ink-950/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 select-none animate-in fade-in duration-fast"
       onClick={onClose}
     >
       <div
-        className="relative max-w-4xl w-full max-h-[90vh] bg-surface/95 border-2 border-terminalBorder rounded-2xl shadow-2xl flex flex-col md:flex-row overflow-hidden"
+        className="relative max-w-4xl w-full max-h-[90vh] bg-ink-900 border border-line-strong clip-corner-md shadow-overlay flex flex-col md:flex-row overflow-hidden animate-in zoom-in-95 duration-fast"
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="absolute inset-x-0 top-0 h-[2px] bg-crimson-500 z-20" />
+
         {/* 关闭按钮 */}
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 z-20 p-2 rounded-xl bg-neutral-900/90 border border-neutral-700 text-neutral-400 hover:text-white hover:border-terminalCyan transition-all shadow-md"
-          title="关闭"
+          aria-label="关闭卡牌详情"
+          className="absolute top-4 right-4 z-20 p-2 bg-ink-950/90 border border-line text-fg-muted hover:text-fg hover:border-teal-400 transition-colors cursor-pointer"
+          title="关闭 (Esc)"
         >
-          <X className="w-5 h-5" />
+          <X className="w-4 h-4" />
         </button>
 
-        {/* 左侧：超清卡图展示区 (严格 63:88 实体卡比例) */}
-        <div className="w-full md:w-[380px] shrink-0 p-6 flex flex-col items-center justify-center bg-black/60 border-b md:border-b-0 md:border-r border-terminalBorder">
-          <div className="relative aspect-[63/88] w-full max-w-[320px] rounded-2xl overflow-hidden border-2 border-terminalCyan/70 shadow-[0_0_30px_rgba(0,240,255,0.25)] bg-neutral-950">
+        {/* 左侧：高清卡图展示区 (63:88 实体卡比例) */}
+        <div className="w-full md:w-[380px] shrink-0 p-6 flex flex-col items-center justify-center bg-ink-950/80 border-b md:border-b-0 md:border-r border-line">
+          <div className="relative aspect-[63/88] w-full max-w-[300px] rounded-card overflow-hidden border border-line-strong bg-ink-950">
+            <HudBrackets size="sm" color="teal" />
             {cardImgSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={cardImgSrc}
                 alt={resolvedCard.name}
@@ -160,29 +169,29 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
                 }}
               />
             ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center text-terminalCyan font-mono">
-                <span className="text-xl font-bold">{resolvedCard.cardNumber}</span>
-                <span className="text-sm mt-2">{resolvedCard.name}</span>
+              <div className="w-full h-full flex flex-col items-center justify-center text-teal-400 font-num">
+                <span className="text-title-sm font-bold">{resolvedCard.cardNumber}</span>
+                <span className="text-body-sm mt-2 font-sans">{resolvedCard.name}</span>
               </div>
             )}
 
-            {/* 叠层标记 (如果在战场且有升变叠层) */}
+            {/* 升变叠层标记 */}
             {card.underneathCardIds && card.underneathCardIds.length > 0 && (
-              <div className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-black/90 text-terminalCyan text-xs font-mono font-bold flex items-center gap-1 border border-terminalCyan/60 shadow-lg">
+              <div className="absolute top-3 right-3 px-2 py-1 bg-ink-950/90 text-teal-400 text-caption font-num font-bold flex items-center gap-1 border border-teal-400/60">
                 <Sparkles className="w-3.5 h-3.5" /> 叠层: {card.underneathCardIds.length} 张
               </div>
             )}
           </div>
 
-          {/* 异画卡图版本快速切换器 (0星 / 1星 / 2星) */}
+          {/* 异画卡图版本切换器 */}
           {variants.length > 1 && (
-            <div className="w-full max-w-[320px] mt-3.5 p-2 rounded-xl bg-neutral-900/90 border border-terminalBorder/80 flex flex-col gap-1.5 font-mono shadow-md">
-              <div className="text-[11px] text-neutral-400 font-bold flex items-center justify-between">
-                <span className="flex items-center gap-1 text-white">
-                  <Star className="w-3.5 h-3.5 text-terminalGold fill-current" />
-                  <span>切换卡图版本:</span>
+            <div className="w-full max-w-[300px] mt-3.5 p-2.5 bg-ink-900 border border-line flex flex-col gap-2">
+              <div className="text-hud text-fg-secondary font-medium flex items-center justify-between">
+                <span className="flex items-center gap-1 text-fg">
+                  <Star className="w-3.5 h-3.5 text-gold-300 fill-current" />
+                  <span>卡图版本</span>
                 </span>
-                <span className="text-[10px] text-neutral-400">共 {variants.length} 款立绘</span>
+                <span className="font-num text-fg-muted">共 {variants.length} 款</span>
               </div>
               <div className="grid grid-cols-3 gap-1.5 w-full">
                 {variants.map((v) => {
@@ -195,15 +204,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
                         setActiveVariantImg(v.imageUrl);
                         if (onSelectVariant) onSelectVariant(v);
                       }}
-                      className={`py-1.5 px-2 rounded-lg text-xs font-mono font-bold border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                      className={`py-1.5 px-2 text-hud font-num font-semibold border transition-colors cursor-pointer flex flex-col items-center justify-center ${
                         isCurrent
-                          ? 'bg-terminalGold text-neutral-950 border-terminalGold shadow-[0_0_12px_rgba(255,200,0,0.5)] font-black scale-105'
-                          : 'bg-black/60 border-neutral-700 text-neutral-300 hover:border-terminalCyan/70'
+                          ? 'bg-gold-300 text-ink-950 border-gold-300'
+                          : 'bg-ink-950 border-line text-fg-secondary hover:border-teal-400/60 hover:text-fg'
                       }`}
                       title={v.name}
                     >
-                      <span className="text-xs font-extrabold">{v.shortLabel}</span>
-                      <span className="text-[9px] opacity-80 scale-90">{v.name.split(' ')[0]}</span>
+                      <span>{v.shortLabel}</span>
+                      <span className="font-sans opacity-80 truncate max-w-full">{v.name.split(' ')[0]}</span>
                     </button>
                   );
                 })}
@@ -211,41 +220,41 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
             </div>
           )}
 
-          <span className="mt-2.5 text-[11px] font-mono text-neutral-500">
-            标准卡牌规格 (63 × 88 mm) • 超清立绘检视
+          <span className="mt-2.5 text-hud font-num text-fg-muted">
+            63 × 88 mm · 高清立绘检视
           </span>
         </div>
 
         {/* 右侧：卡牌完整规则数据面板 */}
         <div className="flex-1 p-6 md:p-8 flex flex-col justify-between overflow-y-auto">
           <div className="flex flex-col gap-4">
-            {/* 头部：卡号与基础类型属性 */}
-            <div className="flex flex-wrap items-center gap-2 font-mono">
-              <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-terminalCyan/20 text-terminalCyan border border-terminalCyan/40">
+            {/* 头部标签 */}
+            <div className="flex flex-wrap items-center gap-2 pr-8">
+              <span className="px-2.5 py-0.5 text-caption font-num font-semibold bg-teal-400/15 text-teal-400 border border-teal-400/40">
                 {resolvedCard.cardNumber}
               </span>
-              <span className="px-2.5 py-1 rounded-lg text-xs font-bold border bg-neutral-900 border-neutral-700 text-neutral-300">
+              <span className="px-2.5 py-0.5 text-caption font-sans border bg-ink-850 border-line text-fg-secondary">
                 {getCardTypeLabel(resolvedCard.cardType, resolvedCard.isInstant)}
               </span>
-              <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1 ${elementInfo.badge}`}>
+              <span className={`px-2.5 py-0.5 text-caption font-sans border flex items-center gap-1 ${elementInfo.badge}`}>
                 {elementInfo.icon}
                 {elementInfo.label}
               </span>
               {(resolvedCard.packageName || resolvedCard.series || (resolvedCard.cardNumber ? getCardSeries(resolvedCard.cardNumber) : '')) && (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-bold border border-neutral-700 bg-neutral-900 text-terminalCyan">
+                <span className="px-2.5 py-0.5 text-caption font-num border border-line bg-ink-850 text-steel-300">
                   {resolvedCard.packageName || resolvedCard.series || getCardSeries(resolvedCard.cardNumber)}
                 </span>
               )}
               {resolvedCard.isInstant && (
-                <span className="px-2.5 py-1 rounded-lg text-xs font-bold border border-yellow-500/50 bg-yellow-950/40 text-yellow-400">
-                  【瞬时】(10.8)
+                <span className="px-2.5 py-0.5 text-caption font-sans font-semibold border border-gold-300/50 bg-gold-300/10 text-gold-300">
+                  【瞬时】
                 </span>
               )}
             </div>
 
             {/* 卡牌名称 */}
             <div>
-              <h2 className="text-2xl font-bold text-white tracking-wide">
+              <h2 className="text-title font-bold text-fg tracking-tight">
                 {resolvedCard.name}
               </h2>
               {resolvedCard.traits && resolvedCard.traits.length > 0 && (
@@ -253,7 +262,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
                   {resolvedCard.traits.map((trait: string, idx: number) => (
                     <span
                       key={idx}
-                      className="px-2 py-0.5 rounded text-xs font-mono bg-neutral-900 border border-neutral-800 text-neutral-400"
+                      className="px-2 py-0.5 text-caption bg-ink-850 border border-line text-fg-secondary"
                     >
                       &lt;{trait}&gt;
                     </span>
@@ -262,23 +271,23 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               )}
             </div>
 
-            {/* 战术数值矩阵 (费用 / PP / DP) */}
-            <div className="grid grid-cols-3 gap-3 p-3.5 rounded-xl bg-neutral-950/80 border border-terminalBorder font-mono">
+            {/* 战术数值矩阵 */}
+            <div className="grid grid-cols-3 gap-3 p-3.5 bg-ink-950 border border-line">
               <div className="flex flex-col items-center">
-                <span className="text-[10px] text-neutral-500 font-bold uppercase">使用费用 (COST)</span>
-                <span className="text-xl font-bold text-terminalCyan mt-0.5">
+                <span className="text-hud text-fg-muted font-display uppercase tracking-wider">COST</span>
+                <span className="text-title-sm font-num tabular-nums font-bold text-teal-400 mt-0.5">
                   {resolvedCard.cost ?? 0}
                 </span>
               </div>
-              <div className="flex flex-col items-center border-x border-neutral-800">
-                <span className="text-[10px] text-neutral-500 font-bold uppercase">战斗力量 (PP)</span>
-                <span className="text-xl font-bold text-white mt-0.5">
+              <div className="flex flex-col items-center border-x border-line">
+                <span className="text-hud text-fg-muted font-display uppercase tracking-wider">PP</span>
+                <span className="text-title-sm font-num tabular-nums font-bold text-fg mt-0.5">
                   {resolvedCard.basePP !== undefined ? `${resolvedCard.basePP}` : '--'}
                 </span>
               </div>
               <div className="flex flex-col items-center">
-                <span className="text-[10px] text-neutral-500 font-bold uppercase">破坏力量 (DP)</span>
-                <span className="text-xl font-bold text-terminalGold mt-0.5">
+                <span className="text-hud text-fg-muted font-display uppercase tracking-wider">DP</span>
+                <span className="text-title-sm font-num tabular-nums font-bold text-gold-300 mt-0.5">
                   {resolvedCard.baseDP !== undefined ? `${resolvedCard.baseDP}` : '--'}
                 </span>
               </div>
@@ -286,29 +295,28 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
             {/* 卡牌效果规则说明 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-bold font-mono text-neutral-400">卡牌效果规则 (RULES TEXT)</span>
-              <div className="p-4 rounded-xl bg-neutral-950 border border-terminalBorder text-sm leading-relaxed text-neutral-200 whitespace-pre-wrap font-sans">
+              <span className="text-hud font-display uppercase tracking-widest text-fg-muted">
+                RULES TEXT · 卡牌效果
+              </span>
+              <div className="p-4 bg-ink-950 border border-line text-body-sm leading-relaxed text-fg whitespace-pre-wrap">
                 {resolvedCard.rulesText || '此卡牌无特殊规则文本。'}
               </div>
             </div>
 
-            {/* 战术背景与风味文本 */}
+            {/* 背景风味文本 */}
             {resolvedCard.flavorText && (
-              <div className="p-3 rounded-lg bg-neutral-900/40 border border-white/5 text-xs text-neutral-400 italic">
+              <div className="p-3 bg-ink-850/60 border-l-2 border-line-strong text-caption text-fg-muted">
                 “{resolvedCard.flavorText}”
               </div>
             )}
           </div>
 
-          {/* 底部行动控制区 */}
-          <div className="mt-6 pt-4 border-t border-terminalBorder flex items-center justify-end gap-3 font-mono">
+          {/* 底部操作区 */}
+          <div className="mt-6 pt-4 border-t border-line flex items-center justify-end gap-3">
             {actionButton}
-            <button
-              onClick={onClose}
-              className="px-5 py-2.5 rounded-xl border border-neutral-700 bg-neutral-900 hover:border-terminalCyan text-white text-xs font-bold transition-all shadow"
-            >
+            <Button variant="secondary" size="md" onClick={onClose}>
               返回战场
-            </button>
+            </Button>
           </div>
         </div>
       </div>
