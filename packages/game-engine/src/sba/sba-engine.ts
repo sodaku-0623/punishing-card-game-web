@@ -2,14 +2,26 @@ import { GameState, GameEvent } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
+import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class SbaEngine {
+  private onTriggerEventCallback?: (event: TriggerEvent) => void;
+  private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
+
   constructor(
     private state: GameState,
     private zoneMgr: ZoneManager,
     private fieldMgr: BattlefieldManager,
     private events: GameEvent[]
   ) {}
+
+  setTriggerEventHandler(
+    handler: (event: TriggerEvent) => void,
+    snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot']
+  ): void {
+    this.onTriggerEventCallback = handler;
+    this.snapshotProvider = snapshotProvider;
+  }
 
   /**
    * 执行检查型规则处理 (9.1.2.b 检查型规则处理)
@@ -77,12 +89,22 @@ export class SbaEngine {
         if (isTopRole) {
           const pp = this.fieldMgr.calculateRoleEffectivePP(card.instanceId);
           if (pp <= 0) {
+            const snapshot = this.snapshotProvider?.(card.instanceId);
             this.fieldMgr.handleCardLeaveField(card.instanceId);
             this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
             this.events.push({
               type: 'CARD_DESTROYED',
               cardInstanceId: card.instanceId,
               reason: 'PP_ZERO',
+            });
+            this.onTriggerEventCallback?.({
+              type: 'CARD_DESTROYED',
+              playerId: card.controllerPlayerId,
+              cardInstanceId: card.instanceId,
+              fromZone: 'BATTLEFIELD',
+              toZone: 'GRAVEYARD',
+              destroyReason: 'PP_ZERO',
+              subjectSnapshot: snapshot,
             });
             executedAny = true;
           }

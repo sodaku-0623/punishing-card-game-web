@@ -99,9 +99,10 @@ cd apps/worker && npx wrangler dev --port 8787         # 需要 apps/worker/.dev
 - **可挂起的流程**：攻击流程由 `CombatState.step` (FREE_TIMING → BLOCK → CHARGE → DAMAGE/BATTLE → END) 驱动，结束阶段由 `endPhaseStep` 驱动；`state.timingWindow` 表示轮流使用【瞬时】的时机 (7.3.1.b / 6.5.1.a)。每个行动后 `continueFlow()` 推进不需要玩家行动的步骤，遇到待决策 (`currentPendingChoice`) 或需要玩家选择时停下。没有可用瞬时的玩家自动放弃 (`hasUsableInstant`)。
 - **决策队列**：效果通过 `setPendingChoice` 排队 (`state/pending-choice.ts`)，不会覆盖尚未处理的决策。决策结算后续步骤所需的数据放在 `metadata` 中且必须可 JSON 序列化 (不能放函数)，以便随快照恢复。提交的选择由 `validateChoiceSelection` 校验 (数量、选项 ID、`payload.eligible`)。
 - **派生数据**：费用区统计 (`openCostCount` 等) 由 `syncCostStats` 从实际卡牌派生，不要直接改写；战场角色的 `effectivePP` / `effectiveDP` 在每次行动后由引擎写入，前端直接展示 (`apps/web/src/lib/card-stats.ts`)，不要在前端重复实现 PP 计算。
-- **持续效果**：「直到回合结束为止」等带期限的效果用 `CardInstance.modifiers` (`CardModifier.untilTurn`) 表示，结束阶段与卡牌移动区域时自动消失；不要再新增 `tempPPBonus` 式的字段。永久能力 (【永】) 经 `BattlefieldManager.setStaticPPProvider` 计入 PP。
+- **持续效果**：由 `effects/continuous-effects.ts` (`ContinuousEffectEngine`) 按 8.9.1 分层 (Layer 0 基本值+装备 → Layer 1 特征/词条/失去能力，含 8.9.1.d 依赖与 8.9.1.e 时间戳 → Layer 2 PP/DP/充能数，含 `setPP`/`setDP`/`setCharge` 数值覆盖) 统一计算。「直到回合结束为止」与区域绑定效果均用 `CardInstance.modifiers` (`addCardModifier`) 表示，结束阶段与卡牌移动区域时自动清理；不要再写入已弃用的 `tempPPBonus`/`tempDPBonus`/`grantedKeywords`。永久能力 (【永】) 通过 `ContinuousEffectEngine.registerStaticRule` 注册。
+- **自动能力触发**：由 `priority/trigger-system.ts` (`TriggerManager`) 与 `priority/check-timing.ts` (`CheckTimingManager`) 统一按 8.5 / 8.7 驱动：事件入 `state.pendingTriggers` 待机池 (含 8.7.5 `state.delayedTriggers` 时限触发)，检查时机按 8.5.1.a~e 反复执行 SBA 后按「回合玩家优先、同玩家多项触发经 `CHOOSE_TRIGGER_ORDER` 自选顺序」逐项结算，并处理 8.3.4 能力无效跳过、8.7.4 离场快照、8.7.7 离场后仍须结算与 10.1 【回合1】限制。
 - **卡牌效果**：官方预组 ST01~ST03 在 `effects/preset-cards.ts` 中按卡牌文本逐卡精确实现，优先于 `card-effects.ts` 中按关键字匹配的通用解析。**其余卡包的效果仍是近似实现**，修改或新增卡牌效果时参照预组模块的写法逐卡实现并补测试。升变条件由 `database/ascension-parser.ts` 解析 (无法解析的设置 `unsupportedReason` 并拒绝升变)，固有词条由 `rules/keywords.ts` 解析。
-- **尚未实现**：协战、浮空、通用的自动能力触发框架 (`pendingTriggers` 未使用)、非战术牌上的【瞬时】能力、带条件或代价的【充能自】(BP03/BP04 部分卡牌)、玩家自选支付费用的卡牌。详见 `docs/review/` 下的审查报告。
+- **尚未实现**：替代效果与禁止效果、协战、浮空、非战术牌上的【瞬时】能力、带条件或代价的【充能自】(BP03/BP04 部分卡牌)、玩家自选支付费用的卡牌。详见 `docs/future-work.md` 与 `docs/review/` 下的审查报告。
 
 ### 两套后端必须保持协议一致
 前端同一套代码对接两种后端，因此：

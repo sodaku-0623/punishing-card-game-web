@@ -208,7 +208,8 @@ describe('升变 (8.11)', () => {
     fillCostZone(engine, p1, 5);
     const ok = play();
     expect(ok.success).toBe(true);
-    expect(state.cards[asc.instanceId]!.grantedKeywords).toContain('速攻');
+    expect(state.cards[asc.instanceId]!.effectiveKeywords).toContain('速攻');
+    expect(engine.combatMgr.hasKeyword(asc.instanceId, '速攻')).toBe(true);
   });
 
   it('升变对象的费用须小于「X以下」中的 X：费用 5 的<露西亚>不能作为 ST01-001 的升变对象', () => {

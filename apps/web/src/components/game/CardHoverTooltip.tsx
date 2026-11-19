@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
-import { formatBonus, getDisplayStats } from '@/lib/card-stats';
+import { formatBonus, formatCardModifiers, getDisplayStats } from '@/lib/card-stats';
 import {
   Flame,
   Zap,
@@ -93,6 +93,8 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
   const cardImgSrc = getCardThumbnailUrl(card.imageUrl, card.cardNumber);
 
   const { pp: totalPP, dp: totalDP, ppBonus, dpBonus } = getDisplayStats(card, cardDef);
+  const displayTraits = card.effectiveTraits ?? cardDef?.traits ?? [];
+  const activeModifiers = formatCardModifiers(card);
 
   const getElementBadge = (attr?: ElementAttribute) => {
     switch (attr) {
@@ -280,9 +282,9 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
             </div>
           )}
 
-          {cardDef?.traits && cardDef.traits.length > 0 && (
+          {displayTraits.length > 0 && (
             <div className="flex flex-wrap gap-1">
-              {cardDef.traits.map((trait, i) => (
+              {displayTraits.map((trait, i) => (
                 <span
                   key={i}
                   className="px-1.5 py-px bg-ink-850 text-fg-secondary text-hud border border-line"
@@ -292,8 +294,35 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
               ))}
             </div>
           )}
+
+          {card.effectiveKeywords && card.effectiveKeywords.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {card.effectiveKeywords.map((kw, i) => (
+                <span
+                  key={i}
+                  className="px-1.5 py-px bg-teal-400/15 text-teal-400 text-hud border border-teal-400/40 font-semibold"
+                >
+                  【{kw}】
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 生效中的持续效果修改器 (8.9) */}
+      {activeModifiers.length > 0 && (
+        <div className="bg-ink-900/90 px-2 py-1.5 border border-teal-400/35 flex flex-wrap gap-1">
+          {activeModifiers.map((tag, i) => (
+            <span
+              key={i}
+              className="px-1.5 py-px bg-teal-400/10 text-teal-400 text-hud font-num border border-teal-400/30"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* 下部：效果规则文本 */}
       <div className="bg-ink-900 p-2.5 border border-line text-hud leading-relaxed text-fg-secondary max-h-40 overflow-y-auto">

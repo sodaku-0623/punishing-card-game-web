@@ -1,4 +1,21 @@
-import { GameState, PublicGameState, CardInstance } from '@zhanshuang/shared';
+import { GameState, PublicGameState, CardInstance, PublicPendingTrigger } from '@zhanshuang/shared';
+
+function redactHiddenCard(card: CardInstance, maskedNumber: string): CardInstance {
+  return {
+    ...card,
+    cardNumber: maskedNumber,
+    cardId: maskedNumber,
+    imageUrl: undefined,
+    modifiers: undefined,
+    tempPPBonus: undefined,
+    tempDPBonus: undefined,
+    grantedKeywords: undefined,
+    effectivePP: undefined,
+    effectiveDP: undefined,
+    effectiveKeywords: undefined,
+    effectiveTraits: undefined,
+  };
+}
 
 /**
  * 隐藏信息脱敏 (12. 隐藏信息)
@@ -25,21 +42,31 @@ export function sanitizeGameStateForPlayer(state: GameState, forPlayerId: string
         opponentDeckCount++;
       }
     } else if (card.zone === 'COST') {
-      // 3.6.3.b.2 暗费只有操控玩家能够自由查看其暗费内容
+      // 3.6.3.b.2 暗费只有操控玩家能够自由查看其暗费内容 (同时剥离 imageUrl 等元数据防泄露)
       if (!card.isFaceUp && card.controllerPlayerId !== forPlayerId) {
-        publicCards[card.instanceId] = {
-          ...card,
-          cardNumber: 'HIDDEN_COST',
-          cardId: 'HIDDEN_COST',
-        };
+        publicCards[card.instanceId] = redactHiddenCard(card, 'HIDDEN_COST');
       } else {
         publicCards[card.instanceId] = card;
       }
+    } else if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp && card.controllerPlayerId !== forPlayerId) {
+      // 信号球区背面放置的卡牌对对手脱敏 (Q&A·7/10)
+      publicCards[card.instanceId] = redactHiddenCard(card, 'HIDDEN_CARD');
     } else {
-      // 战场、墓地、信号球区、处理区均为公开区域 (3.1.3)
+      // 战场、墓地、正面信号球区、处理区均为公开区域 (3.1.3)
       publicCards[card.instanceId] = card;
     }
   }
+
+  const publicPendingTriggers: PublicPendingTrigger[] | undefined =
+    state.pendingTriggers && state.pendingTriggers.length > 0
+      ? state.pendingTriggers.map((t) => ({
+          id: t.id,
+          sourceCardInstanceId: t.sourceCardInstanceId,
+          sourceCardNumber: t.sourceCardNumber ?? state.cards[t.sourceCardInstanceId]?.cardNumber ?? '',
+          controllerPlayerId: t.controllerPlayerId,
+          label: t.label ?? `${t.sourceCardNumber ?? t.abilityId} 自动能力`,
+        }))
+      : undefined;
 
   return {
     gameId: state.gameId,
@@ -54,6 +81,7 @@ export function sanitizeGameStateForPlayer(state: GameState, forPlayerId: string
     currentCombat: state.currentCombat,
     timingWindow: state.timingWindow,
     endPhaseStep: state.endPhaseStep,
+    pendingTriggers: publicPendingTriggers,
     currentPendingChoice:
       state.currentPendingChoice?.playerId === forPlayerId
         ? state.currentPendingChoice

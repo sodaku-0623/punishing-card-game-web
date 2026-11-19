@@ -120,7 +120,11 @@ describe('CardEffectEngine 全卡牌效果识别与自动触发测试', () => {
           selectedIds: [roleCard.instanceId],
         });
       }
-      expect(roleCard.tempPPBonus).toBe(2000);
+      const updatedRole = engine.getState().cards[roleCard.instanceId]!;
+      expect(updatedRole.modifiers?.some((m) => m.pp === 2000)).toBe(true);
+      expect(engine.fieldMgr.calculateRoleEffectivePP(roleCard.instanceId)).toBe(
+        (engine.cardDb.getCard(updatedRole.cardNumber)?.basePP ?? 0) + 2000
+      );
     }
   });
 

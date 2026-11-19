@@ -1,8 +1,8 @@
 'use client';
 
 import React from 'react';
-import { GamePhase } from '@zhanshuang/shared';
-import { Clock, Swords, ChevronRight, RefreshCw } from 'lucide-react';
+import { GamePhase, PublicPendingTrigger } from '@zhanshuang/shared';
+import { Clock, Swords, ChevronRight, RefreshCw, Zap } from 'lucide-react';
 import { Button, Badge } from '@/components/ui';
 
 interface TurnFlowViewProps {
@@ -12,6 +12,7 @@ interface TurnFlowViewProps {
   canPassTiming?: boolean;
   passLabel?: string;
   waitingHint?: string;
+  pendingTriggers?: PublicPendingTrigger[];
 }
 
 export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
@@ -21,6 +22,7 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
   canPassTiming,
   passLabel,
   waitingHint,
+  pendingTriggers,
 }) => {
   const PHASES = [
     { id: 'STAND_PHASE', title: '竖直阶段', subtitle: '竖直战场与费用区卡牌', code: '6.2' },
@@ -109,6 +111,29 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {pendingTriggers && pendingTriggers.length > 0 && (
+        <div className="mt-2.5 pt-2 border-t border-line">
+          <div className="text-hud font-display uppercase text-teal-400 font-semibold mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1">
+              <Zap className="w-3 h-3 fill-current" />
+              <span>待机自动能力</span>
+            </span>
+            <span className="font-num">{pendingTriggers.length}</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            {pendingTriggers.slice(0, 4).map((t) => (
+              <div
+                key={t.id}
+                className="px-2 py-1 border border-teal-400/35 bg-teal-400/10 text-hud text-fg-secondary truncate"
+                title={t.label}
+              >
+                {t.label}
+              </div>
+            ))}
           </div>
         </div>
       )}

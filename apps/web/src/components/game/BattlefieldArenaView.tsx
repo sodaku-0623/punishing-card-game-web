@@ -12,6 +12,7 @@ import { DeckZoneView } from './DeckZoneView';
 import { GraveyardZoneView } from './GraveyardZoneView';
 import { Swords, Clock, Shield } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
+import { canRoleAttackOnEnterTurn } from '@/lib/card-stats';
 
 export interface AttackAnimInfo {
   attackerCardId: string;
@@ -274,10 +275,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           roleDef?.rulesText?.includes('起动')
         );
         const canActivateAbility = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
-        const hasRush = Boolean(
-          roleDef?.rulesText?.includes('速攻') ||
-          roleCard?.grantedKeywords?.includes('速攻')
-        );
+        const hasRush = canRoleAttackOnEnterTurn(roleCard, roleDef);
         const canAttack =
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&

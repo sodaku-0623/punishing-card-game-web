@@ -77,8 +77,9 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     expect(engine.getState().battlefields[p1]![0]!.roleCardId).toBe(ascRole.instanceId);
     // 底卡保留原角色
     expect(engine.getState().cards[ascRole.instanceId]?.underneathCardIds).toContain(baseTarget.instanceId);
-    // 获得速攻词条
-    expect(engine.getState().cards[ascRole.instanceId]?.grantedKeywords).toContain('速攻');
+    // 获得速攻词条 (经 8.9 持续效果修改器赋予，移区前跨回合保留)
+    expect(engine.getState().cards[ascRole.instanceId]?.effectiveKeywords).toContain('速攻');
+    expect(engine.combatMgr.hasKeyword(ascRole.instanceId, '速攻')).toBe(true);
 
     // ST01-001 的【出】(丢弃1张手牌：……) 代价可选，选择不支付以完成出场能力的处理
     const entryChoice = engine.getState().currentPendingChoice;
@@ -167,7 +168,11 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
         selectedIds: [role.instanceId],
       });
     }
-    expect(role.tempDPBonus).toBe(1);
+    const latestRole78 = engine.getState().cards[role.instanceId]!;
+    expect(latestRole78.modifiers?.some((m) => m.dp === 1)).toBe(true);
+    expect(engine.fieldMgr.calculateRoleEffectiveDP(role.instanceId)).toBe(
+      (engine.cardDb.getCard(latestRole78.cardNumber)?.baseDP ?? 0) + 1
+    );
 
     // C. 测试伤害充能中翻出 BP01-081 时触发【充能自】(抽1张牌 / PP+2000)
     const handCountBefore = engine.zoneMgr.getCardsInZone(p1, 'HAND').length;
@@ -225,7 +230,10 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
 
     engine.effectEngine.resolveUniversalEntryEffect(p1, role.instanceId, customEntryCard);
     expect(engine.zoneMgr.getCardsInZone(p1, 'HAND').length).toBe(handBefore + 2);
-    expect(role.tempPPBonus).toBe(1500);
+    expect(role.modifiers?.some((m) => m.pp === 1500)).toBe(true);
+    expect(engine.fieldMgr.calculateRoleEffectivePP(role.instanceId)).toBe(
+      (engine.cardDb.getCard(role.cardNumber)?.basePP ?? 0) + 1500
+    );
   });
 
   it('7. BP01-003 露西亚·鸦羽：回手己方灰鸦小队角色并指定回手<=5费角色', () => {

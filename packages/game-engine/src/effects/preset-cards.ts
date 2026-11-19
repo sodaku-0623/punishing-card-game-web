@@ -1,5 +1,7 @@
 import { CardInstance, CardModifier, CardType, CardVersionData, GameAction, PendingChoice } from '@zhanshuang/shared';
 import type { CardEffectContext, CardEffectEngine } from './card-effects.js';
+import { addCardModifier } from './continuous-effects.js';
+import type { TriggerManager } from '../priority/trigger-system.js';
 
 type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
@@ -253,71 +255,177 @@ export class PresetCardEffects {
   }
 
   /**
-   * 8.9 永久能力带来的 PP 增减
+   * 8.5 / 8.7 向统一自动能力触发管理器注册官方预组与通用关键字自动能力：
+   * - ST02-009 奥兹玛 (7.2.1.d 攻击时)
+   * - ST03-009 可靠的伙伴 21号&诺克提 (《薇拉·瑰丽》出场时)
+   * - 10.16 【同命】 (7.5.1.d / 7.6.1.f 攻击结束时)
+   */
+  registerTriggers(triggerMgr: TriggerManager): void {
+    // 7.2.1.d ST02-009 奥兹玛赋予《露娜·银冕》的攻击时自动能力
+    triggerMgr.registerTrigger({
+      abilityId: 'ST02_009_OZMA_ON_ATTACK',
+      eventTypes: ['ATTACK_DECLARED'],
+      collect: ({ state, event, cardDb }) => {
+        const attackerId = event.cardInstanceId;
+        if (!attackerId) return [];
+        const attacker = state.cards[attackerId];
+        if (!attacker?.attachedEquipmentId) return [];
+        const equip = state.cards[attacker.attachedEquipmentId];
+        if (equip?.cardNumber !== 'ST02-009') return [];
+        const attackerDef = cardDb.getCard(attacker.cardNumber);
+        if (attackerDef?.name !== '露娜·银冕') return [];
+        return [
+          {
+            sourceCardInstanceId: attacker.instanceId,
+            sourceCardNumber: 'ST02-009',
+            controllerPlayerId: attacker.controllerPlayerId,
+            label: '【奥兹玛】攻击时：消除2张同色信号球，对方1张角色PP-4000',
+            triggerContext: {
+              equipmentCardId: equip.instanceId,
+              attackerCardId: attacker.instanceId,
+            },
+          },
+        ];
+      },
+      execute: (trigger) => {
+        this.askOrbCost(
+          trigger.controllerPlayerId,
+          trigger.sourceCardInstanceId,
+          'SAME',
+          2,
+          'PRESET_ST02_009_ATTACK',
+          '【奥兹玛】攻击时，是否消除2张相邻的同色信号球：选择对方战场1张角色 PP-4000？'
+        );
+      },
+    });
+
+    // ST03-009 可靠的伙伴 21号&诺克提：【自】我方1张《薇拉·瑰丽》出场时
+    triggerMgr.registerTrigger({
+      abilityId: 'ST03_009_PARTNER_ON_VERA_ENTER',
+      eventTypes: ['CARD_ENTERED_FIELD'],
+      collect: ({ state, event, cardDb, fieldMgr }) => {
+        const enteredId = event.cardInstanceId;
+        const playerId = event.playerId;
+        if (!enteredId || !playerId) return [];
+        const enteredName =
+          event.subjectSnapshot?.name ??
+          (state.cards[enteredId] ? cardDb.getCard(state.cards[enteredId]!.cardNumber)?.name : undefined);
+        if (enteredName !== '薇拉·瑰丽') return [];
+
+        const matches = [];
+        for (const slot of fieldMgr.getSlots(playerId)) {
+          if (!slot.roleCardId || slot.roleCardId === enteredId) continue;
+          const partner = state.cards[slot.roleCardId];
+          if (!partner || partner.cardNumber !== 'ST03-009') continue;
+          matches.push({
+            sourceCardInstanceId: partner.instanceId,
+            sourceCardNumber: 'ST03-009',
+            controllerPlayerId: playerId,
+            label: `【可靠的伙伴 21号&诺克提】(卡位 ${(partner.slotIndex ?? 0) + 1})：《薇拉·瑰丽》出场时可消2红球竖直并PP+2000/DP-1`,
+            triggerContext: { enteredCardId: enteredId },
+          });
+        }
+        return matches;
+      },
+      execute: (trigger) => {
+        this.askOrbCost(
+          trigger.controllerPlayerId,
+          trigger.sourceCardInstanceId,
+          'RED',
+          2,
+          'PRESET_ST03_009_TRIGGER',
+          '【可靠的伙伴 21号&诺克提】《薇拉·瑰丽》出场，是否消除2张相邻的红色信号球：竖直该牌，PP+2000，DP-1？'
+        );
+      },
+    });
+
+    // 10.16 同命：持有者的攻击结束时，可以将该角色破坏；若如此做，破坏与其发生战斗的角色
+    triggerMgr.registerTrigger({
+      abilityId: 'KEYWORD_MUTUAL_DESTINY_ON_ATTACK_END',
+      eventTypes: ['ATTACK_ENDED'],
+      collect: ({ state, event, fieldMgr, continuousEffects }) => {
+        const attackerId = event.cardInstanceId;
+        const playerId = event.playerId;
+        if (!attackerId || !playerId) return [];
+        if (!fieldMgr.isSlotRole(playerId, attackerId)) return [];
+        if (!continuousEffects.hasKeyword(attackerId, '同命')) return [];
+        const attacker = state.cards[attackerId]!;
+        const attackerDef = this.def(attacker);
+        return [
+          {
+            sourceCardInstanceId: attackerId,
+            sourceCardNumber: attacker.cardNumber,
+            controllerPlayerId: playerId,
+            label: `【${attackerDef?.name ?? attacker.cardNumber}】【同命】攻击结束时可破坏自身与交战角色`,
+            triggerContext: {
+              attackerCardId: attackerId,
+              battledCardId: event.battledCardId,
+            },
+          },
+        ];
+      },
+      execute: (trigger, ctx) => {
+        const attackerId = trigger.sourceCardInstanceId;
+        const playerId = trigger.controllerPlayerId;
+        if (!ctx.fieldMgr.isSlotRole(playerId, attackerId)) return;
+        const battledId = trigger.triggerContext.battledCardId as string | undefined;
+        const battled = battledId ? ctx.state.cards[battledId] : undefined;
+        const battledName = battled ? this.def(battled)?.name ?? battled.cardNumber : undefined;
+        ctx.enqueueChoice({
+          id: this.choiceId('mutual-destiny'),
+          playerId,
+          choiceType: 'SELECT_OPTION',
+          prompt: battledName
+            ? `【同命】攻击结束：是否将该角色破坏，并破坏与其发生战斗的【${battledName}】？`
+            : '【同命】攻击结束：是否将该角色破坏？(本次攻击没有与其发生战斗的角色)',
+          options: [
+            { id: 'opt_yes', label: '发动【同命】' },
+            { id: 'opt_no', label: '不发动' },
+          ],
+          effectType: 'MUTUAL_DESTINY',
+          sourceCardInstanceId: attackerId,
+          metadata: { attackerCardId: attackerId, battledCardId: battledId },
+          minSelections: 1,
+          maxSelections: 1,
+        });
+      },
+    });
+  }
+
+  /**
+   * 8.9 永久能力带来的 PP 增减 (已由 ContinuousEffectEngine 统一分层计算，保留此方法用于直接查询)
    */
   staticPP(cardId: string): number {
-    const state = this.ctx.state;
-    const card = state.cards[cardId];
-    if (!card) return 0;
-    const ownerId = card.controllerPlayerId;
-    const player = state.players[ownerId];
-    if (!player) return 0;
-    const isOpponentTurn = state.activePlayerId !== ownerId;
-    let bonus = 0;
-
-    // 自身的永久能力
-    switch (card.cardNumber) {
-      case 'ST02-004': // 若我方墓地的牌为10张及以上，该牌PP+1500
-        if (this.zone(ownerId, 'GRAVEYARD').length >= 10) bonus += 1500;
-        break;
-      case 'ST02-006': // 若我方的侵蚀计数为4及以上，该牌PP+1000
-        if (player.erosionCount >= 4) bonus += 1000;
-        break;
-      case 'ST02-008': // 若我方战场存在<升格者>角色，该牌PP+1000
-        if (this.roles(ownerId).some((r) => this.hasTrait(r, '升格者'))) bonus += 1000;
-        break;
-      case 'ST03-004': // 对方回合中，横置状态的该牌PP+1000
-        if (isOpponentTurn && !card.isReady) bonus += 1000;
-        break;
+    if (this.ctx.continuousEffects) {
+      const card = this.ctx.state.cards[cardId];
+      if (!card) return 0;
+      const base = this.def(card)?.basePP ?? 0;
+      return this.ctx.continuousEffects.evaluateCard(cardId).pp - base;
     }
-
-    // 战场上其他角色的永久能力
-    for (const source of this.roles(ownerId)) {
-      if (source.cardNumber === 'ST02-001' && player.erosionCount >= 5 && this.hasTrait(card, '升格者')) {
-        bonus += 1000; // 若我方侵蚀计数为5及以上，我方战场所有<升格者>角色PP+1000
-      }
-      if (source.cardNumber === 'ST03-002' && isOpponentTurn && !card.isReady && this.hasTrait(card, '三头犬小队')) {
-        bonus += 1000; // 对方回合中，我方战场所有横置状态的<三头犬小队>角色PP+1000
-      }
-    }
-    return bonus;
+    return 0;
   }
 
-  /**
-   * 7.2.1.d「攻击时」触发：ST02-009 奥兹玛赋予《露娜·银冕》的自动能力
-   */
+  /** 兼容旧调用入口：转发至统一触发管理器 */
   onAttackDeclared(attackerId: string): void {
     const attacker = this.ctx.state.cards[attackerId];
-    if (!attacker?.attachedEquipmentId) return;
-    const equip = this.ctx.state.cards[attacker.attachedEquipmentId];
-    if (equip?.cardNumber !== 'ST02-009' || this.def(attacker)?.name !== '露娜·银冕') return;
-    // 【自】：该牌攻击时，可以消除2同色信号球。若如此做，选择对方战场1张角色，直到回合结束为止，其PP-4000。
-    this.askOrbCost(attacker.controllerPlayerId, attackerId, 'SAME', 2, 'PRESET_ST02_009_ATTACK',
-      '【奥兹玛】攻击时，是否消除2张相邻的同色信号球：选择对方战场1张角色 PP-4000？');
+    if (!attacker) return;
+    this.ctx.triggerMgr?.emit({
+      type: 'ATTACK_DECLARED',
+      playerId: attacker.controllerPlayerId,
+      cardInstanceId: attackerId,
+      subjectSnapshot: this.ctx.triggerMgr.snapshotCard(attackerId),
+    });
   }
 
-  /**
-   * 角色出场时触发其他卡牌的自动能力：ST03-009「我方1张《薇拉·瑰丽》出场时」
-   */
+  /** 兼容旧调用入口：转发至统一触发管理器 */
   onRoleEntered(playerId: string, enteredId: string): void {
-    const entered = this.ctx.state.cards[enteredId];
-    if (!entered || this.def(entered)?.name !== '薇拉·瑰丽') return;
-    for (const partner of this.roles(playerId)) {
-      if (partner.cardNumber !== 'ST03-009') continue;
-      // 【自】：我方1张《薇拉·瑰丽》出场时，可以消除【2红色信号球】。若如此做，将该牌竖直。直到回合结束为止，该牌PP+2000，DP-1。
-      this.askOrbCost(playerId, partner.instanceId, 'RED', 2, 'PRESET_ST03_009_TRIGGER',
-        '【可靠的伙伴 21号&诺克提】《薇拉·瑰丽》出场，是否消除2张相邻的红色信号球：竖直该牌，PP+2000，DP-1？');
-    }
+    this.ctx.triggerMgr?.emit({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId: enteredId,
+      toZone: 'BATTLEFIELD',
+      subjectSnapshot: this.ctx.triggerMgr.snapshotCard(enteredId),
+    });
   }
 
   // ===================================================================
@@ -428,7 +536,18 @@ export class PresetCardEffects {
         for (const id of selected) {
           if (!this.bringToField(playerId, id)) continue;
           if (this.ctx.state.players[playerId]!.erosionCount <= 4) {
-            this.ctx.state.cards[id]!.endOfTurnToGraveyard = turn;
+            const revived = this.ctx.state.cards[id]!;
+            revived.endOfTurnToGraveyard = turn;
+            this.ctx.triggerMgr?.registerDelayedTrigger({
+              eventType: 'END_PHASE_TRIGGERS',
+              triggerTurn: turn,
+              sourceCardInstanceId: id,
+              sourceCardNumber: revived.cardNumber,
+              controllerPlayerId: playerId,
+              abilityId: 'DELAYED_END_OF_TURN_TO_GRAVEYARD',
+              label: `【${this.def(revived)?.name ?? revived.cardNumber}】该回合结束时放置到墓地 (ST02-011)`,
+              once: true,
+            });
           }
         }
         return { success: true };
@@ -672,8 +791,18 @@ export class PresetCardEffects {
   }
 
   private eliminate(playerId: string, ids: string[]): void {
+    const orbColors = ids.map((id) => {
+      const card = this.ctx.state.cards[id];
+      return (card ? this.def(card)?.signalOrb : undefined) ?? 'UNKNOWN';
+    });
     for (const id of ids) this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
     this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: ids, cardDrawnCount: 0 });
+    this.ctx.triggerMgr?.emit({
+      type: 'ORBS_ELIMINATED',
+      playerId,
+      orbCardIds: ids,
+      orbColors,
+    });
   }
 
   // ===================================================================
@@ -819,12 +948,22 @@ export class PresetCardEffects {
   private destroy(cardId: string): void {
     const card = this.ctx.state.cards[cardId];
     if (!card || !this.ctx.fieldMgr.isSlotRole(card.controllerPlayerId, cardId)) return;
+    const snapshot = this.ctx.triggerMgr?.snapshotCard(cardId);
     this.ctx.zoneMgr.moveCard(cardId, 'GRAVEYARD', { isFaceUp: true });
     this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: cardId, reason: 'EFFECT' });
+    this.ctx.triggerMgr?.emit({
+      type: 'CARD_DESTROYED',
+      playerId: card.controllerPlayerId,
+      cardInstanceId: cardId,
+      fromZone: 'BATTLEFIELD',
+      toZone: 'GRAVEYARD',
+      destroyReason: 'EFFECT',
+      subjectSnapshot: snapshot,
+    });
   }
 
   private addModifier(card: CardInstance, modifier: CardModifier): void {
-    card.modifiers = [...(card.modifiers ?? []), modifier];
+    addCardModifier(this.ctx.state, card, modifier);
   }
 
   private markUsed(playerId: string, cardId: string): void {
@@ -849,6 +988,9 @@ export class PresetCardEffects {
   }
 
   private hasTrait(card: CardInstance, trait: string): boolean {
+    if (this.ctx.continuousEffects) {
+      return this.ctx.continuousEffects.hasTrait(card.instanceId, trait);
+    }
     return !!this.def(card)?.traits.includes(trait);
   }
 

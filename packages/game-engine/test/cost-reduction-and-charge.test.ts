@@ -562,9 +562,11 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     });
     expect(choiceRes2.success).toBe(true);
 
-    // 验证效果结算：角色B获得 tempPPBonus = 2000，角色A不受影响
-    expect(roleB.tempPPBonus).toBe(2000);
-    expect(roleA.tempPPBonus).toBeUndefined();
+    // 验证效果结算：角色B获得 PP+2000 修改器，角色A不受影响
+    const latestB = engine.getState().cards[roleB.instanceId]!;
+    const latestA = engine.getState().cards[roleA.instanceId]!;
+    expect(latestB.modifiers?.some((m) => m.pp === 2000)).toBe(true);
+    expect(latestA.modifiers?.some((m) => m.pp === 2000)).toBeFalsy();
     // 决策完成，无待处理决策
     expect(engine.getState().currentPendingChoice).toBeUndefined();
   });

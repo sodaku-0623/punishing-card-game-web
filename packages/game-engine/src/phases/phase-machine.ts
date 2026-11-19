@@ -2,14 +2,21 @@ import { GameState, GameEvent, GamePhase } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { CheckTimingManager } from '../priority/check-timing.js';
+import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class PhaseMachine {
+  private onTriggerEventCallback?: (event: TriggerEvent) => void;
+
   constructor(
     private state: GameState,
     private zoneMgr: ZoneManager,
     private checkTimingMgr: CheckTimingManager,
     private events: GameEvent[]
   ) {}
+
+  setTriggerEventHandler(handler: (event: TriggerEvent) => void): void {
+    this.onTriggerEventCallback = handler;
+  }
 
   /**
    * 状态迁移与事件广播
@@ -49,7 +56,11 @@ export class PhaseMachine {
       p.turnAbilityUsage = {};
     }
 
-    // 6.2.1.c 检查时机
+    // 6.2.1.c「回合开始时」触发条件生效后进入检查时机
+    this.onTriggerEventCallback?.({
+      type: 'TURN_STARTED',
+      playerId: activePlayerId,
+    });
     this.checkTimingMgr.resolveCheckTiming();
 
     // 自动进入 6.3 抽牌填充阶段
@@ -145,12 +156,15 @@ export class PhaseMachine {
     const activePlayerId = this.state.activePlayerId;
 
     // 6.5.1.d 进入检查时机，之后「回合结束前」「该回合中」为期限的效果同时消失
+    // untilTurn 为 undefined 的区域内持续效果 (如升变赋予的【速攻】) 不随回合结束消失，离场时才消失 (3.1.4)
     this.checkTimingMgr.resolveCheckTiming();
     for (const card of Object.values(this.state.cards)) {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
       if (card.modifiers) {
-        const remaining = card.modifiers.filter((m) => m.untilTurn > this.state.turnNumber);
+        const remaining = card.modifiers.filter(
+          (m) => m.untilTurn === undefined || m.untilTurn > this.state.turnNumber
+        );
         card.modifiers = remaining.length > 0 ? remaining : undefined;
       }
     }
