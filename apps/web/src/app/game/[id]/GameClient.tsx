@@ -27,7 +27,7 @@ import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { RuleGuideModal } from '@/components/game/RuleGuideModal';
 import { Button, HudBrackets } from '@/components/ui';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
-import { canRoleAttackOnEnterTurn } from '@/lib/card-stats';
+import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
 import { sfx } from '@/lib/audio';
 import {
   CardInstance,
@@ -325,7 +325,12 @@ export default function GameTabletopPage() {
       return false;
     }
     const card = gameState.publicCards?.[selectedBattlefieldCardId];
-    if (!card || card.controllerPlayerId !== resolvedMyUserId || !card.isReady) {
+    if (
+      !card ||
+      card.controllerPlayerId !== resolvedMyUserId ||
+      !card.isReady ||
+      hasCardProhibition(card, 'CANNOT_ATTACK')
+    ) {
       return false;
     }
     const cardDef = findCardByNumberOrId(card.cardNumber || card.cardId);
@@ -1558,6 +1563,7 @@ export default function GameTabletopPage() {
                       isMyTurn &&
                       gameState.phase === 'MAIN_PHASE' &&
                       !!inspectedCard.isReady &&
+                      !hasCardProhibition(inspectedCard, 'CANNOT_ATTACK') &&
                       (inspectedCard.turnEnteredZone < gameState.turnNumber || hasRush);
 
                     if (!canActivate && !canAttack) return undefined;
@@ -1657,6 +1663,7 @@ export default function GameTabletopPage() {
             contextMenu.card.controllerPlayerId === resolvedMyUserId &&
             contextMenu.card.zone === 'BATTLEFIELD' &&
             !!contextMenu.card.isReady &&
+            !hasCardProhibition(contextMenu.card, 'CANNOT_ATTACK') &&
             (contextMenu.card.turnEnteredZone < gameState.turnNumber ||
               canRoleAttackOnEnterTurn(
                 contextMenu.card,
@@ -1667,7 +1674,8 @@ export default function GameTabletopPage() {
             !!timing?.canDeclareBlock &&
             contextMenu.card.controllerPlayerId === resolvedMyUserId &&
             contextMenu.card.zone === 'BATTLEFIELD' &&
-            !!contextMenu.card.isReady
+            !!contextMenu.card.isReady &&
+            !hasCardProhibition(contextMenu.card, 'CANNOT_BLOCK')
           }
           hasEmptySlot={mySlots.some((s) => !s.roleCardId)}
           hasSelectedAttacker={!!selectedBattlefieldCardId}

@@ -188,10 +188,19 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             onLongPress={roleCard && onRoleLongPress ? () => onRoleLongPress(roleCard) : undefined}
           />
 
-          {/* 横置状态水平正向指示牌 (绝对水平正向，不随卡面旋转倾倒) */}
-          {(!roleCard.isReady || isAttacking) && (
-            <div className="absolute top-1 left-1 z-30 px-1.5 py-0.5 bg-ink-950/95 text-gold-300 text-hud font-sans font-semibold border border-gold-300/60 select-none pointer-events-none tracking-wider">
-              横置
+          {/* 横置与冰冻 (10.15) 状态水平正向指示牌 (绝对水平正向，不随卡面旋转倾倒) */}
+          {(!roleCard.isReady || isAttacking || roleCard.isFrozen) && (
+            <div className="absolute top-1 left-1 z-30 flex flex-col gap-0.5 pointer-events-none select-none">
+              {(!roleCard.isReady || isAttacking) && (
+                <div className="px-1.5 py-0.5 bg-ink-950/95 text-gold-300 text-hud font-sans font-semibold border border-gold-300/60 tracking-wider">
+                  横置
+                </div>
+              )}
+              {roleCard.isFrozen && (
+                <div className="px-1.5 py-0.5 bg-ink-950/95 text-teal-400 text-hud font-sans font-semibold border border-teal-400/70 tracking-wider">
+                  冰冻
+                </div>
+              )}
             </div>
           )}
 

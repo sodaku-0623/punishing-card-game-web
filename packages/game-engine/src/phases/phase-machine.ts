@@ -2,10 +2,14 @@ import { GameState, GameEvent, GamePhase } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { CheckTimingManager } from '../priority/check-timing.js';
+import { ContinuousEffectEngine } from '../effects/continuous-effects.js';
+import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class PhaseMachine {
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
+  private continuousEffects?: ContinuousEffectEngine;
+  private replacementEngine?: ReplacementEngine;
 
   constructor(
     private state: GameState,
@@ -13,6 +17,14 @@ export class PhaseMachine {
     private checkTimingMgr: CheckTimingManager,
     private events: GameEvent[]
   ) {}
+
+  setContinuousEffectEngine(engine: ContinuousEffectEngine): void {
+    this.continuousEffects = engine;
+  }
+
+  setReplacementEngine(engine: ReplacementEngine): void {
+    this.replacementEngine = engine;
+  }
 
   setTriggerEventHandler(handler: (event: TriggerEvent) => void): void {
     this.onTriggerEventCallback = handler;
@@ -38,13 +50,15 @@ export class PhaseMachine {
     this.transitionTo('STAND_PHASE');
     const activePlayerId = this.state.activePlayerId;
 
-    // 6.2.1.b 回合玩家将自身战场和费用区的所有卡牌竖直
+    // 6.2.1.b 回合玩家将自身战场和费用区的所有卡牌竖直 (10.15 冰冻状态的卡牌无法因规则竖直)
     for (const card of Object.values(this.state.cards)) {
       if (
         card.controllerPlayerId === activePlayerId &&
         (card.zone === 'BATTLEFIELD' || card.zone === 'COST')
       ) {
-        card.isReady = true;
+        if (!card.isFrozen) {
+          card.isReady = true;
+        }
       }
     }
 
@@ -62,6 +76,13 @@ export class PhaseMachine {
       playerId: activePlayerId,
     });
     this.checkTimingMgr.resolveCheckTiming();
+
+    // 10.15.3 竖直阶段结束时解除回合玩家卡牌的冰冻状态
+    for (const card of Object.values(this.state.cards)) {
+      if (card.controllerPlayerId === activePlayerId && card.isFrozen) {
+        card.isFrozen = undefined;
+      }
+    }
 
     // 自动进入 6.3 抽牌填充阶段
     this.startDrawChargePhase();
@@ -155,9 +176,20 @@ export class PhaseMachine {
   finishEndPhase(): void {
     const activePlayerId = this.state.activePlayerId;
 
-    // 6.5.1.d 进入检查时机，之后「回合结束前」「该回合中」为期限的效果同时消失
+    // 6.5.1.d 进入检查时机，记录禁止回合结束送墓的暗费 (如 BP03-079)，之后「回合结束前」「该回合中」为期限的效果同时消失
     // untilTurn 为 undefined 的区域内持续效果 (如升变赋予的【速攻】) 不随回合结束消失，离场时才消失 (3.1.4)
     this.checkTimingMgr.resolveCheckTiming();
+
+    const protectedHiddenCostIds = new Set<string>();
+    for (const c of this.zoneMgr.getCardsInZone(activePlayerId, 'COST')) {
+      if (
+        !c.isFaceUp &&
+        this.continuousEffects?.hasProhibition(c.instanceId, 'CANNOT_DISCARD_HIDDEN_COST_AT_END')
+      ) {
+        protectedHiddenCostIds.add(c.instanceId);
+      }
+    }
+
     for (const card of Object.values(this.state.cards)) {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
@@ -168,14 +200,15 @@ export class PhaseMachine {
         card.modifiers = remaining.length > 0 ? remaining : undefined;
       }
     }
+    this.replacementEngine?.cleanupExpired(this.state.turnNumber);
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};
       p.costModifiers = [];
     }
 
-    // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5)
+    // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5；1.3.3 禁止送墓的暗费保留)
     for (const c of this.zoneMgr.getCardsInZone(activePlayerId, 'COST')) {
-      if (!c.isFaceUp) {
+      if (!c.isFaceUp && !protectedHiddenCostIds.has(c.instanceId)) {
         this.zoneMgr.moveCard(c.instanceId, 'GRAVEYARD', { isFaceUp: true });
       }
     }

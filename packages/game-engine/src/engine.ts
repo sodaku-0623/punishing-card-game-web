@@ -24,6 +24,7 @@ import { TriggerManager } from './priority/trigger-system.js';
 import { CombatManager } from './combat/combat-manager.js';
 import { PhaseMachine } from './phases/phase-machine.js';
 import { ContinuousEffectEngine } from './effects/continuous-effects.js';
+import { ReplacementEngine } from './effects/replacement-engine.js';
 import { CardEffectEngine } from './effects/card-effects.js';
 import { advancePendingChoice, enqueuePendingChoice } from './state/pending-choice.js';
 
@@ -53,6 +54,7 @@ export class GameEngine {
   zoneMgr!: ZoneManager;
   fieldMgr!: BattlefieldManager;
   continuousEffects!: ContinuousEffectEngine;
+  replacementEngine!: ReplacementEngine;
   triggerMgr!: TriggerManager;
   sbaEngine!: SbaEngine;
   checkTimingMgr!: CheckTimingManager;
@@ -98,6 +100,16 @@ export class GameEngine {
           .filter((c): c is CardInstance => !!c)
     );
     this.fieldMgr.setContinuousEffectEngine(this.continuousEffects);
+    this.zoneMgr.setContinuousEffectEngine(this.continuousEffects);
+
+    this.replacementEngine = new ReplacementEngine(
+      this.state,
+      this.cardDb,
+      (playerId, zone) => this.zoneMgr.getCardsInZone(playerId, zone),
+      (cardId) => this.continuousEffects.hasLostInherentAbilities(cardId),
+      (cardId, name) => this.continuousEffects.hasCardName(cardId, name)
+    );
+    this.zoneMgr.setReplacementEngine(this.replacementEngine);
 
     this.triggerMgr = new TriggerManager(
       this.state,
@@ -117,6 +129,7 @@ export class GameEngine {
 
     this.sbaEngine = new SbaEngine(this.state, this.zoneMgr, this.fieldMgr, this.events);
     this.sbaEngine.setTriggerEventHandler(emitTrigger, snapshotCard);
+    this.sbaEngine.setReplacementEngine(this.replacementEngine);
 
     this.checkTimingMgr = new CheckTimingManager(this.state, this.sbaEngine);
     this.checkTimingMgr.setTriggerManager(this.triggerMgr);
@@ -130,6 +143,7 @@ export class GameEngine {
       this.events
     );
     this.combatMgr.setTriggerEventHandler(emitTrigger, snapshotCard);
+    this.combatMgr.setReplacementEngine(this.replacementEngine);
 
     this.phaseMachine = new PhaseMachine(
       this.state,
@@ -138,12 +152,15 @@ export class GameEngine {
       this.events
     );
     this.phaseMachine.setTriggerEventHandler(emitTrigger);
+    this.phaseMachine.setContinuousEffectEngine(this.continuousEffects);
+    this.phaseMachine.setReplacementEngine(this.replacementEngine);
 
     this.effectEngine = new CardEffectEngine({
       state: this.state,
       zoneMgr: this.zoneMgr,
       fieldMgr: this.fieldMgr,
       continuousEffects: this.continuousEffects,
+      replacementEngine: this.replacementEngine,
       triggerMgr: this.triggerMgr,
       cardDb: this.cardDb,
       events: this.events,
@@ -1032,7 +1049,7 @@ export class GameEngine {
   }
 
   /**
-   * 将战场角色当前的 PP/DP、关键字与特征写入状态，供前端直接展示
+   * 将战场角色当前的 PP/DP、关键字、特征、禁止标志与信号球有效颜色写入状态，供前端直接展示
    * (前端不重复实现装备、8.9 持续效果层与永久能力的计算)
    */
   private refreshDisplayedStats(): void {
@@ -1043,16 +1060,42 @@ export class GameEngine {
         card.effectiveDP = evaluated.dp;
         card.effectiveKeywords = evaluated.keywords;
         card.effectiveTraits = evaluated.traits;
-      } else if (
-        card.effectivePP !== undefined ||
-        card.effectiveDP !== undefined ||
-        card.effectiveKeywords !== undefined ||
-        card.effectiveTraits !== undefined
-      ) {
+        if (evaluated.prohibitions.length > 0) {
+          card.effectiveProhibitions = evaluated.prohibitions;
+        } else {
+          delete card.effectiveProhibitions;
+        }
+        delete card.effectiveOrbColors;
+      } else if (card.zone === 'SIGNAL_ORB' && card.isFaceUp) {
         delete card.effectivePP;
         delete card.effectiveDP;
         delete card.effectiveKeywords;
         delete card.effectiveTraits;
+        const orbInfo = this.continuousEffects.getEffectiveOrbInfo(card.instanceId);
+        if (orbInfo.colors.length > 0) {
+          card.effectiveOrbColors = orbInfo.colors;
+        } else {
+          delete card.effectiveOrbColors;
+        }
+        if (orbInfo.cannotEliminate) {
+          card.effectiveProhibitions = ['CANNOT_ELIMINATE'];
+        } else {
+          delete card.effectiveProhibitions;
+        }
+      } else {
+        if (card.effectivePP !== undefined) delete card.effectivePP;
+        if (card.effectiveDP !== undefined) delete card.effectiveDP;
+        if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
+        if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
+        if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
+        if (
+          card.zone === 'COST' &&
+          this.continuousEffects.hasProhibition(card.instanceId, 'CANNOT_DISCARD_HIDDEN_COST_AT_END')
+        ) {
+          card.effectiveProhibitions = ['CANNOT_DISCARD_HIDDEN_COST_AT_END'];
+        } else if (card.effectiveProhibitions !== undefined) {
+          delete card.effectiveProhibitions;
+        }
       }
     }
   }

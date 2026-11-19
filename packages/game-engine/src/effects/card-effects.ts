@@ -12,6 +12,7 @@ import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
 import { PresetCardEffects } from './preset-cards.js';
 import { ContinuousEffectEngine, addCardModifier } from './continuous-effects.js';
+import { ReplacementEngine } from './replacement-engine.js';
 import type { TriggerManager } from '../priority/trigger-system.js';
 
 export interface CardEffectContext {
@@ -22,6 +23,7 @@ export interface CardEffectContext {
   events: GameEvent[];
   continuousEffects?: ContinuousEffectEngine;
   triggerMgr?: TriggerManager;
+  replacementEngine?: ReplacementEngine;
   payCost: (playerId: string, costToPay: number) => boolean;
   setPendingChoice: (choice?: PendingChoice) => void;
 }
@@ -48,6 +50,45 @@ export class CardEffectEngine {
     return playerId === this.ctx.state.activePlayerId
       ? this.ctx.state.nonActivePlayerId
       : this.ctx.state.activePlayerId;
+  }
+
+  /**
+   * 8.10 统一角色效果/PP归零破坏入口：经由置换引擎拦截，被置换时返回 false (8.10.1.a 视为未破坏)
+   */
+  private destroyRoleWithReplacement(cardInstanceId: string, reason: 'EFFECT' | 'PP_ZERO'): boolean {
+    const target = this.ctx.state.cards[cardInstanceId];
+    if (!target || !this.ctx.fieldMgr.isSlotRole(target.controllerPlayerId, cardInstanceId)) {
+      return false;
+    }
+    const intercept = this.ctx.replacementEngine?.interceptDestroyRole(cardInstanceId, reason);
+    if (intercept?.replaced) {
+      if (intercept.redirect) {
+        this.ctx.zoneMgr.moveCard(cardInstanceId, intercept.redirect.zone, {
+          isFaceUp: intercept.redirect.isFaceUp,
+          isReady: intercept.redirect.isReady,
+          toBottom: intercept.redirect.toBottom,
+          appliedReplacementIds: intercept.appliedIds,
+        });
+      }
+      return false;
+    }
+    const snapshot = this.ctx.triggerMgr?.snapshotCard(cardInstanceId);
+    this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
+    this.ctx.events.push({
+      type: 'CARD_DESTROYED',
+      cardInstanceId,
+      reason,
+    });
+    this.ctx.triggerMgr?.emit({
+      type: 'CARD_DESTROYED',
+      playerId: target.controllerPlayerId,
+      cardInstanceId,
+      fromZone: 'BATTLEFIELD',
+      toZone: 'GRAVEYARD',
+      destroyReason: reason,
+      subjectSnapshot: snapshot,
+    });
+    return true;
   }
 
   private getFriendlyRoles(playerId: string): CardInstance[] {
@@ -1040,26 +1081,7 @@ export class CardEffectEngine {
       // 角色破坏
       case 'DESTROY_ROLE': {
         for (const id of selectedIds) {
-          const target = this.ctx.state.cards[id];
-          const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
-          this.ctx.fieldMgr.handleCardLeaveField(id);
-          this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-          this.ctx.events.push({
-            type: 'CARD_DESTROYED',
-            cardInstanceId: id,
-            reason: 'EFFECT',
-          });
-          if (target) {
-            this.ctx.triggerMgr?.emit({
-              type: 'CARD_DESTROYED',
-              playerId: target.controllerPlayerId,
-              cardInstanceId: id,
-              fromZone: 'BATTLEFIELD',
-              toZone: 'GRAVEYARD',
-              destroyReason: 'EFFECT',
-              subjectSnapshot: snapshot,
-            });
-          }
+          this.destroyRoleWithReplacement(id, 'EFFECT');
         }
         if (choice.sourceCardInstanceId) {
           this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -1081,26 +1103,11 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: srcNum,
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
             const effectivePP = this.ctx.fieldMgr.calculateRoleEffectivePP(id);
             if (effectivePP <= 0) {
-              const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
-              this.ctx.fieldMgr.handleCardLeaveField(id);
-              this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-              this.ctx.events.push({
-                type: 'CARD_DESTROYED',
-                cardInstanceId: id,
-                reason: 'PP_ZERO',
-              });
-              this.ctx.triggerMgr?.emit({
-                type: 'CARD_DESTROYED',
-                playerId: role.controllerPlayerId,
-                cardInstanceId: id,
-                fromZone: 'BATTLEFIELD',
-                toZone: 'GRAVEYARD',
-                destroyReason: 'PP_ZERO',
-                subjectSnapshot: snapshot,
-              });
+              this.destroyRoleWithReplacement(id, 'PP_ZERO');
             }
           }
         }
@@ -1695,34 +1702,12 @@ export class CardEffectEngine {
         const attackerId = choice.metadata?.attackerCardId as string | undefined;
         const battledId = choice.metadata?.battledCardId as string | undefined;
         const attacker = attackerId ? this.ctx.state.cards[attackerId] : undefined;
-        // 10.16.2.2 无法将该角色破坏时，不执行后续效果
+        // 10.16.2.2 无法将该角色破坏时 (或被 8.10 置换未破坏时)，不执行后续效果
         if (!attacker || !this.ctx.fieldMgr.isSlotRole(playerId, attacker.instanceId)) break;
-        const attackerSnapshot = this.ctx.triggerMgr?.snapshotCard(attacker.instanceId);
-        this.ctx.zoneMgr.moveCard(attacker.instanceId, 'GRAVEYARD', { isFaceUp: true });
-        this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: attacker.instanceId, reason: 'EFFECT' });
-        this.ctx.triggerMgr?.emit({
-          type: 'CARD_DESTROYED',
-          playerId: attacker.controllerPlayerId,
-          cardInstanceId: attacker.instanceId,
-          fromZone: 'BATTLEFIELD',
-          toZone: 'GRAVEYARD',
-          destroyReason: 'EFFECT',
-          subjectSnapshot: attackerSnapshot,
-        });
+        if (!this.destroyRoleWithReplacement(attacker.instanceId, 'EFFECT')) break;
         const battled = battledId ? this.ctx.state.cards[battledId] : undefined;
         if (battled && this.ctx.fieldMgr.isSlotRole(battled.controllerPlayerId, battled.instanceId)) {
-          const battledSnapshot = this.ctx.triggerMgr?.snapshotCard(battled.instanceId);
-          this.ctx.zoneMgr.moveCard(battled.instanceId, 'GRAVEYARD', { isFaceUp: true });
-          this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: battled.instanceId, reason: 'EFFECT' });
-          this.ctx.triggerMgr?.emit({
-            type: 'CARD_DESTROYED',
-            playerId: battled.controllerPlayerId,
-            cardInstanceId: battled.instanceId,
-            fromZone: 'BATTLEFIELD',
-            toZone: 'GRAVEYARD',
-            destroyReason: 'EFFECT',
-            subjectSnapshot: battledSnapshot,
-          });
+          this.destroyRoleWithReplacement(battled.instanceId, 'EFFECT');
         }
         break;
       }

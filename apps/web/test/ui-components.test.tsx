@@ -23,7 +23,13 @@ import GuidePage from '@/app/guide/page';
 import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { CardDetailPanel } from '@/components/game/CardDetailPanel';
-import { canRoleAttackOnEnterTurn, formatCardModifiers, hasCardKeyword } from '@/lib/card-stats';
+import {
+  canRoleAttackOnEnterTurn,
+  formatCardModifiers,
+  formatCardProhibitions,
+  hasCardKeyword,
+  hasCardProhibition,
+} from '@/lib/card-stats';
 import type { CardInstance, PendingChoice } from '@zhanshuang/shared';
 
 vi.mock('next/navigation', () => ({
@@ -250,5 +256,41 @@ describe('PGR UI Design System Components', () => {
     );
     expect(approxHtml).toContain('BP01-001');
     expect(approxHtml).toContain('近似效果');
+  });
+
+  it('formats prohibition flags, treated-as effects, and 10.15 frozen state cleanly', () => {
+    const card: CardInstance = {
+      instanceId: 'c-frozen',
+      cardId: 'c-bp02-066',
+      cardNumber: 'BP02-066',
+      ownerPlayerId: 'p1',
+      controllerPlayerId: 'p1',
+      zone: 'BATTLEFIELD',
+      underneathCardIds: [],
+      isFaceUp: true,
+      isReady: false,
+      isFrozen: true,
+      turnEnteredZone: 1,
+      effectiveProhibitions: ['CANNOT_ATTACK', 'CANNOT_BLOCK'],
+      modifiers: [
+        {
+          prohibitions: ['CANNOT_ATTACK', 'CANNOT_DEAL_DAMAGE'],
+          treatedAsOrbColors: ['RED', 'YELLOW'],
+          orbValue: 3,
+          treatedAsNames: ['飞叶点翠'],
+          untilTurn: 2,
+          source: 'BP01-037',
+        },
+      ],
+    };
+    expect(hasCardProhibition(card, 'CANNOT_ATTACK')).toBe(true);
+    expect(hasCardProhibition(card, 'CANNOT_BLOCK')).toBe(true);
+    expect(hasCardProhibition(card, 'CANNOT_ELIMINATE')).toBe(false);
+    expect(formatCardProhibitions(card)).toEqual(['不能攻击', '不能阻挡']);
+    const tags = formatCardModifiers(card);
+    expect(tags.some((t) => t.includes('冰冻状态'))).toBe(true);
+    expect(tags.some((t) => t.includes('视为红/黄信号球'))).toBe(true);
+    expect(tags.some((t) => t.includes('视为3个信号球'))).toBe(true);
+    expect(tags.some((t) => t.includes('《飞叶点翠》'))).toBe(true);
   });
 });

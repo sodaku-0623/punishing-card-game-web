@@ -30,6 +30,51 @@ export type ZoneId =
   | 'REMOVED'; // 游戏外/放逐区
 
 /**
+ * 1.3.3 禁止效果标记 (禁止效果优先于要求执行该行动的效果)
+ */
+export type ProhibitionFlag =
+  | 'CANNOT_ATTACK' // 不能攻击 (BP01-049/050/051/073, BP03-079)
+  | 'CANNOT_BLOCK' // 不能阻挡 (BP01-025)
+  | 'CANNOT_DEAL_DAMAGE' // 不能造成伤害，亦防止贯通 (Q&A·7 PR-034)
+  | 'CANNOT_GAIN_ABILITIES' // 不能获得新能力 (Q&A·4 BP02-058)
+  | 'CANNOT_ELIMINATE' // 信号球不能被消除 (BP02-066)
+  | 'CANNOT_MODIFY_PP_BY_OPPONENT' // PP 不会因对方的效果增减 (Q&A·9 BP04-016，不阻止「PP变为X」)
+  | 'CANNOT_DISCARD_HIDDEN_COST_AT_END'; // 回合结束时暗费不因规则送墓 (BP03-079)
+
+export type SignalOrbColor = 'RED' | 'BLUE' | 'YELLOW';
+
+/**
+ * 8.2.1.c / 8.10 置换效果拦截事件类型
+ */
+export type ReplacementEventType = 'DESTROY_ROLE' | 'MOVE_CARD' | 'DEAL_DAMAGE';
+
+/**
+ * 8.10 可序列化的状态置换效果实例 (支持随 Durable Object 快照恢复)
+ */
+export interface ActiveReplacementEffect {
+  id: string;
+  eventType: ReplacementEventType;
+  /** 仅作用于指定卡牌实例；为空时作用于 controllerPlayerId 操控的任意卡牌 */
+  targetCardInstanceId?: string;
+  controllerPlayerId: string;
+  /** 限定破坏原因 (如仅限 BATTLE 战斗破坏) */
+  destroyReason?: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+  /** 限定来源区域 / 目标区域 (用于 MOVE_CARD 置换) */
+  fromZone?: ZoneId;
+  toZone?: ZoneId;
+  /** 置换结果：PREVENT = 改为不执行/不离场/不破坏；REDIRECT_ZONE = 改为放置到指定区域 */
+  action:
+    | { kind: 'PREVENT' }
+    | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean };
+  /** 8.7.5 / 8.10 仅生效一次后自动移除 */
+  once?: boolean;
+  /** 有效截止回合 (undefined 表示持续到卡牌离场或本局结束) */
+  untilTurn?: number;
+  source?: string;
+  label?: string;
+}
+
+/**
  * 带期限的持续效果 (8.2.1.b / 8.9)：
  * - untilTurn 为数字：「直到回合结束为止」= 当前回合，「直到下个回合结束为止」= 当前回合 + 1，在该回合结束阶段 (6.5.1.d) 消失
  * - untilTurn 为 undefined：持续到卡牌离开当前区域为止 (3.1.4，如升变能力赋予的【速攻】)
@@ -52,6 +97,16 @@ export interface CardModifier {
   removeKeywords?: string[]; // 8.9.1.b 失去的词条
   addTraits?: string[]; // 8.9.1.b 获得的特征 (如 <升格者>)
   loseAbilities?: boolean; // 8.3.4 失去能力 / 效果无效
+  /** 1.3.3 禁止效果标记 */
+  prohibitions?: ProhibitionFlag[];
+  /** 「视为」效果：信号球区中可视为指定颜色的信号球 (BP01-014/022, BP03-077, BP04-032) */
+  treatedAsOrbColors?: SignalOrbColor[];
+  /** 「视为」效果：1 张信号球可视为 N 个同色信号球 (Q&A·1 BP01-037 万世铭 = 3) */
+  orbValue?: number;
+  /** 「视为」效果：卡牌名称可视为指定卡名 (Q&A·4/5 BP02-040 视为《飞叶点翠》) */
+  treatedAsNames?: string[];
+  /** 施加该修改器的玩家 ID (供 Q&A·9 BP04-016 区分己方与对方效果) */
+  appliedByPlayerId?: string;
   untilTurn?: number;
   source?: string; // 产生该效果的卡牌编号 (用于展示)
   sourceCardInstanceId?: string;
@@ -69,6 +124,8 @@ export interface CardInstance {
   attachedEquipmentId?: string; // 4.18 装备的装备牌ID
   isFaceUp: boolean; // 4.6.2 正面 / 背面
   isReady: boolean; // 4.6.1 竖直 / 横置
+  /** 10.15 冰冻状态：下个回合竖直阶段不因规则竖直，竖直阶段结束时解除 (10.15.3) */
+  isFrozen?: boolean;
   turnEnteredZone: number; // 进入当前区域的回合编号 (用于出场攻击限制 7.2.1.b.1)
   /** 8.9.1.e.1 进入当前区域的单调时间戳 (永久能力持续效果适用顺序基准) */
   enteredZoneTimestamp?: number;
@@ -78,12 +135,14 @@ export interface CardInstance {
   tempDPBonus?: number;
   /** @deprecated 已迁移至 modifiers (CardModifier)，仅保留用于兼容旧快照只读回退 */
   grantedKeywords?: string[];
-  modifiers?: CardModifier[]; // 8.9 持续效果 (PP/DP/充能数/词条/特征/失去能力)
+  modifiers?: CardModifier[]; // 8.9 持续效果 (PP/DP/充能数/词条/特征/失去能力/禁止/视为)
   endOfTurnToGraveyard?: number; // 「该回合结束时，将该牌放置到墓地」的回合编号
   effectivePP?: number; // 服务端计算的当前 PP (含装备、持续效果与永久能力；仅战场卡位上的角色)
   effectiveDP?: number; // 服务端计算的当前 DP
   effectiveKeywords?: string[]; // 服务端计算的当前有效词条列表 (含固有词条、持续效果与永久能力)
   effectiveTraits?: string[]; // 服务端计算的当前有效特征列表 (含基本特征与持续效果赋予特征)
+  effectiveProhibitions?: ProhibitionFlag[]; // 服务端计算的当前生效禁止效果标记 (1.3.3)
+  effectiveOrbColors?: SignalOrbColor[]; // 服务端计算的当前有效信号球颜色 (含「视为」效果)
   imageUrl?: string; // 卡面插画链接
 }
 
@@ -233,6 +292,8 @@ export interface CombatState {
   targetCardId?: string;
   blockerCardId?: string;
   battledCardId?: string; // 7.6.1 角色战斗步骤中与攻击角色发生战斗的角色 (【同命】参照)
+  /** 1.3.3 本次攻击不能造成伤害 (BP01-027/065/071, PR-034/040；亦防止【贯通】Q&A·7) */
+  cannotDealDamage?: boolean;
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 
@@ -254,6 +315,7 @@ export interface GameState {
   currentCombat?: CombatState;
   pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
   delayedTriggers?: DelayedTrigger[]; // 8.7.5 时限触发池
+  activeReplacements?: ActiveReplacementEffect[]; // 8.10 状态内置换效果池 (可随快照恢复)
   effectTimestampSeq?: number; // 8.9.1.e 持续效果时间戳序号 (随快照保存)
   currentPendingChoice?: PendingChoice; // 待决玩家决策
   pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)

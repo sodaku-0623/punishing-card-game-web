@@ -2,11 +2,13 @@ import { GameState, GameEvent } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
+import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class SbaEngine {
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
+  private replacementEngine?: ReplacementEngine;
 
   constructor(
     private state: GameState,
@@ -14,6 +16,10 @@ export class SbaEngine {
     private fieldMgr: BattlefieldManager,
     private events: GameEvent[]
   ) {}
+
+  setReplacementEngine(engine: ReplacementEngine): void {
+    this.replacementEngine = engine;
+  }
 
   setTriggerEventHandler(
     handler: (event: TriggerEvent) => void,
@@ -81,7 +87,7 @@ export class SbaEngine {
       return true;
     }
 
-    // 2. 9.4 角色PP不足处理 (当任意角色的PP变为0及以下时，该角色会因规则而破坏)
+    // 2. 9.4 角色PP不足处理 (当任意角色的PP变为0及以下时，该角色会因规则而破坏；支持 8.10 置换效果拦截)
     for (const card of Object.values(this.state.cards)) {
       if (card.zone === 'BATTLEFIELD') {
         const slots = this.fieldMgr.getSlots(card.controllerPlayerId);
@@ -89,8 +95,20 @@ export class SbaEngine {
         if (isTopRole) {
           const pp = this.fieldMgr.calculateRoleEffectivePP(card.instanceId);
           if (pp <= 0) {
+            const intercept = this.replacementEngine?.interceptDestroyRole(card.instanceId, 'PP_ZERO');
+            if (intercept?.replaced) {
+              if (intercept.redirect) {
+                this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
+                  isFaceUp: intercept.redirect.isFaceUp,
+                  isReady: intercept.redirect.isReady,
+                  toBottom: intercept.redirect.toBottom,
+                  appliedReplacementIds: intercept.appliedIds,
+                });
+                executedAny = true;
+              }
+              continue;
+            }
             const snapshot = this.snapshotProvider?.(card.instanceId);
-            this.fieldMgr.handleCardLeaveField(card.instanceId);
             this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
             this.events.push({
               type: 'CARD_DESTROYED',

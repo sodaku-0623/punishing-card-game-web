@@ -118,6 +118,20 @@ export class TriggerManager {
       ...trigger,
       id: trigger.id ?? `delayed-${trigger.abilityId}-${seq}`,
     };
+    // 1.3.3 / Q&A·4 (BP02-058)：赋予给角色的新能力在角色处于 CANNOT_GAIN_ABILITIES 时不会获得
+    const isCardGrantedDelayed =
+      trigger.abilityId === 'DELAYED_END_OF_TURN_TO_GRAVEYARD' ||
+      Boolean(trigger.payload?.grantedToSourceCard);
+    if (isCardGrantedDelayed) {
+      const sourceCard = this.state.cards[trigger.sourceCardInstanceId];
+      if (
+        sourceCard &&
+        sourceCard.zone === 'BATTLEFIELD' &&
+        this.continuousEffects.hasProhibition(sourceCard.instanceId, 'CANNOT_GAIN_ABILITIES')
+      ) {
+        return full;
+      }
+    }
     this.state.delayedTriggers = [...(this.state.delayedTriggers ?? []), full];
     return full;
   }
@@ -257,10 +271,11 @@ export class TriggerManager {
 
     const isDelayed = Boolean(trigger.triggerContext?.isDelayedTrigger);
 
-    // 8.3.4 / Q&A·4：非时限触发的来源卡在触发时或执行时处于「失去能力」状态，改为不处理
+    // 8.3.4 / Q&A·4：非时限触发的来源卡在触发时或执行时处于「失去能力」状态，改为不处理；
+    // 被赋予在角色身上的时限触发 (如 ST02-011 回合结束送墓)，若在 6.5.1.b 结算时角色已「失去能力」或「不能获得新能力」，亦不执行 (Q&A·4 BP02-058)
+    const sourceCard = this.state.cards[trigger.sourceCardInstanceId];
     if (!isDelayed) {
       const lostAtTrigger = Boolean(trigger.triggerContext?.sourceAbilitiesLostAtTrigger);
-      const sourceCard = this.state.cards[trigger.sourceCardInstanceId];
       const lostNow =
         sourceCard && sourceCard.zone === 'BATTLEFIELD'
           ? this.continuousEffects.hasLostInherentAbilities(sourceCard.instanceId)
@@ -268,6 +283,15 @@ export class TriggerManager {
       if (lostAtTrigger || lostNow) {
         return;
       }
+    } else if (
+      (trigger.abilityId === 'DELAYED_END_OF_TURN_TO_GRAVEYARD' ||
+        Boolean(trigger.triggerContext?.grantedToSourceCard)) &&
+      sourceCard &&
+      sourceCard.zone === 'BATTLEFIELD' &&
+      (this.continuousEffects.hasLostInherentAbilities(sourceCard.instanceId) ||
+        this.continuousEffects.hasProhibition(sourceCard.instanceId, 'CANNOT_GAIN_ABILITIES'))
+    ) {
+      return;
     }
 
     // 10.1 【回合1】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 计数，移区自动清空)

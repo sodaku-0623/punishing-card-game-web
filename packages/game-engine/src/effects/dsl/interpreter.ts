@@ -260,7 +260,14 @@ export class DeclarativeEffectInterpreter {
   registerStaticEffects(continuousEffects: ContinuousEffectEngine): void {
     for (const spec of this.registry.values()) {
       for (const eff of spec.staticEffects ?? []) {
-        const hasNonStat = Boolean(eff.keywords?.length || eff.addTraits?.length);
+        const hasNonStat = Boolean(
+          eff.keywords?.length ||
+            eff.addTraits?.length ||
+            eff.prohibitions?.length ||
+            eff.treatedAsOrbColors?.length ||
+            eff.orbValue !== undefined ||
+            eff.treatedAsNames?.length
+        );
         const hasStat = eff.pp !== undefined || eff.dp !== undefined || eff.charge !== undefined;
 
         const matchesTargetAndCond = (
@@ -303,6 +310,10 @@ export class DeclarativeEffectInterpreter {
               return {
                 ...(eff.keywords ? { keywords: eff.keywords } : {}),
                 ...(eff.addTraits ? { addTraits: eff.addTraits } : {}),
+                ...(eff.prohibitions ? { prohibitions: eff.prohibitions } : {}),
+                ...(eff.treatedAsOrbColors ? { treatedAsOrbColors: eff.treatedAsOrbColors } : {}),
+                ...(eff.orbValue !== undefined ? { orbValue: eff.orbValue } : {}),
+                ...(eff.treatedAsNames ? { treatedAsNames: eff.treatedAsNames } : {}),
               };
             },
           });
@@ -851,6 +862,25 @@ export class DeclarativeEffectInterpreter {
           break;
         }
 
+        case 'SET_FROZEN': {
+          // 10.15 冰冻：被冰冻卡牌在下个操控玩家竖直阶段无法因规则竖直 (10.15.3.1 已冰冻则维持现状)
+          const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
+          for (const id of targets) {
+            const card = this.ctx.state.cards[id];
+            if (!card || card.zone !== 'BATTLEFIELD') continue;
+            card.isFrozen = step.isFrozen ? true : undefined;
+          }
+          break;
+        }
+
+        case 'PREVENT_COMBAT_DAMAGE': {
+          // 1.3.3 / Q&A·7 (PR-034)：本次攻击不会给予玩家伤害 (含【贯通】伤害)
+          if (this.ctx.state.currentCombat) {
+            this.ctx.state.currentCombat.cannotDealDamage = true;
+          }
+          break;
+        }
+
         case 'MODIFY_STATS': {
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
           const untilTurn = this.resolveUntilTurn(step.duration, turn);
@@ -870,9 +900,14 @@ export class DeclarativeEffectInterpreter {
               ...(step.removeKeywords ? { removeKeywords: step.removeKeywords } : {}),
               ...(step.addTraits ? { addTraits: step.addTraits } : {}),
               ...(step.loseAbilities ? { loseAbilities: true } : {}),
+              ...(step.prohibitions ? { prohibitions: step.prohibitions } : {}),
+              ...(step.treatedAsOrbColors ? { treatedAsOrbColors: step.treatedAsOrbColors } : {}),
+              ...(step.orbValue !== undefined ? { orbValue: step.orbValue } : {}),
+              ...(step.treatedAsNames ? { treatedAsNames: step.treatedAsNames } : {}),
               untilTurn,
               source,
               sourceCardInstanceId: sourceId,
+              appliedByPlayerId: playerId,
             };
             addCardModifier(this.ctx.state, card, mod);
           }
@@ -1119,7 +1154,11 @@ export class DeclarativeEffectInterpreter {
       card,
       filter,
       (id, trait) => this.hasTrait(this.ctx.state.cards[id]!, trait),
-      sourceId
+      sourceId,
+      (id, name) =>
+        this.ctx.continuousEffects
+          ? this.ctx.continuousEffects.hasCardName(id, name)
+          : this.def(this.ctx.state.cards[id]!)?.name === name
     );
   }
 
@@ -1127,12 +1166,20 @@ export class DeclarativeEffectInterpreter {
     card: CardInstance,
     filter: CardFilter,
     hasTraitFn: (cardInstanceId: string, trait: string) => boolean,
-    sourceId?: string
+    sourceId?: string,
+    hasNameFn?: (cardInstanceId: string, name: string) => boolean
   ): boolean {
     const def = this.def(card);
     if (filter.excludeSelf && sourceId && card.instanceId === sourceId) return false;
     if (filter.cardType !== undefined && def?.cardType !== filter.cardType) return false;
-    if (filter.exactName !== undefined && def?.name !== filter.exactName) return false;
+    if (filter.exactName !== undefined) {
+      const matchedName = hasNameFn
+        ? hasNameFn(card.instanceId, filter.exactName)
+        : def?.name === filter.exactName ||
+          Boolean(card.modifiers?.some((m) => m.treatedAsNames?.includes(filter.exactName!))) ||
+          (card.cardNumber === 'BP02-040' && filter.exactName === '飞叶点翠');
+      if (!matchedName) return false;
+    }
     if (filter.trait !== undefined && !hasTraitFn(card.instanceId, filter.trait)) return false;
     if (filter.anyTraits !== undefined && !filter.anyTraits.some((t) => hasTraitFn(card.instanceId, t))) {
       return false;
@@ -1141,7 +1188,7 @@ export class DeclarativeEffectInterpreter {
     if (filter.maxCost !== undefined && cost > filter.maxCost) return false;
     if (filter.minCost !== undefined && cost < filter.minCost) return false;
     if (filter.exactCost !== undefined && cost !== filter.exactCost) return false;
-    if (filter.isSignalOrb !== undefined && Boolean(def?.signalOrb) !== filter.isSignalOrb) return false;
+    if (filter.isSignalOrb !== undefined && this.isOrb(card) !== filter.isSignalOrb) return false;
     if (filter.isReady !== undefined && card.isReady !== filter.isReady) return false;
     if (filter.maxEffectivePP !== undefined) {
       if (this.ctx.fieldMgr.calculateRoleEffectivePP(card.instanceId) > filter.maxEffectivePP) return false;
@@ -1225,22 +1272,65 @@ export class DeclarativeEffectInterpreter {
     });
   }
 
+  /**
+   * 4.16.2 / Q&A·1 计算信号球区中所有可消除的相邻组合：
+   * - 支持「视为信号球」(BP04-032 炽能球) 与多色「视为」(BP01-014/BP01-022)
+   * - 支持禁止消除 (1.3.3，BP02-066 万事·明晰梦)
+   * - 支持等效多球精确匹配 (Q&A·1 BP01-037 万世铭 1 张视为 3 球，不可拆成 2 球使用)
+   */
   private orbGroups(playerId: string, size: number, filter: OrbColorFilter): string[][] {
     const zone = this.zone(playerId, 'SIGNAL_ORB');
+    const infos = zone.map((c) => {
+      if (this.ctx.continuousEffects) {
+        return this.ctx.continuousEffects.getEffectiveOrbInfo(c.instanceId);
+      }
+      const color = c.isFaceUp ? this.def(c)?.signalOrb : undefined;
+      return {
+        isOrb: Boolean(color),
+        colors: color ? [color] : [],
+        orbValue: color ? 1 : 0,
+        cannotEliminate: false,
+      };
+    });
+
     const groups: string[][] = [];
-    for (let i = 0; i + size <= zone.length; i++) {
-      const slice = zone.slice(i, i + size);
-      const colors = slice.map((c) => (c.isFaceUp ? this.def(c)?.signalOrb : undefined));
-      if (colors.some((c) => !c)) continue;
-      if (filter === 'SAME' && new Set(colors).size !== 1) continue;
-      if (filter !== 'ANY' && filter !== 'SAME' && colors.some((c) => c !== filter)) continue;
-      groups.push(slice.map((c) => c.instanceId));
+    for (let start = 0; start < zone.length; start++) {
+      let sum = 0;
+      let commonColors: string[] | undefined;
+      const sliceIds: string[] = [];
+
+      for (let end = start; end < zone.length; end++) {
+        const info = infos[end]!;
+        if (!info.isOrb || info.cannotEliminate || info.orbValue <= 0) break;
+
+        if (filter !== 'ANY' && filter !== 'SAME' && !info.colors.includes(filter)) {
+          break;
+        }
+        if (filter === 'SAME') {
+          commonColors =
+            commonColors === undefined
+              ? [...info.colors]
+              : commonColors.filter((col) => info.colors.includes(col as 'RED' | 'BLUE' | 'YELLOW'));
+          if (commonColors.length === 0) break;
+        }
+
+        sum += info.orbValue;
+        sliceIds.push(zone[end]!.instanceId);
+        if (sum === size) {
+          groups.push([...sliceIds]);
+          break;
+        }
+        if (sum > size) break;
+      }
     }
     return groups;
   }
 
   private eliminate(playerId: string, ids: string[]): void {
     const orbColors = ids.map((id) => {
+      if (this.ctx.continuousEffects) {
+        return this.ctx.continuousEffects.getEffectiveOrbInfo(id).colors[0] ?? 'UNKNOWN';
+      }
       const card = this.ctx.state.cards[id];
       return (card ? this.def(card)?.signalOrb : undefined) ?? 'UNKNOWN';
     });
@@ -1285,6 +1375,21 @@ export class DeclarativeEffectInterpreter {
   private destroy(cardId: string): boolean {
     const card = this.ctx.state.cards[cardId];
     if (!card || !this.ctx.fieldMgr.isSlotRole(card.controllerPlayerId, cardId)) return false;
+
+    // 8.10 效果破坏前经由置换引擎拦截；被置换时视为未破坏 (8.10.1.a)，返回 false 以阻止后续「若如此做」(8.6.4)
+    const intercept = this.ctx.replacementEngine?.interceptDestroyRole(cardId, 'EFFECT');
+    if (intercept?.replaced) {
+      if (intercept.redirect) {
+        this.ctx.zoneMgr.moveCard(cardId, intercept.redirect.zone, {
+          isFaceUp: intercept.redirect.isFaceUp,
+          isReady: intercept.redirect.isReady,
+          toBottom: intercept.redirect.toBottom,
+          appliedReplacementIds: intercept.appliedIds,
+        });
+      }
+      return false;
+    }
+
     const snapshot = this.ctx.triggerMgr?.snapshotCard(cardId);
     this.ctx.zoneMgr.moveCard(cardId, 'GRAVEYARD', { isFaceUp: true });
     this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: cardId, reason: 'EFFECT' });
@@ -1317,6 +1422,9 @@ export class DeclarativeEffectInterpreter {
   }
 
   private isOrb(card: CardInstance): boolean {
+    if (card.zone === 'SIGNAL_ORB' && this.ctx.continuousEffects) {
+      return this.ctx.continuousEffects.getEffectiveOrbInfo(card.instanceId).isOrb;
+    }
     return Boolean(this.def(card)?.signalOrb);
   }
 

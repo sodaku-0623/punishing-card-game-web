@@ -1,9 +1,10 @@
-import { GameState, GameEvent, CardInstance } from '@zhanshuang/shared';
+import { GameState, GameEvent, CardInstance, ProhibitionFlag } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
 import { ICardDatabase } from '../database/card-registry.js';
 import { CheckTimingManager } from '../priority/check-timing.js';
+import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 /**
@@ -16,6 +17,7 @@ import type { TriggerEvent } from '../priority/trigger-system.js';
 export class CombatManager {
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
+  private replacementEngine?: ReplacementEngine;
 
   constructor(
     private state: GameState,
@@ -25,6 +27,10 @@ export class CombatManager {
     private checkTimingMgr: CheckTimingManager,
     private events: GameEvent[]
   ) {}
+
+  setReplacementEngine(engine: ReplacementEngine): void {
+    this.replacementEngine = engine;
+  }
 
   setTriggerEventHandler(
     handler: (event: TriggerEvent) => void,
@@ -36,6 +42,25 @@ export class CombatManager {
 
   private getDef(card: CardInstance) {
     return this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+  }
+
+  private hasProhibition(cardInstanceId: string, flag: ProhibitionFlag): boolean {
+    return this.fieldMgr.evaluateRoleStats(cardInstanceId).prohibitions.includes(flag);
+  }
+
+  /**
+   * 7.5.1.b 计算并锁定本次攻击的伤害量 (含 1.3.3 禁止伤害、Q&A·7 PR-034 与 8.10 伤害置换)
+   */
+  private computeLockedCombatDamage(attackerCardId: string): number {
+    if (!this.fieldMgr.isSlotRole(this.state.activePlayerId, attackerCardId)) return 0;
+    if (this.state.currentCombat?.cannotDealDamage || this.hasProhibition(attackerCardId, 'CANNOT_DEAL_DAMAGE')) {
+      return 0;
+    }
+    const baseDp = Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(attackerCardId));
+    if (baseDp <= 0) return 0;
+    return this.replacementEngine
+      ? this.replacementEngine.interceptDealDamage(this.state.nonActivePlayerId, baseDp, attackerCardId)
+      : baseDp;
   }
 
   /**
@@ -87,10 +112,10 @@ export class CombatManager {
       return { success: false, error: '只有竖直状态的角色可以进行攻击' };
     }
 
-    // 永久能力「该牌不能攻击」(如《帕瓦》《库洛洛》；若失去能力 8.3.4 则可攻击)
+    // 1.3.3 禁止攻击检查 (含固有【永】：该牌不能攻击，以及效果赋予的 CANNOT_ATTACK；失去能力 8.3.4 已在持续效果层解除固有不能攻击)
     const attackerEval = this.fieldMgr.evaluateRoleStats(attackerCardId);
-    if (!attackerEval.abilitiesLost && this.getDef(attacker)?.rulesText.includes('【永】：该牌不能攻击')) {
-      return { success: false, error: '该角色不能攻击' };
+    if (attackerEval.prohibitions.includes('CANNOT_ATTACK')) {
+      return { success: false, error: '该角色不能攻击 (1.3.3)' };
     }
 
     // 7.2.1.b.1 出场回合不可攻击 (10.5 速攻可以；10.6 突进可以攻击角色)
@@ -207,6 +232,10 @@ export class CombatManager {
       if (!blocker.isReady) {
         return { success: false, error: '只有竖直状态的角色可以进行阻挡' };
       }
+      // 1.3.3 禁止阻挡检查
+      if (this.hasProhibition(blockerCardId, 'CANNOT_BLOCK')) {
+        return { success: false, error: '该角色不能阻挡 (1.3.3)' };
+      }
 
       blocker.isReady = false;
       combat.blockerCardId = blockerCardId;
@@ -245,7 +274,12 @@ export class CombatManager {
     this.state.priorityPlayerId = this.state.nonActivePlayerId;
     const canBlock = this.fieldMgr
       .getSlots(this.state.nonActivePlayerId)
-      .some((s) => s.roleCardId && this.state.cards[s.roleCardId]?.isReady);
+      .some(
+        (s) =>
+          s.roleCardId &&
+          this.state.cards[s.roleCardId]?.isReady &&
+          !this.hasProhibition(s.roleCardId, 'CANNOT_BLOCK')
+      );
     if (!canBlock) {
       this.declareBlock(this.state.nonActivePlayerId, undefined);
     }
@@ -368,10 +402,7 @@ export class CombatManager {
         cardInstanceId: combat.attackerCardId,
       });
       if (this.checkTimingMgr.resolveCheckTiming() && (this.state.status as string) !== 'FINISHED') {
-        const attackerOnField = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId);
-        combat.damageRemaining = attackerOnField
-          ? Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(combat.attackerCardId))
-          : 0;
+        combat.damageRemaining = this.computeLockedCombatDamage(combat.attackerCardId);
       }
     } else {
       this.state.phase = 'COMBAT_BATTLE';
@@ -397,10 +428,7 @@ export class CombatManager {
 
     if (combat.damageRemaining === undefined && combat.pendingDamageCardId === undefined) {
       // 7.5.1.a 触发选择完毕后，在 7.5.1.b 此时锁定伤害量 (7.5.1.b.3 之后不再变化)
-      const attackerOnField = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId);
-      combat.damageRemaining = attackerOnField
-        ? Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(combat.attackerCardId))
-        : 0;
+      combat.damageRemaining = this.computeLockedCombatDamage(combat.attackerCardId);
     }
 
     if (combat.pendingDamageCardId !== undefined) {
@@ -444,24 +472,48 @@ export class CombatManager {
       let destroyedDefenderCardId: string | undefined;
 
       if (attackerPP >= defenderPP) {
-        destroyedDefenderCardId = defenderCardId;
-        const defenderSnapshot = this.snapshotProvider?.(defenderCardId);
-        this.zoneMgr.moveCard(defenderCardId, 'GRAVEYARD', { isFaceUp: true });
-        this.events.push({ type: 'CARD_DESTROYED', cardInstanceId: defenderCardId, reason: 'BATTLE' });
-        this.onTriggerEventCallback?.({
-          type: 'CARD_DESTROYED',
-          playerId: this.state.nonActivePlayerId,
-          cardInstanceId: defenderCardId,
-          targetCardId: combat.attackerCardId,
-          fromZone: 'BATTLEFIELD',
-          toZone: 'GRAVEYARD',
-          destroyReason: 'BATTLE',
-          subjectSnapshot: defenderSnapshot,
-        });
+        const intercept = this.replacementEngine?.interceptDestroyRole(
+          defenderCardId,
+          'BATTLE',
+          combat.attackerCardId
+        );
+        if (intercept?.replaced) {
+          // 8.10.1.a 战斗破坏被置换：视为未破坏，不发射 CARD_DESTROYED 也不触发【贯通】(Q&A·2 BP01-017/BP02-013)
+          if (intercept.redirect) {
+            this.zoneMgr.moveCard(defenderCardId, intercept.redirect.zone, {
+              isFaceUp: intercept.redirect.isFaceUp,
+              isReady: intercept.redirect.isReady,
+              toBottom: intercept.redirect.toBottom,
+              appliedReplacementIds: intercept.appliedIds,
+            });
+          }
+        } else {
+          destroyedDefenderCardId = defenderCardId;
+          const defenderSnapshot = this.snapshotProvider?.(defenderCardId);
+          this.zoneMgr.moveCard(defenderCardId, 'GRAVEYARD', { isFaceUp: true });
+          this.events.push({ type: 'CARD_DESTROYED', cardInstanceId: defenderCardId, reason: 'BATTLE' });
+          this.onTriggerEventCallback?.({
+            type: 'CARD_DESTROYED',
+            playerId: this.state.nonActivePlayerId,
+            cardInstanceId: defenderCardId,
+            targetCardId: combat.attackerCardId,
+            fromZone: 'BATTLEFIELD',
+            toZone: 'GRAVEYARD',
+            destroyReason: 'BATTLE',
+            subjectSnapshot: defenderSnapshot,
+          });
 
-        // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
-        if (this.hasKeyword(combat.attackerCardId, '贯通')) {
-          this.zoneMgr.applyDamageToPlayer(this.state.nonActivePlayerId, RULE_CONSTANTS.PIERCING_DAMAGE_VALUE);
+          // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
+          // Q&A·7 PR-034：若本次攻击不会给予伤害或攻击角色禁止造成伤害，贯通伤害亦不造成
+          const cannotDealDamage =
+            combat.cannotDealDamage || this.hasProhibition(combat.attackerCardId, 'CANNOT_DEAL_DAMAGE');
+          if (!cannotDealDamage && this.hasKeyword(combat.attackerCardId, '贯通')) {
+            this.zoneMgr.applyDamageToPlayer(
+              this.state.nonActivePlayerId,
+              RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+              combat.attackerCardId
+            );
+          }
         }
       }
 
