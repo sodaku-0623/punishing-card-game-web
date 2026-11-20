@@ -176,9 +176,13 @@ describe('升变 (8.11)', () => {
     const bp03012 = parseAscensionConfig(OFFICIAL_CARDS_DATA.find((c) => c.cardNumber === 'BP03-012')!.rulesText)!;
     expect(bp03012.grantKeywords).toEqual(['突进']);
 
-    // 尚未支持的升变代价明确标记，而不是忽略
+    // BP01-040 额外升变代价 (叠放战场《帕瓦》) 已支持；未知额外代价才标记 unsupportedReason
     const bp01040 = parseAscensionConfig(OFFICIAL_CARDS_DATA.find((c) => c.cardNumber === 'BP01-040')!.rulesText)!;
-    expect(bp01040.unsupportedReason).toContain('额外行动');
+    expect(bp01040.unsupportedReason).toBeUndefined();
+    expect(bp01040.extraCost).toEqual({ kind: 'STACK_FIELD_ROLE_UNDERNEATH', exactName: '帕瓦' });
+
+    const unsupportedMock = parseAscensionConfig('升变条件 费用5以下<测试>\n升变代价「【2费】&丢弃3张手牌」出场');
+    expect(unsupportedMock?.unsupportedReason).toContain('额外行动');
   });
 
   it('升变限制条件「费用上限X及以上」不满足时不能升变，满足后可以', () => {

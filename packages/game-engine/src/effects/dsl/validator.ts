@@ -282,6 +282,14 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         break;
       case 'PREVENT_COMBAT_DAMAGE':
         break;
+      case 'AIRBORNE':
+        validateTarget(step.target, vars, `${sp}.target`);
+        if (step.saveAirborneToVar) vars.add(step.saveAirborneToVar);
+        break;
+      case 'ATTACH_PARTNER':
+        validateTarget(step.host, vars, `${sp}.host`);
+        validateTarget(step.partner, vars, `${sp}.partner`);
+        break;
       case 'MODIFY_STATS': {
         validateTarget(step.target, vars, `${sp}.target`);
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法: ${String(step.duration)}`);

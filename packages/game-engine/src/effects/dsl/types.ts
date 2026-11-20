@@ -205,6 +205,16 @@ export type EffectStep =
       op: 'PREVENT_COMBAT_DAMAGE';
     }
   | {
+      op: 'AIRBORNE';
+      target: CardTargetRef;
+      saveAirborneToVar?: string;
+    }
+  | {
+      op: 'ATTACH_PARTNER';
+      host: CardTargetRef;
+      partner: CardTargetRef;
+    }
+  | {
       op: 'MODIFY_STATS';
       target: CardTargetRef;
       pp?: NumberExpr;

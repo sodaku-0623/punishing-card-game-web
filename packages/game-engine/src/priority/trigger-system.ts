@@ -164,6 +164,23 @@ export class TriggerManager {
   emit(event: TriggerEvent): void {
     if (this.state.status === 'FINISHED') return;
 
+    // 统计本回合被破坏的我方火属性角色数 (供 BP04-028 渡边·尘铭瞬时能力条件判定)
+    if (event.type === 'CARD_DESTROYED' && event.cardInstanceId && event.playerId) {
+      const destroyedCard = this.state.cards[event.cardInstanceId];
+      const destroyedDef = destroyedCard
+        ? this.cardDb.getCard(destroyedCard.cardNumber) ||
+          (destroyedCard.cardId ? this.cardDb.getCard(destroyedCard.cardId) : undefined)
+        : undefined;
+      if (
+        destroyedDef?.cardType === 'ROLE' &&
+        destroyedDef.attribute === 'FIRE' &&
+        this.state.players[event.playerId]
+      ) {
+        this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn =
+          (this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn ?? 0) + 1;
+      }
+    }
+
     const collectCtx: TriggerCollectContext = {
       state: this.state,
       event,
@@ -329,6 +346,18 @@ export class TriggerManager {
         const card = ctx.state.cards[trigger.sourceCardInstanceId];
         if (!card || card.zone !== 'BATTLEFIELD') return;
         ctx.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      },
+    });
+
+    // 8.7.5 时限触发：BP03-024「该回合结束时，将该牌从战场放置到牌组底」
+    this.registerTrigger({
+      abilityId: 'DELAYED_END_OF_TURN_TO_DECK_BOTTOM',
+      eventTypes: [],
+      collect: () => [],
+      execute: (trigger, ctx) => {
+        const card = ctx.state.cards[trigger.sourceCardInstanceId];
+        if (!card || card.zone !== 'BATTLEFIELD') return;
+        ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
       },
     });
   }

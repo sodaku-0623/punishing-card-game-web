@@ -541,6 +541,14 @@ export class CombatManager {
     this.state.phase = 'MAIN_PHASE';
     this.state.priorityPlayerId = this.state.activePlayerId;
 
+    // 清理持续至「那次攻击结束为止」的持续效果 (如 BP03-054 艾拉·万华【瞬时】)
+    for (const card of Object.values(this.state.cards)) {
+      if (card.modifiers?.some((m) => m.id?.startsWith('combat-'))) {
+        const remaining = card.modifiers.filter((m) => !m.id?.startsWith('combat-'));
+        card.modifiers = remaining.length > 0 ? remaining : undefined;
+      }
+    }
+
     // 7.5.1.d / 7.6.1.f「攻击结束时」触发条件生效 (含 10.16【同命】等自动能力)，进入检查时机
     if (combat) {
       this.onTriggerEventCallback?.({

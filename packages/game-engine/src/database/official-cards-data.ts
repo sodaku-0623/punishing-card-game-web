@@ -1,7 +1,8 @@
 import { CardVersionData, CardType, ElementAttribute, SignalOrbType } from '@zhanshuang/shared';
 import { parseAscensionConfig } from './ascension-parser.js';
+import { parseAssistConfig } from './assist-parser.js';
 
-export { parseAscensionConfig };
+export { parseAscensionConfig, parseAssistConfig };
 
 const RAW_OFFICIAL_CARDS: any[] = [
   {
@@ -7369,6 +7370,7 @@ export const OFFICIAL_CARDS_DATA: CardVersionData[] = RAW_OFFICIAL_CARDS.map((c)
   traits: c.traits || [],
   isInstant: !!c.isInstant,
   ascensionConfig: parseAscensionConfig(c.rulesText),
+  assistConfig: parseAssistConfig(c.rulesText),
   abilities: [],
   rulesText: c.rulesText || '',
   flavorText: c.flavorText ?? undefined,

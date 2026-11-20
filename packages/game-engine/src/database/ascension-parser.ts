@@ -29,7 +29,9 @@ export function parseAscensionConfig(rulesText: string): AscensionRuleConfig | u
   let targetPart = targetPartRaw.trim();
   const targetFilter: AscensionRuleConfig['targetFilter'] = {};
   if (targetPart.includes('信号球区中')) {
-    unsupported.push('以信号球区中的卡牌作为升变对象');
+    targetFilter.targetZones = ['SIGNAL_ORB'];
+  } else if (targetPart.startsWith('战场或浮空模式的')) {
+    targetFilter.targetZones = ['BATTLEFIELD', 'AIRBORNE'];
   }
   targetPart = targetPart.replace(/^战场或浮空模式的/, '').replace(/^信号球区中/, '');
   if (targetPart.startsWith('竖直状态')) {
@@ -82,8 +84,14 @@ export function parseAscensionConfig(rulesText: string): AscensionRuleConfig | u
   const costValueMatch = costText.match(/(?:【|^|「)(?:费用\s*(\d+)|(\d+)\s*费)/);
   if (!costValueMatch) return undefined;
   const ascensionCost = parseInt(costValueMatch[1] ?? costValueMatch[2]!, 10);
+  let extraCost: AscensionRuleConfig['extraCost'];
   if (/[&＆]/.test(costText)) {
-    unsupported.push('升变代价中的额外行动');
+    const stackMatch = costText.match(/[&＆]\s*将我方战场1张《([^》]+)》放置到该牌下方/);
+    if (stackMatch) {
+      extraCost = { kind: 'STACK_FIELD_ROLE_UNDERNEATH', exactName: stackMatch[1]!.trim() };
+    } else {
+      unsupported.push('升变代价中的额外行动');
+    }
   }
 
   // ---------- 升变能力 (8.11.2.c) ----------
@@ -102,6 +110,7 @@ export function parseAscensionConfig(rulesText: string): AscensionRuleConfig | u
   return {
     targetFilter,
     restrictionFilter: conditions.length > 0 ? { minCostLimit, conditions } : undefined,
+    extraCost,
     unsupportedReason: unsupported.length > 0 ? `暂不支持${unsupported.join('、')}` : undefined,
     ascensionCost,
     grantKeywords,

@@ -146,26 +146,55 @@ export class BattlefieldManager {
 
   /**
    * 8.11 升变出场 (Ascension)
-   * 将手牌中的升变卡重叠在升变对象上方出场
+   * 将手牌 (或允许区域) 中的升变卡重叠在升变对象上方出场。
+   * 支持：战场角色、信号球区正面卡牌 (BP04-061)、浮空模式角色、以及 BP01-040 额外叠放战场《帕瓦》。
    */
   playAscensionCard(
     playerId: string,
     ascensionCardId: string,
-    targetRoleCardId: string
+    targetRoleCardId: string,
+    options?: { targetSlotIndex?: number; extraStackRoleCardId?: string }
   ): boolean {
     const targetCard = this.state.cards[targetRoleCardId];
-    if (!targetCard || targetCard.controllerPlayerId !== playerId || targetCard.zone !== 'BATTLEFIELD') {
+    if (!targetCard || targetCard.controllerPlayerId !== playerId) {
       return false;
     }
 
-    const slotIndex = targetCard.slotIndex;
-    if (slotIndex === undefined) return false;
-
-    const slot = this.getSlots(playerId)[slotIndex];
-    if (!slot || slot.roleCardId !== targetRoleCardId) return false;
-
     const ascensionCard = this.state.cards[ascensionCardId];
     if (!ascensionCard) return false;
+
+    let slotIndex: number | undefined;
+    if (targetCard.zone === 'BATTLEFIELD') {
+      if (!this.isSlotRole(playerId, targetRoleCardId) || targetCard.slotIndex === undefined) {
+        return false;
+      }
+      slotIndex = targetCard.slotIndex;
+      // 8.13.4.a.3 / 8.13.4.c.4 协战角色作为升变对象时，原搭档解除协战置入墓地
+      if (targetCard.partnerCardId) {
+        this.releasePartner(targetRoleCardId, true);
+      }
+    } else if (targetCard.zone === 'SIGNAL_ORB') {
+      if (!targetCard.isFaceUp) return false; // Q&A·10 背面不能作为升变对象
+      slotIndex = options?.targetSlotIndex ?? this.findFirstEmptySlot(playerId);
+      if (slotIndex === undefined) return false;
+      const chosenSlot = this.getSlots(playerId)[slotIndex];
+      if (!chosenSlot || chosenSlot.roleCardId || chosenSlot.standaloneEquipmentId || chosenSlot.assistCardId) {
+        return false;
+      }
+    } else if (targetCard.zone === 'PROCESSING' && targetCard.isAirborne) {
+      slotIndex = options?.targetSlotIndex ?? this.findFirstEmptySlot(playerId);
+      if (slotIndex === undefined) return false;
+      const chosenSlot = this.getSlots(playerId)[slotIndex];
+      if (!chosenSlot || chosenSlot.roleCardId || chosenSlot.standaloneEquipmentId || chosenSlot.assistCardId) {
+        return false;
+      }
+      targetCard.isAirborne = undefined;
+    } else {
+      return false;
+    }
+
+    const slot = this.getSlots(playerId)[slotIndex];
+    if (!slot) return false;
 
     // 先将升变卡放置到卡位 (移动区域会重置卡牌状态，下方卡牌与装备须在移动之后再挂接)
     const fromZone = ascensionCard.zone;
@@ -176,15 +205,68 @@ export class BattlefieldManager {
       isReady: true,
     });
 
+    // 确保从非战场 (信号球区/浮空区) 升变的原对象及其下方卡牌迁入 BATTLEFIELD
+    targetCard.zone = 'BATTLEFIELD';
+    targetCard.slotIndex = undefined;
+    targetCard.isFaceUp = true;
+    targetCard.isReady = true;
+
     // 8.11.3.f.1 升变对象及其下方原本的卡牌将保留在升变出场的卡牌下方
     const stackedCardIds = [...targetCard.underneathCardIds, targetRoleCardId];
-    ascensionCard.underneathCardIds = stackedCardIds;
+    for (const underId of targetCard.underneathCardIds) {
+      const uc = this.state.cards[underId];
+      if (uc) {
+        uc.zone = 'BATTLEFIELD';
+        uc.slotIndex = undefined;
+      }
+    }
 
     // 8.11.3.f.2 升变对象原本的装备将保留并成为升变出场的卡牌的装备
     if (targetCard.attachedEquipmentId) {
+      const eqCard = this.state.cards[targetCard.attachedEquipmentId];
+      if (eqCard) {
+        eqCard.zone = 'BATTLEFIELD';
+        eqCard.slotIndex = slotIndex;
+      }
       ascensionCard.attachedEquipmentId = targetCard.attachedEquipmentId;
       targetCard.attachedEquipmentId = undefined;
     }
+
+    // BP01-040 额外升变代价：将我方战场 1 张《帕瓦》放置到该牌下方
+    if (options?.extraStackRoleCardId && options.extraStackRoleCardId !== targetRoleCardId) {
+      const extraCard = this.state.cards[options.extraStackRoleCardId];
+      if (extraCard && this.isSlotRole(playerId, extraCard.instanceId)) {
+        if (extraCard.partnerCardId) {
+          this.releasePartner(extraCard.instanceId, true);
+        }
+        for (const s of this.getSlots(playerId)) {
+          if (s.roleCardId === extraCard.instanceId) s.roleCardId = undefined;
+        }
+        const extraOrphans = [...extraCard.underneathCardIds];
+        if (extraCard.attachedEquipmentId) extraOrphans.push(extraCard.attachedEquipmentId);
+        extraCard.underneathCardIds = [];
+        extraCard.attachedEquipmentId = undefined;
+        for (const oid of extraOrphans) {
+          const o = this.state.cards[oid];
+          if (o && o.zone === 'BATTLEFIELD') {
+            this.zoneMgr.moveCard(oid, 'GRAVEYARD', {
+              isFaceUp: true,
+              isOrphanCleanup: true,
+              orphanHostCardId: extraCard.instanceId,
+            });
+          }
+        }
+        extraCard.slotIndex = undefined;
+        extraCard.tempPPBonus = undefined;
+        extraCard.tempDPBonus = undefined;
+        extraCard.grantedKeywords = undefined;
+        extraCard.modifiers = undefined;
+        extraCard.isFrozen = undefined;
+        stackedCardIds.push(extraCard.instanceId);
+      }
+    }
+
+    ascensionCard.underneathCardIds = stackedCardIds;
 
     // 8.11.4.c 升变对象原本的卡牌状态不继承；作为下方的牌，其持续效果也不再适用 (3.2.6)
     targetCard.tempPPBonus = undefined;
@@ -347,6 +429,258 @@ export class BattlefieldManager {
         orphanHostCardId: cardInstanceId,
       });
     }
+
+    // 8.13.4.a.3 协战角色离开战场时，其搭档因规则放置到墓地 (不视为离场)
+    if (card.partnerCardId) {
+      this.releasePartner(cardInstanceId, true);
+    }
+  }
+
+  /**
+   * 10.18 将战场角色【浮空】到处理区成为【浮空模式】
+   * - 10.18.2.a 每位玩家处理区最多 1 张浮空模式卡牌；已存在时不执行并返回 false
+   * - 10.18.2.b / 10.18.2.d.3 下方的卡牌与装备保持不变一同移动，但它们不视为浮空模式/处理区牌
+   */
+  airborneRole(cardInstanceId: string): boolean {
+    const card = this.state.cards[cardInstanceId];
+    if (!card || !this.isSlotRole(card.controllerPlayerId, cardInstanceId)) {
+      return false;
+    }
+    const playerId = card.controllerPlayerId;
+    const existingAirborne = this.zoneMgr
+      .getCardsInZone(playerId, 'PROCESSING')
+      .some((c) => c.isAirborne === true);
+    if (existingAirborne) {
+      return false;
+    }
+
+    // 8.13.4.a.3 若处于协战状态，离场前先解除协战并将搭档置入墓地
+    if (card.partnerCardId) {
+      this.releasePartner(cardInstanceId, true);
+    }
+
+    const underIds = [...card.underneathCardIds];
+    const eqId = card.attachedEquipmentId;
+
+    for (const slot of this.getSlots(playerId)) {
+      if (slot.roleCardId === cardInstanceId) {
+        slot.roleCardId = undefined;
+      }
+    }
+
+    card.isAirborne = true;
+    const moved = this.zoneMgr.moveCard(cardInstanceId, 'PROCESSING', {
+      isFaceUp: true,
+      isReady: true,
+      preserveAttachments: true,
+    });
+    if (!moved) {
+      card.isAirborne = undefined;
+      return false;
+    }
+
+    card.underneathCardIds = underIds;
+    card.attachedEquipmentId = eqId;
+    for (const id of [...underIds, ...(eqId ? [eqId] : [])]) {
+      const sub = this.state.cards[id];
+      if (sub) {
+        sub.zone = 'PROCESSING';
+        sub.slotIndex = undefined;
+        sub.modifiers = undefined;
+        sub.isFrozen = undefined;
+        sub.isAirborne = undefined;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 10.18.2.c 回合开始时 (6.2.1.a) 检查处理区的浮空模式卡牌并将其作为规则处理回到战场；
+   * 若战场没有空余卡位则将其与下方卡牌、装备一并置入墓地 (10.18.2.e)。
+   */
+  returnAirborneRoleAtTurnStart(playerId: string): string | undefined {
+    const airborne = this.zoneMgr
+      .getCardsInZone(playerId, 'PROCESSING')
+      .find((c) => c.isAirborne === true);
+    if (!airborne) return undefined;
+
+    airborne.isAirborne = undefined;
+    const underIds = [...airborne.underneathCardIds];
+    const eqId = airborne.attachedEquipmentId;
+    const slotIndex = this.findFirstEmptySlot(playerId);
+
+    if (slotIndex === undefined) {
+      // 10.18.2.e 没有空余卡位，本体与下方/装备卡牌一并置入墓地
+      this.zoneMgr.moveCard(airborne.instanceId, 'GRAVEYARD', { isFaceUp: true });
+      for (const id of [...underIds, ...(eqId ? [eqId] : [])]) {
+        if (this.state.cards[id]) {
+          this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        }
+      }
+      return undefined;
+    }
+
+    const slot = this.getSlots(playerId)[slotIndex]!;
+    slot.roleCardId = airborne.instanceId;
+    this.zoneMgr.moveCard(airborne.instanceId, 'BATTLEFIELD', {
+      slotIndex,
+      isFaceUp: true,
+      isReady: true,
+      preserveAttachments: true,
+    });
+    airborne.underneathCardIds = underIds;
+    airborne.attachedEquipmentId = eqId;
+    for (const id of underIds) {
+      const uc = this.state.cards[id];
+      if (uc) {
+        uc.zone = 'BATTLEFIELD';
+        uc.slotIndex = undefined;
+      }
+    }
+    if (eqId && this.state.cards[eqId]) {
+      const eq = this.state.cards[eqId]!;
+      eq.zone = 'BATTLEFIELD';
+      eq.slotIndex = slotIndex;
+      eq.isFaceUp = true;
+      eq.isReady = true;
+    }
+
+    this.events.push({
+      type: 'CARD_PLAYED',
+      playerId,
+      cardInstanceId: airborne.instanceId,
+      slotIndex,
+      isAscension: false,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId: airborne.instanceId,
+      fromZone: 'PROCESSING',
+      toZone: 'BATTLEFIELD',
+      isAscension: false,
+      subjectSnapshot: this.snapshotProvider?.(airborne.instanceId),
+    });
+    return airborne.instanceId;
+  }
+
+  /**
+   * 8.13.3.d 使指定卡牌成为战场上协战角色的协战搭档
+   */
+  attachPartner(playerId: string, hostRoleCardId: string, partnerCardId: string): boolean {
+    const host = this.state.cards[hostRoleCardId];
+    const partner = this.state.cards[partnerCardId];
+    if (!host || !partner || hostRoleCardId === partnerCardId) return false;
+    if (!this.isSlotRole(playerId, hostRoleCardId) || partner.controllerPlayerId !== playerId) {
+      return false;
+    }
+    if (partner.partnerOfCardId) return false;
+
+    // 8.13.2.a.2 / 8.13.4.c.3 已有搭档时先将原搭档解除协战置入墓地
+    if (host.partnerCardId) {
+      this.releasePartner(hostRoleCardId, true);
+    }
+
+    const fromDeck = partner.zone === 'DECK';
+
+    // 8.13.3.d.3 战场上的卡牌成为搭档时，清空其原有卡位并将下方牌/装备/搭档置入墓地
+    if (partner.zone === 'BATTLEFIELD') {
+      for (const s of this.getSlots(playerId)) {
+        if (s.roleCardId === partnerCardId) s.roleCardId = undefined;
+        if (s.assistCardId === partnerCardId) s.assistCardId = undefined;
+        if (s.standaloneEquipmentId === partnerCardId) s.standaloneEquipmentId = undefined;
+      }
+      if (partner.partnerCardId) {
+        this.releasePartner(partnerCardId, true);
+      }
+      const oldUnder = [...partner.underneathCardIds];
+      const oldEq = partner.attachedEquipmentId;
+      partner.underneathCardIds = [];
+      partner.attachedEquipmentId = undefined;
+      for (const oid of oldUnder) {
+        if (this.state.cards[oid]?.zone === 'BATTLEFIELD') {
+          this.zoneMgr.moveCard(oid, 'GRAVEYARD', {
+            isFaceUp: true,
+            isOrphanCleanup: true,
+            orphanHostCardId: partnerCardId,
+          });
+        }
+      }
+      if (oldEq && this.state.cards[oldEq]?.zone === 'BATTLEFIELD') {
+        this.zoneMgr.moveCard(oldEq, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: partnerCardId,
+        });
+      }
+    }
+
+    const prevZone = partner.zone;
+    // 8.13.2.b.3 / 8.13.3.d.2 放置到战场紧贴宿主，不继承原有状态，不触发出场能力
+    partner.zone = 'BATTLEFIELD';
+    partner.slotIndex = host.slotIndex;
+    partner.isFaceUp = true;
+    partner.isReady = true;
+    partner.modifiers = undefined;
+    partner.tempPPBonus = undefined;
+    partner.tempDPBonus = undefined;
+    partner.grantedKeywords = undefined;
+    partner.endOfTurnToGraveyard = undefined;
+    partner.isFrozen = undefined;
+    partner.isAirborne = undefined;
+    partner.underneathCardIds = [];
+    partner.attachedEquipmentId = undefined;
+    partner.partnerOfCardId = hostRoleCardId;
+    host.partnerCardId = partnerCardId;
+
+    if (prevZone === 'COST') {
+      this.zoneMgr.syncCostStats(playerId);
+    }
+    if (fromDeck) {
+      // 8.13.3.b.3 从牌组选择搭档后洗切牌组
+      this.zoneMgr.shuffleDeck(playerId);
+    }
+
+    this.events.push({
+      type: 'CARD_MOVED',
+      cardInstanceId: partnerCardId,
+      fromZone: prevZone,
+      toZone: 'BATTLEFIELD',
+      toSlot: host.slotIndex,
+      isFaceUp: true,
+      isReady: true,
+    });
+    return true;
+  }
+
+  /**
+   * 8.13.4.c 解除协战状态并将搭档置入墓地 (8.13.4.a.1 不视为离场)
+   */
+  releasePartner(hostRoleCardId: string, force: boolean = false): boolean {
+    const host = this.state.cards[hostRoleCardId];
+    if (!host || !host.partnerCardId) return false;
+    const partnerId = host.partnerCardId;
+    const partner = this.state.cards[partnerId];
+    if (
+      !force &&
+      partner?.cannotReleasePartnerUntilTurn !== undefined &&
+      partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber
+    ) {
+      return false;
+    }
+
+    host.partnerCardId = undefined;
+    if (partner) {
+      partner.partnerOfCardId = undefined;
+      partner.cannotReleasePartnerUntilTurn = undefined;
+      if (partner.zone === 'BATTLEFIELD') {
+        this.zoneMgr.moveCard(partnerId, 'GRAVEYARD', {
+          isFaceUp: true,
+          skipLeftFieldTrigger: true,
+        });
+      }
+    }
+    return true;
   }
 
   /**

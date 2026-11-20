@@ -881,6 +881,34 @@ export class DeclarativeEffectInterpreter {
           break;
         }
 
+        case 'AIRBORNE': {
+          // 10.18 将目标角色【浮空】到处理区成为【浮空模式】
+          const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
+          const airborned: string[] = [];
+          for (const id of targets) {
+            if (this.ctx.fieldMgr.airborneRole(id)) airborned.push(id);
+          }
+          if (step.saveAirborneToVar) vars[step.saveAirborneToVar] = airborned;
+          break;
+        }
+
+        case 'ATTACH_PARTNER': {
+          // 8.13.3.d.1 通过卡牌能力使指定卡牌成为协战搭档 (可不满足协战搭档条件，不计入回合协战次数)
+          const hosts = this.resolveTargetIds(step.host, playerId, sourceId, vars);
+          const partners = this.resolveTargetIds(step.partner, playerId, sourceId, vars);
+          const hostId = hosts[0];
+          const partnerId = partners[0];
+          if (hostId && partnerId && this.ctx.fieldMgr.attachPartner(playerId, hostId, partnerId)) {
+            this.ctx.triggerMgr?.emit({
+              type: 'PARTNER_GAINED',
+              playerId,
+              cardInstanceId: hostId,
+              targetCardId: partnerId,
+            });
+          }
+          break;
+        }
+
         case 'MODIFY_STATS': {
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
           const untilTurn = this.resolveUntilTurn(step.duration, turn);
@@ -1184,7 +1212,10 @@ export class DeclarativeEffectInterpreter {
     if (filter.anyTraits !== undefined && !filter.anyTraits.some((t) => hasTraitFn(card.instanceId, t))) {
       return false;
     }
-    const cost = def?.cost ?? 99;
+    const cost =
+      card.zone === 'BATTLEFIELD' && card.partnerCardId && this.ctx.continuousEffects
+        ? this.ctx.continuousEffects.getEffectiveCardCost(card.instanceId)
+        : (def?.cost ?? 99);
     if (filter.maxCost !== undefined && cost > filter.maxCost) return false;
     if (filter.minCost !== undefined && cost < filter.minCost) return false;
     if (filter.exactCost !== undefined && cost !== filter.exactCost) return false;

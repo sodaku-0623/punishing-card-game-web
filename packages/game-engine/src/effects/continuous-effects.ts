@@ -224,6 +224,17 @@ export class ContinuousEffectEngine {
       }
     }
 
+    // 8.13.4.b 协战角色的基本 PP、基本 DP 增加其协战搭档对应的印刷基本数值
+    // (8.13.4.b.2 只参考搭档印刷基本数值，不参考搭档自身的持续效果或状态)
+    if (card.zone === 'BATTLEFIELD' && card.partnerCardId) {
+      const partnerCard = this.state.cards[card.partnerCardId];
+      if (partnerCard) {
+        const partnerDef = this.getDef(partnerCard);
+        pp += partnerDef?.basePP ?? 0;
+        dp += partnerDef?.baseDP ?? 0;
+      }
+    }
+
     const parsedInherent = parseInherentKeywords(cardDef?.rulesText);
     const inherentCharge = parseInherentChargeCount(parsedInherent);
     const baseKeywords = parsedInherent
@@ -479,6 +490,23 @@ export class ContinuousEffectEngine {
 
   hasKeyword(cardInstanceId: string, keyword: string): boolean {
     return this.evaluateCard(cardInstanceId).keywords.includes(keyword);
+  }
+
+  /**
+   * 8.13.4.b.1 计算卡牌当前有效费用 (协战角色在战场时费用增加其搭档的基本费用)
+   */
+  getEffectiveCardCost(cardInstanceId: string): number {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return 0;
+    const def = this.getDef(card);
+    let cost = def?.cost ?? 0;
+    if (card.zone === 'BATTLEFIELD' && card.partnerCardId) {
+      const partner = this.state.cards[card.partnerCardId];
+      if (partner) {
+        cost += this.getDef(partner)?.cost ?? 0;
+      }
+    }
+    return cost;
   }
 
   hasTrait(cardInstanceId: string, trait: string): boolean {
