@@ -1,9 +1,45 @@
-import type { CardInstance } from '@zhanshuang/shared';
+import type { CardInstance, ProhibitionFlag, SignalOrbColor } from '@zhanshuang/shared';
 
 interface BaseStats {
   basePP?: number;
   baseDP?: number;
   rulesText?: string;
+}
+
+const PROHIBITION_LABELS: Record<ProhibitionFlag, string> = {
+  CANNOT_ATTACK: '不能攻击',
+  CANNOT_BLOCK: '不能阻挡',
+  CANNOT_DEAL_DAMAGE: '不能造成伤害',
+  CANNOT_GAIN_ABILITIES: '不能获得新能力',
+  CANNOT_ELIMINATE: '不能被消除',
+  CANNOT_MODIFY_PP_BY_OPPONENT: 'PP不受对手效果增减',
+  CANNOT_DISCARD_HIDDEN_COST_AT_END: '回合末不送墓',
+};
+
+const ORB_COLOR_LABELS: Record<SignalOrbColor, string> = {
+  RED: '红',
+  BLUE: '蓝',
+  YELLOW: '黄',
+};
+
+/**
+ * 1.3.3 检查卡牌是否处于指定禁止状态 (优先读取服务端计算的 effectiveProhibitions)
+ */
+export function hasCardProhibition(
+  card: CardInstance | null | undefined,
+  flag: ProhibitionFlag
+): boolean {
+  if (!card) return false;
+  if (card.effectiveProhibitions?.includes(flag)) return true;
+  return Boolean(card.modifiers?.some((m) => m.prohibitions?.includes(flag)));
+}
+
+/**
+ * 将服务端计算的禁止标志转为中文展示标签
+ */
+export function formatCardProhibitions(card: CardInstance): string[] {
+  const flags = card.effectiveProhibitions ?? [];
+  return flags.map((f) => PROHIBITION_LABELS[f] ?? f);
 }
 
 /**
@@ -49,14 +85,20 @@ export function canRoleAttackOnEnterTurn(
 }
 
 /**
- * 将卡牌当前生效的 8.9 持续效果修改器整理为简明中文标签，供悬停/详情面板展示
+ * 将卡牌当前生效的 8.9 持续效果修改器与 10.15 冰冻状态整理为简明中文标签，供悬停/详情面板展示
  */
 export function formatCardModifiers(card: CardInstance): string[] {
   const modifiers = card.modifiers ?? [];
   const tags: string[] = [];
+  if (card.isFrozen) {
+    tags.push('冰冻状态 (下回合竖直阶段无法因规则竖直)');
+  }
   for (const mod of modifiers) {
     const parts: string[] = [];
     if (mod.loseAbilities) parts.push('能力无效');
+    if (mod.prohibitions && mod.prohibitions.length > 0) {
+      parts.push(mod.prohibitions.map((p) => PROHIBITION_LABELS[p] ?? p).join('、'));
+    }
     if (mod.addTraits && mod.addTraits.length > 0) {
       parts.push(`特征+${mod.addTraits.map((t) => `<${t}>`).join('')}`);
     }
@@ -65,6 +107,16 @@ export function formatCardModifiers(card: CardInstance): string[] {
     }
     if (mod.removeKeywords && mod.removeKeywords.length > 0) {
       parts.push(`-${mod.removeKeywords.map((k) => `【${k}】`).join('')}`);
+    }
+    if (mod.treatedAsOrbColors && mod.treatedAsOrbColors.length > 0) {
+      const colors = mod.treatedAsOrbColors.map((c) => ORB_COLOR_LABELS[c] ?? c).join('/');
+      parts.push(`视为${colors}信号球`);
+    }
+    if (mod.orbValue !== undefined) {
+      parts.push(`视为${mod.orbValue}个信号球`);
+    }
+    if (mod.treatedAsNames && mod.treatedAsNames.length > 0) {
+      parts.push(`卡名视为${mod.treatedAsNames.map((n) => `《${n}》`).join('/')}`);
     }
     if (mod.setPP !== undefined) parts.push(`PP=${mod.setPP}`);
     if (mod.pp) parts.push(`PP${mod.pp > 0 ? `+${mod.pp}` : mod.pp}`);

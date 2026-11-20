@@ -12,7 +12,7 @@ import { DeckZoneView } from './DeckZoneView';
 import { GraveyardZoneView } from './GraveyardZoneView';
 import { Swords, Clock, Shield } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
-import { canRoleAttackOnEnterTurn } from '@/lib/card-stats';
+import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
 
 export interface AttackAnimInfo {
   attackerCardId: string;
@@ -280,8 +280,12 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&
           !!roleCard?.isReady &&
+          !hasCardProhibition(roleCard, 'CANNOT_ATTACK') &&
           (roleCard.turnEnteredZone < gameState.turnNumber || hasRush);
-        const canBlock = timing.canDeclareBlock && !!roleCard?.isReady;
+        const canBlock =
+          timing.canDeclareBlock &&
+          !!roleCard?.isReady &&
+          !hasCardProhibition(roleCard, 'CANNOT_BLOCK');
 
         const isAttacking = !!attackAnim && !!roleCard && attackAnim.attackerCardId === roleCard.instanceId;
         const isHit = !!attackAnim && !!roleCard && attackAnim.targetCardId === roleCard.instanceId && attackAnim.isClashing;

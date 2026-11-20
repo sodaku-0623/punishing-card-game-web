@@ -5,7 +5,7 @@ import { CardInstance, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
-import { formatBonus, formatCardModifiers, getDisplayStats } from '@/lib/card-stats';
+import { formatBonus, formatCardModifiers, formatCardProhibitions, getDisplayStats } from '@/lib/card-stats';
 import {
   Flame,
   Zap,
@@ -96,6 +96,7 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
   const { pp: totalPP, dp: totalDP, ppBonus, dpBonus } = getDisplayStats(card, cardDef);
   const displayTraits = card.effectiveTraits ?? cardDef?.traits ?? [];
   const activeModifiers = formatCardModifiers(card);
+  const activeProhibitions = formatCardProhibitions(card);
 
   const getElementBadge = (attr?: ElementAttribute) => {
     switch (attr) {
@@ -309,6 +310,19 @@ export const CardHoverTooltip: React.FC<CardHoverTooltipProps> = ({ card }) => {
                   className="px-1.5 py-px bg-teal-400/15 text-teal-400 text-hud border border-teal-400/40 font-semibold"
                 >
                   【{kw}】
+                </span>
+              ))}
+            </div>
+          )}
+
+          {activeProhibitions.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {activeProhibitions.map((label, i) => (
+                <span
+                  key={i}
+                  className="px-1.5 py-px bg-crimson-500/15 text-crimson-400 text-hud border border-crimson-500/40 font-semibold"
+                >
+                  {label}
                 </span>
               ))}
             </div>

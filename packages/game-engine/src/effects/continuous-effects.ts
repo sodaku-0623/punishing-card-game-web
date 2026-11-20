@@ -1,4 +1,10 @@
-import { CardInstance, CardModifier, GameState } from '@zhanshuang/shared';
+import {
+  CardInstance,
+  CardModifier,
+  GameState,
+  ProhibitionFlag,
+  SignalOrbColor,
+} from '@zhanshuang/shared';
 import { ICardDatabase } from '../database/card-registry.js';
 import { parseInherentChargeCount, parseInherentKeywords } from '../rules/keywords.js';
 
@@ -38,6 +44,8 @@ export interface StaticContinuousRule {
   matchSource: (source: CardInstance, ctx: StaticRuleContext) => boolean;
   /** 层级：NON_STAT = 8.9.1.b (特征/词条/失去能力)，STAT = 8.9.1.c (PP/DP/充能数) */
   layer: 'NON_STAT' | 'STAT';
+  /** 允许生效的来源卡区域 (默认为仅战场 ['BATTLEFIELD']；如 BP04-032 炽能球在 SIGNAL_ORB，BP02-040 在所有区域) */
+  sourceZones?: CardInstance['zone'][];
   /** 8.9.1.d 依赖标注：若会赋予特征，将在同一层内先于依赖特征的规则适用 */
   providesTraits?: boolean;
   dependsOnTraits?: boolean;
@@ -78,6 +86,11 @@ export interface StaticContribution {
   removeKeywords?: string[];
   addTraits?: string[];
   loseAbilities?: boolean;
+  prohibitions?: ProhibitionFlag[];
+  treatedAsOrbColors?: SignalOrbColor[];
+  orbValue?: number;
+  treatedAsNames?: string[];
+  appliedByPlayerId?: string;
 }
 
 export interface EvaluatedCardStats {
@@ -87,6 +100,17 @@ export interface EvaluatedCardStats {
   keywords: string[];
   traits: string[];
   abilitiesLost: boolean;
+  prohibitions: ProhibitionFlag[];
+  treatedAsNames: string[];
+  treatedAsOrbColors: SignalOrbColor[];
+  orbValue: number;
+}
+
+export interface EffectiveOrbInfo {
+  isOrb: boolean;
+  colors: SignalOrbColor[];
+  orbValue: number;
+  cannotEliminate: boolean;
 }
 
 interface TimestampedNonStat {
@@ -97,6 +121,10 @@ interface TimestampedNonStat {
   keywords?: string[];
   removeKeywords?: string[];
   loseAbilities?: boolean;
+  prohibitions?: ProhibitionFlag[];
+  treatedAsOrbColors?: SignalOrbColor[];
+  orbValue?: number;
+  treatedAsNames?: string[];
 }
 
 interface TimestampedStat {
@@ -107,6 +135,7 @@ interface TimestampedStat {
   setDP?: number;
   charge?: number;
   setCharge?: number;
+  appliedByPlayerId?: string;
 }
 
 /**
@@ -166,7 +195,18 @@ export class ContinuousEffectEngine {
   evaluateCard(cardInstanceId: string): EvaluatedCardStats {
     const card = this.state.cards[cardInstanceId];
     if (!card) {
-      return { pp: 0, dp: 0, charge: 0, keywords: [], traits: [], abilitiesLost: false };
+      return {
+        pp: 0,
+        dp: 0,
+        charge: 0,
+        keywords: [],
+        traits: [],
+        abilitiesLost: false,
+        prohibitions: [],
+        treatedAsNames: [],
+        treatedAsOrbColors: [],
+        orbValue: 0,
+      };
     }
 
     const cardDef = this.getDef(card);
@@ -192,6 +232,19 @@ export class ContinuousEffectEngine {
 
     const traitsSet = new Set<string>(cardDef?.traits ?? []);
     const keywordsSet = new Set<string>(baseKeywords);
+    const prohibitionsSet = new Set<ProhibitionFlag>();
+    const treatedAsNamesSet = new Set<string>();
+    const orbColorsSet = new Set<SignalOrbColor>();
+    if (cardDef?.signalOrb) {
+      orbColorsSet.add(cardDef.signalOrb as SignalOrbColor);
+    }
+    let orbValue = cardDef?.signalOrb ? 1 : 0;
+
+    // 固有禁止能力：【永】：该牌不能攻击 (帕瓦、库洛洛；若失去能力 8.3.4 则在下方清除)
+    const hasInherentCannotAttack = Boolean(cardDef?.rulesText?.includes('【永】：该牌不能攻击'));
+    if (hasInherentCannotAttack) {
+      prohibitionsSet.add('CANNOT_ATTACK');
+    }
 
     const baseCtx: StaticRuleContext = {
       state: this.state,
@@ -208,7 +261,16 @@ export class ContinuousEffectEngine {
       nonStatOps.push({ timestamp: 0, keywords: card.grantedKeywords });
     }
     for (const m of card.modifiers ?? []) {
-      if (m.addTraits?.length || m.keywords?.length || m.removeKeywords?.length || m.loseAbilities) {
+      if (
+        m.addTraits?.length ||
+        m.keywords?.length ||
+        m.removeKeywords?.length ||
+        m.loseAbilities ||
+        m.prohibitions?.length ||
+        m.treatedAsOrbColors?.length ||
+        m.orbValue !== undefined ||
+        m.treatedAsNames?.length
+      ) {
         nonStatOps.push({
           timestamp: m.timestamp ?? 0,
           providesTraits: !!m.addTraits?.length,
@@ -216,6 +278,10 @@ export class ContinuousEffectEngine {
           keywords: m.keywords,
           removeKeywords: m.removeKeywords,
           loseAbilities: m.loseAbilities,
+          prohibitions: m.prohibitions,
+          treatedAsOrbColors: m.treatedAsOrbColors,
+          orbValue: m.orbValue,
+          treatedAsNames: m.treatedAsNames,
         });
       }
     }
@@ -231,7 +297,12 @@ export class ContinuousEffectEngine {
       .sort((a, b) => Number(!!b.providesTraits) - Number(!!a.providesTraits));
 
     for (const rule of layer1StaticRules) {
-      for (const source of allFieldRoles) {
+      const candidateSources = rule.sourceZones
+        ? rule.sourceZones.includes(card.zone)
+          ? [card]
+          : []
+        : allFieldRoles;
+      for (const source of candidateSources) {
         if (this.hasLostInherentAbilities(source.instanceId)) continue;
         if (!rule.matchSource(source, baseCtx)) continue;
         const evalCtx: StaticRuleEvaluationContext = {
@@ -252,6 +323,10 @@ export class ContinuousEffectEngine {
           keywords: contrib.keywords,
           removeKeywords: contrib.removeKeywords,
           loseAbilities: contrib.loseAbilities,
+          prohibitions: contrib.prohibitions,
+          treatedAsOrbColors: contrib.treatedAsOrbColors,
+          orbValue: contrib.orbValue,
+          treatedAsNames: contrib.treatedAsNames,
         });
       }
     }
@@ -264,20 +339,40 @@ export class ContinuousEffectEngine {
     });
 
     let abilitiesLost = false;
+    let cannotGainAbilities = false;
     for (const op of nonStatOps) {
       if (op.loseAbilities) {
         abilitiesLost = true;
-        // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字；之后时间戳新获得的能力有效
+        // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字，并解除自身固有「不能攻击」
         keywordsSet.clear();
+        if (hasInherentCannotAttack) {
+          prohibitionsSet.delete('CANNOT_ATTACK');
+        }
+      }
+      if (op.prohibitions) {
+        for (const p of op.prohibitions) {
+          prohibitionsSet.add(p);
+          if (p === 'CANNOT_GAIN_ABILITIES') cannotGainAbilities = true;
+        }
       }
       if (op.addTraits) {
         for (const t of op.addTraits) traitsSet.add(t);
       }
-      if (op.keywords) {
+      if (op.keywords && !cannotGainAbilities) {
         for (const kw of op.keywords) keywordsSet.add(kw);
       }
       if (op.removeKeywords) {
         for (const kw of op.removeKeywords) keywordsSet.delete(kw);
+      }
+      if (op.treatedAsNames) {
+        for (const n of op.treatedAsNames) treatedAsNamesSet.add(n);
+      }
+      if (op.treatedAsOrbColors) {
+        for (const col of op.treatedAsOrbColors) orbColorsSet.add(col);
+        if (orbValue === 0 && op.treatedAsOrbColors.length > 0) orbValue = 1;
+      }
+      if (op.orbValue !== undefined) {
+        orbValue = op.orbValue;
       }
     }
 
@@ -312,6 +407,7 @@ export class ContinuousEffectEngine {
           setDP: m.setDP,
           charge: m.charge,
           setCharge: m.setCharge,
+          appliedByPlayerId: m.appliedByPlayerId,
         });
       }
     }
@@ -342,6 +438,7 @@ export class ContinuousEffectEngine {
           setDP: contrib.setDP,
           charge: contrib.charge,
           setCharge: contrib.setCharge,
+          appliedByPlayerId: contrib.appliedByPlayerId ?? source.controllerPlayerId,
         });
       }
     }
@@ -349,9 +446,17 @@ export class ContinuousEffectEngine {
     // 8.9.1.e 按时间戳升序依次适用 (支持「PP 变为 X」覆盖此前增减，Q&A·6)
     statOps.sort((a, b) => a.timestamp - b.timestamp);
 
+    const preventOppPPDelta = prohibitionsSet.has('CANNOT_MODIFY_PP_BY_OPPONENT');
     for (const op of statOps) {
+      // Q&A·9 BP04-016: 「PP 不会因对方效果增减」挡住对方的 pp +/-，但挡不住「PP 变为 X」(setPP)
       if (op.setPP !== undefined) pp = op.setPP;
-      if (op.pp !== undefined) pp += op.pp;
+      if (op.pp !== undefined) {
+        const isFromOpponent =
+          op.appliedByPlayerId !== undefined && op.appliedByPlayerId !== card.controllerPlayerId;
+        if (!(preventOppPPDelta && isFromOpponent)) {
+          pp += op.pp;
+        }
+      }
       if (op.setDP !== undefined) dp = op.setDP;
       if (op.dp !== undefined) dp += op.dp;
       if (op.setCharge !== undefined) charge = op.setCharge;
@@ -365,6 +470,10 @@ export class ContinuousEffectEngine {
       keywords: Array.from(keywordsSet),
       traits: Array.from(traitsSet),
       abilitiesLost,
+      prohibitions: Array.from(prohibitionsSet),
+      treatedAsNames: Array.from(treatedAsNamesSet),
+      treatedAsOrbColors: Array.from(orbColorsSet),
+      orbValue,
     };
   }
 
@@ -374,6 +483,43 @@ export class ContinuousEffectEngine {
 
   hasTrait(cardInstanceId: string, trait: string): boolean {
     return this.evaluateLayer1Traits(cardInstanceId).has(trait);
+  }
+
+  /**
+   * 1.3.3 查询卡牌当前生效的禁止效果标志
+   */
+  hasProhibition(cardInstanceId: string, flag: ProhibitionFlag): boolean {
+    return this.evaluateCard(cardInstanceId).prohibitions.includes(flag);
+  }
+
+  /**
+   * 查询卡牌当前是否视为具有指定卡牌名称 (含原卡名与「视为」效果，如 Q&A·4/5 BP02-040)
+   */
+  hasCardName(cardInstanceId: string, name: string): boolean {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return false;
+    const def = this.getDef(card);
+    if (def?.name === name) return true;
+    return this.evaluateCard(cardInstanceId).treatedAsNames.includes(name);
+  }
+
+  /**
+   * 计算信号球区卡牌的有效信号球颜色、等效个数 (Q&A·1 BP01-037) 与是否禁止消除 (BP02-066)
+   */
+  getEffectiveOrbInfo(cardInstanceId: string): EffectiveOrbInfo {
+    const card = this.state.cards[cardInstanceId];
+    if (!card || !card.isFaceUp) {
+      return { isOrb: false, colors: [], orbValue: 0, cannotEliminate: true };
+    }
+    const evaluated = this.evaluateCard(cardInstanceId);
+    const colors = evaluated.treatedAsOrbColors;
+    const isOrb = colors.length > 0 && evaluated.orbValue > 0;
+    return {
+      isOrb,
+      colors,
+      orbValue: isOrb ? evaluated.orbValue : 0,
+      cannotEliminate: evaluated.prohibitions.includes('CANNOT_ELIMINATE'),
+    };
   }
 
   /**
@@ -441,6 +587,48 @@ export class ContinuousEffectEngine {
           pp: underCount * 1000,
           dp: underCount >= 10 ? 1 : undefined,
         };
+      },
+    });
+
+    // BP04-032 炽能球：【永】若我方战场存在《渡边·尘铭》，我方信号球区的该牌可以视为【红色信号球】（视为【红色信号球】时可以被消除）
+    this.registerStaticRule({
+      id: 'static:BP04-032',
+      layer: 'NON_STAT',
+      sourceZones: ['SIGNAL_ORB'],
+      matchSource: (src) => src.cardNumber === 'BP04-032' && src.isFaceUp,
+      evaluate: (src, target, ctx) => {
+        if (src.instanceId !== target.instanceId) return undefined;
+        const hasWatanabe = ctx.getFieldRoles(src.controllerPlayerId).some((role) => {
+          const def = ctx.cardDb.getCard(role.cardNumber || role.cardId);
+          if (def?.name === '渡边·尘铭') return true;
+          return Boolean(role.modifiers?.some((m) => m.treatedAsNames?.includes('渡边·尘铭')));
+        });
+        if (!hasWatanabe) return undefined;
+        return { treatedAsOrbColors: ['RED'] };
+      },
+    });
+
+    // BP02-040 含英·檀心：【永】该牌的卡牌名称在所有区域可以视为《飞叶点翠》。(Q&A·4/5)
+    this.registerStaticRule({
+      id: 'static:BP02-040',
+      layer: 'NON_STAT',
+      sourceZones: ['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'PROCESSING', 'DECK'],
+      matchSource: (src) => src.cardNumber === 'BP02-040',
+      evaluate: (src, target) => {
+        if (src.instanceId !== target.instanceId) return undefined;
+        return { treatedAsNames: ['飞叶点翠'] };
+      },
+    });
+
+    // BP04-016 薇拉·灼惘：【永】对方回合中，该牌的PP不会因对方的效果增减。(Q&A·9)
+    this.registerStaticRule({
+      id: 'static:BP04-016',
+      layer: 'NON_STAT',
+      matchSource: (src) => src.cardNumber === 'BP04-016',
+      evaluate: (src, target, ctx) => {
+        if (src.instanceId !== target.instanceId) return undefined;
+        if (!ctx.isOpponentTurnForSource) return undefined;
+        return { prohibitions: ['CANNOT_MODIFY_PP_BY_OPPONENT'] };
       },
     });
   }

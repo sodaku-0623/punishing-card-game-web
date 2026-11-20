@@ -10,10 +10,13 @@ function redactHiddenCard(card: CardInstance, maskedNumber: string): CardInstanc
     tempPPBonus: undefined,
     tempDPBonus: undefined,
     grantedKeywords: undefined,
+    isFrozen: undefined,
     effectivePP: undefined,
     effectiveDP: undefined,
     effectiveKeywords: undefined,
     effectiveTraits: undefined,
+    effectiveProhibitions: undefined,
+    effectiveOrbColors: undefined,
   };
 }
 
@@ -48,9 +51,9 @@ export function sanitizeGameStateForPlayer(state: GameState, forPlayerId: string
       } else {
         publicCards[card.instanceId] = card;
       }
-    } else if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp && card.controllerPlayerId !== forPlayerId) {
-      // 信号球区背面放置的卡牌对对手脱敏 (Q&A·7/10)
-      publicCards[card.instanceId] = redactHiddenCard(card, 'HIDDEN_CARD');
+    } else if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp) {
+      // 信号球区背面放置的卡牌对双方均不可见 (Q&A·6 / 12.2)
+      publicCards[card.instanceId] = redactHiddenCard(card, 'HIDDEN_ORB');
     } else {
       // 战场、墓地、正面信号球区、处理区均为公开区域 (3.1.3)
       publicCards[card.instanceId] = card;

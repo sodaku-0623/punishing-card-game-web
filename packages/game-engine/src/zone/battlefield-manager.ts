@@ -191,6 +191,7 @@ export class BattlefieldManager {
     targetCard.tempDPBonus = undefined;
     targetCard.grantedKeywords = undefined;
     targetCard.modifiers = undefined;
+    targetCard.isFrozen = undefined;
 
     // 8.11.2.c 执行升变能力：通过 CardModifier 获得升变能力记述的关键字 (持续到离场为止，3.1.4)
     const ascensionDef =
@@ -325,22 +326,31 @@ export class BattlefieldManager {
 
     // 9.6.1 升变出场角色离开战场时，其原本下方的卡牌（升变对象等）因规则移动到墓地
     if (card.underneathCardIds.length > 0) {
-      for (const underneathId of card.underneathCardIds) {
-        this.zoneMgr.moveCard(underneathId, 'GRAVEYARD', { isFaceUp: true });
-      }
+      const underneathIds = [...card.underneathCardIds];
       card.underneathCardIds = [];
+      for (const underneathId of underneathIds) {
+        this.zoneMgr.moveCard(underneathId, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: cardInstanceId,
+        });
+      }
     }
 
-    // 4.18.6 装备角色离开战场时，其装备牌因规则处理 (9.6) 放置到墓地
+    // 4.18.6 装备角色离开战场时，其装备牌因规则处理 (9.6) 放置到墓地 (允许 BP04-065 等置换效果拦截)
     if (card.attachedEquipmentId) {
       const eqId = card.attachedEquipmentId;
       card.attachedEquipmentId = undefined;
-      this.zoneMgr.moveCard(eqId, 'GRAVEYARD', { isFaceUp: true });
+      this.zoneMgr.moveCard(eqId, 'GRAVEYARD', {
+        isFaceUp: true,
+        isOrphanCleanup: true,
+        orphanHostCardId: cardInstanceId,
+      });
     }
   }
 
   /**
-   * 8.9.1 统一评估战场角色的当前有效情报 (PP / DP / 充能数 / 词条 / 特征)
+   * 8.9.1 统一评估战场角色的当前有效情报 (PP / DP / 充能数 / 词条 / 特征 / 禁止标志)
    */
   evaluateRoleStats(cardInstanceId: string): EvaluatedCardStats {
     if (this.continuousEffects) {
@@ -354,7 +364,20 @@ export class BattlefieldManager {
 
     // 兜底：未注入 ContinuousEffectEngine 时按基本值 + 装备 + modifiers 计算
     const card = this.state.cards[cardInstanceId];
-    if (!card) return { pp: 0, dp: 0, charge: 0, keywords: [], traits: [], abilitiesLost: false };
+    if (!card) {
+      return {
+        pp: 0,
+        dp: 0,
+        charge: 0,
+        keywords: [],
+        traits: [],
+        abilitiesLost: false,
+        prohibitions: [],
+        treatedAsNames: [],
+        treatedAsOrbColors: [],
+        orbValue: 0,
+      };
+    }
     const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
     let pp = cardDef?.basePP ?? 0;
     if (card.attachedEquipmentId) {
@@ -377,6 +400,10 @@ export class BattlefieldManager {
       keywords: [...(card.grantedKeywords ?? [])],
       traits: [...(cardDef?.traits ?? [])],
       abilitiesLost: false,
+      prohibitions: [],
+      treatedAsNames: [],
+      treatedAsOrbColors: [],
+      orbValue: 0,
     };
   }
 

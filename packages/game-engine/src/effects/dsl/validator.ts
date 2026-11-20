@@ -22,6 +22,16 @@ const VALID_COMPARE_OPS = new Set<CompareOp>(['>=', '<=', '==', '>', '<']);
 const VALID_CHOOSE_ZONES = new Set(['HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST']);
 const VALID_MOVE_ZONES = new Set(['HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'DECK_BOTTOM', 'BATTLEFIELD']);
 const VALID_ZONES = new Set(['DECK', 'HAND', 'BATTLEFIELD', 'COST', 'SIGNAL_ORB', 'GRAVEYARD', 'PROCESSING']);
+const VALID_ORB_COLORS = new Set(['RED', 'BLUE', 'YELLOW']);
+const VALID_PROHIBITIONS = new Set([
+  'CANNOT_ATTACK',
+  'CANNOT_BLOCK',
+  'CANNOT_DEAL_DAMAGE',
+  'CANNOT_GAIN_ABILITIES',
+  'CANNOT_ELIMINATE',
+  'CANNOT_MODIFY_PP_BY_OPPONENT',
+  'CANNOT_DISCARD_HIDDEN_COST_AT_END',
+]);
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -266,6 +276,12 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         validateTarget(step.target, vars, `${sp}.target`);
         assert(typeof step.isReady === 'boolean', `${sp}.isReady 必须是布尔值`);
         break;
+      case 'SET_FROZEN':
+        validateTarget(step.target, vars, `${sp}.target`);
+        assert(typeof step.isFrozen === 'boolean', `${sp}.isFrozen 必须是布尔值`);
+        break;
+      case 'PREVENT_COMBAT_DAMAGE':
+        break;
       case 'MODIFY_STATS': {
         validateTarget(step.target, vars, `${sp}.target`);
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法: ${String(step.duration)}`);
@@ -275,6 +291,24 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         validateNumberExpr(step.setDP, `${sp}.setDP`);
         validateNumberExpr(step.charge, `${sp}.charge`);
         validateNumberExpr(step.setCharge, `${sp}.setCharge`);
+        if (step.prohibitions !== undefined) {
+          assert(Array.isArray(step.prohibitions), `${sp}.prohibitions 必须是数组`);
+          for (const p of step.prohibitions) {
+            assert(VALID_PROHIBITIONS.has(p), `${sp}.prohibitions 非法值: ${String(p)}`);
+          }
+        }
+        if (step.treatedAsOrbColors !== undefined) {
+          assert(Array.isArray(step.treatedAsOrbColors), `${sp}.treatedAsOrbColors 必须是数组`);
+          for (const c of step.treatedAsOrbColors) {
+            assert(VALID_ORB_COLORS.has(c), `${sp}.treatedAsOrbColors 非法颜色: ${String(c)}`);
+          }
+        }
+        if (step.orbValue !== undefined) {
+          assertPositiveInt(step.orbValue, `${sp}.orbValue`);
+        }
+        if (step.treatedAsNames !== undefined) {
+          assert(Array.isArray(step.treatedAsNames), `${sp}.treatedAsNames 必须是数组`);
+        }
         const hasAnyMod =
           step.pp !== undefined ||
           step.dp !== undefined ||
@@ -285,7 +319,11 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
           (step.keywords && step.keywords.length > 0) ||
           (step.removeKeywords && step.removeKeywords.length > 0) ||
           (step.addTraits && step.addTraits.length > 0) ||
-          step.loseAbilities === true;
+          step.loseAbilities === true ||
+          (step.prohibitions && step.prohibitions.length > 0) ||
+          (step.treatedAsOrbColors && step.treatedAsOrbColors.length > 0) ||
+          step.orbValue !== undefined ||
+          (step.treatedAsNames && step.treatedAsNames.length > 0);
         assert(hasAnyMod, `${sp} 至少须指定一项属性或能力修改`);
         break;
       }
@@ -342,7 +380,11 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
     eff.dp !== undefined ||
     eff.charge !== undefined ||
     (eff.keywords && eff.keywords.length > 0) ||
-    (eff.addTraits && eff.addTraits.length > 0);
+    (eff.addTraits && eff.addTraits.length > 0) ||
+    (eff.prohibitions && eff.prohibitions.length > 0) ||
+    (eff.treatedAsOrbColors && eff.treatedAsOrbColors.length > 0) ||
+    eff.orbValue !== undefined ||
+    (eff.treatedAsNames && eff.treatedAsNames.length > 0);
   assert(hasAnyEffect, `${path} 至少须指定一项静态增益`);
 }
 

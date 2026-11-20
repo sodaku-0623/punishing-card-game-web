@@ -1,4 +1,10 @@
-import type { CardType, TriggerEventType, ZoneId } from '@zhanshuang/shared';
+import type {
+  CardType,
+  ProhibitionFlag,
+  SignalOrbColor,
+  TriggerEventType,
+  ZoneId,
+} from '@zhanshuang/shared';
 
 export type PlayerSide = 'SELF' | 'OPPONENT';
 export type OrbColorFilter = 'ANY' | 'SAME' | 'RED' | 'BLUE' | 'YELLOW';
@@ -191,6 +197,14 @@ export type EffectStep =
       isReady: boolean;
     }
   | {
+      op: 'SET_FROZEN';
+      target: CardTargetRef;
+      isFrozen: boolean;
+    }
+  | {
+      op: 'PREVENT_COMBAT_DAMAGE';
+    }
+  | {
       op: 'MODIFY_STATS';
       target: CardTargetRef;
       pp?: NumberExpr;
@@ -203,6 +217,10 @@ export type EffectStep =
       removeKeywords?: string[];
       addTraits?: string[];
       loseAbilities?: boolean;
+      prohibitions?: ProhibitionFlag[];
+      treatedAsOrbColors?: SignalOrbColor[];
+      orbValue?: number;
+      treatedAsNames?: string[];
       duration: ModifierDuration;
       /** 覆盖来源卡号 (默认为当前能力所属卡牌编号) */
       source?: string;
@@ -283,6 +301,10 @@ export interface DeclarativeStaticEffectSpec {
   charge?: NumberExpr;
   keywords?: string[];
   addTraits?: string[];
+  prohibitions?: ProhibitionFlag[];
+  treatedAsOrbColors?: SignalOrbColor[];
+  orbValue?: number;
+  treatedAsNames?: string[];
   /** 是否依赖特征层 (8.9.1.d) */
   dependsOnTraits?: boolean;
 }

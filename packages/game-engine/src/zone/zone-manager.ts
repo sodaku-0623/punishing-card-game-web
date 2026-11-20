@@ -7,13 +7,16 @@ import {
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { SeedRng } from '../rng/seed-rng.js';
 import { ICardDatabase } from '../database/card-registry.js';
-import { nextEffectTimestamp } from '../effects/continuous-effects.js';
+import { ContinuousEffectEngine, nextEffectTimestamp } from '../effects/continuous-effects.js';
+import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class ZoneManager {
   private onChargeAutoEffectCallback?: (playerId: string, cardInstanceId: string, cardDef: any) => void;
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
+  private continuousEffects?: ContinuousEffectEngine;
+  private replacementEngine?: ReplacementEngine;
 
   constructor(
     private state: GameState,
@@ -21,6 +24,14 @@ export class ZoneManager {
     private cardDb: ICardDatabase,
     private events: GameEvent[]
   ) {}
+
+  setContinuousEffectEngine(engine: ContinuousEffectEngine): void {
+    this.continuousEffects = engine;
+  }
+
+  setReplacementEngine(engine: ReplacementEngine): void {
+    this.replacementEngine = engine;
+  }
 
   setChargeAutoHandler(handler: (playerId: string, cardInstanceId: string, cardDef: any) => void): void {
     this.onChargeAutoEffectCallback = handler;
@@ -35,7 +46,8 @@ export class ZoneManager {
   }
 
   /**
-   * 移动卡牌到指定区域 (3.1.4 新卡牌原则)
+   * 移动卡牌到指定区域 (3.1.4 新卡牌原则 + 8.10 置换效果拦截)
+   * 返回 true 表示完成了移动，false 表示移动被置换效果阻止或卡牌不存在。
    */
   moveCard(
     cardInstanceId: string,
@@ -44,41 +56,86 @@ export class ZoneManager {
       slotIndex?: number;
       isFaceUp?: boolean;
       isReady?: boolean;
+      toBottom?: boolean;
+      isOrphanCleanup?: boolean;
+      orphanHostCardId?: string;
+      appliedReplacementIds?: Set<string>;
     }
-  ): void {
+  ): boolean {
     const card = this.state.cards[cardInstanceId];
-    if (!card) return;
+    if (!card) return false;
 
     const fromZone = card.zone;
     const fromSlot = card.slotIndex;
+
+    let effectiveToZone = toZone;
+    let effectiveFaceUp = options?.isFaceUp;
+    let effectiveReady = options?.isReady;
+    let effectiveToBottom = options?.toBottom;
+
+    // 8.2.1.c / 8.10 在跨区域移动即将发生前拦截置换效果
+    if (fromZone !== toZone && this.replacementEngine) {
+      const intercept = this.replacementEngine.interceptMoveCard(
+        cardInstanceId,
+        fromZone,
+        toZone,
+        {
+          isFaceUp: effectiveFaceUp,
+          isReady: effectiveReady,
+          toBottom: effectiveToBottom,
+          isOrphanCleanup: options?.isOrphanCleanup,
+          orphanHostCardId: options?.orphanHostCardId,
+        },
+        options?.appliedReplacementIds
+      );
+      if (intercept.prevented) {
+        return false;
+      }
+      effectiveToZone = intercept.toZone;
+      effectiveFaceUp = intercept.isFaceUp;
+      effectiveReady = intercept.isReady;
+      effectiveToBottom = intercept.toBottom;
+    }
+
     const leftBattlefieldSnapshot =
-      fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD'
+      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD'
         ? this.snapshotProvider?.(cardInstanceId)
         : undefined;
 
-    // 9.6 战场卡位上的卡牌离开战场：清空卡位，其下方的卡牌 (升变对象、装备等) 因规则放置到墓地
-    if (fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD') {
-      this.detachFromBattlefield(card);
+    // 9.6 战场卡位上的卡牌离开战场：先解除卡位与上下方关系并收集无所属卡牌，
+    // 宿主自身完成移动后再将无所属卡牌送墓/置换 (Q&A·9 BP04-065 顺序固定：先宿主，再装备)
+    const orphanIds =
+      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD'
+        ? this.detachFromBattlefieldAndCollectOrphans(card)
+        : [];
+
+    card.zone = effectiveToZone;
+
+    // 区域内顺序以 state.cards 的键顺序表示：
+    // 默认放在末尾 (墓地 3.5.2、信号球区 3.7.2、处理区 3.8.2 的「最上方」；牌组的「最下方」)；
+    // 当 toBottom=true 且目标非牌组时，放在对象最前 (信号球区等区域的「最下方」，Q&A·9 BP04-065)
+    if (effectiveToBottom && effectiveToZone !== 'DECK') {
+      this.placeCardKeyAtFront(cardInstanceId, card);
+    } else {
+      delete this.state.cards[cardInstanceId];
+      this.state.cards[cardInstanceId] = card;
     }
 
-    card.zone = toZone;
-
-    // 区域内顺序以 state.cards 的键顺序表示：新放置的卡牌排在最后，即该区域的「最上方」
-    // (墓地 3.5.2、信号球区 3.7.2、处理区 3.8.2；牌组中最后一张为牌组底)
-    delete this.state.cards[cardInstanceId];
-    this.state.cards[cardInstanceId] = card;
-
     // 3.1.4 移动到其他区域的卡牌视为新卡牌，原区域适用的效果与状态不延续
-    if (fromZone !== toZone) {
+    if (fromZone !== effectiveToZone) {
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
       card.grantedKeywords = undefined;
       card.modifiers = undefined;
       card.endOfTurnToGraveyard = undefined;
+      card.isFrozen = undefined;
+      card.effectiveProhibitions = undefined;
+      card.effectiveOrbColors = undefined;
       card.underneathCardIds = [];
       card.attachedEquipmentId = undefined;
       card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
-      if (toZone !== 'BATTLEFIELD') card.slotIndex = undefined;
+      this.replacementEngine?.cleanupForCard(cardInstanceId);
+      if (effectiveToZone !== 'BATTLEFIELD') card.slotIndex = undefined;
       // 10.1.2.a 回合次数限制只对同一区域中的同一张卡牌计数 (清理 cardInstanceId 及 cardInstanceId:abilityId)
       const usage = this.state.players[card.controllerPlayerId]?.turnAbilityUsage;
       if (usage) {
@@ -90,12 +147,14 @@ export class ZoneManager {
       }
     }
 
-    if (options?.slotIndex !== undefined) card.slotIndex = options.slotIndex;
-    if (options?.isFaceUp !== undefined) card.isFaceUp = options.isFaceUp;
-    if (options?.isReady !== undefined) card.isReady = options.isReady;
+    if (options?.slotIndex !== undefined && effectiveToZone === 'BATTLEFIELD') {
+      card.slotIndex = options.slotIndex;
+    }
+    if (effectiveFaceUp !== undefined) card.isFaceUp = effectiveFaceUp;
+    if (effectiveReady !== undefined) card.isReady = effectiveReady;
     card.turnEnteredZone = this.state.turnNumber;
 
-    if (fromZone === 'COST' || toZone === 'COST') {
+    if (fromZone === 'COST' || effectiveToZone === 'COST') {
       this.syncCostStats(card.controllerPlayerId);
     }
 
@@ -103,30 +162,60 @@ export class ZoneManager {
       type: 'CARD_MOVED',
       cardInstanceId,
       fromZone,
-      toZone,
+      toZone: effectiveToZone,
       fromSlot,
-      toSlot: options?.slotIndex,
+      toSlot: effectiveToZone === 'BATTLEFIELD' ? options?.slotIndex : undefined,
       isFaceUp: card.isFaceUp,
       isReady: card.isReady,
     });
 
+    // 9.6 宿主完成离场移动后，依次处理原本下方的无所属卡牌 (允许置换效果介入，如 BP04-065)
+    for (const orphanId of orphanIds) {
+      const orphan = this.state.cards[orphanId];
+      if (orphan && orphan.zone === 'BATTLEFIELD') {
+        this.moveCard(orphanId, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: cardInstanceId,
+        });
+      }
+    }
+
     // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报)
-    if (fromZone === 'BATTLEFIELD' && toZone !== 'BATTLEFIELD') {
+    if (fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD') {
       this.onTriggerEventCallback?.({
         type: 'CARD_LEFT_FIELD',
         playerId: card.controllerPlayerId,
         cardInstanceId,
         fromZone,
-        toZone,
+        toZone: effectiveToZone,
         subjectSnapshot: leftBattlefieldSnapshot,
       });
     }
+
+    return true;
+  }
+
+  /** 将卡牌键放到 state.cards 最前 (供牌组顶、信号球区最下方等使用) */
+  private placeCardKeyAtFront(cardInstanceId: string, card: CardInstance): void {
+    const newCards: Record<string, CardInstance> = {
+      [cardInstanceId]: card,
+    };
+    for (const [k, v] of Object.entries(this.state.cards)) {
+      if (k !== cardInstanceId) {
+        newCards[k] = v;
+      }
+    }
+    for (const k of Object.keys(this.state.cards)) {
+      delete this.state.cards[k];
+    }
+    Object.assign(this.state.cards, newCards);
   }
 
   /**
-   * 卡牌离开战场时解除其与卡位、上下方卡牌的关系 (9.6 无所属卡牌的卡牌处理，中断型规则处理)
+   * 卡牌离开战场时解除其与卡位、上下方卡牌的关系，并返回需作为无所属卡牌处理的卡牌 ID (9.6)
    */
-  private detachFromBattlefield(card: CardInstance): void {
+  private detachFromBattlefieldAndCollectOrphans(card: CardInstance): string[] {
     const playerId = card.controllerPlayerId;
     for (const slot of this.state.battlefields[playerId] ?? []) {
       if (slot.roleCardId === card.instanceId) slot.roleCardId = undefined;
@@ -146,12 +235,7 @@ export class ZoneManager {
     if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
     card.underneathCardIds = [];
     card.attachedEquipmentId = undefined;
-    for (const orphanId of orphanIds) {
-      const orphan = this.state.cards[orphanId];
-      if (orphan && orphan.zone === 'BATTLEFIELD') {
-        this.moveCard(orphanId, 'GRAVEYARD', { isFaceUp: true });
-      }
-    }
+    return orphanIds;
   }
 
   /**
@@ -362,6 +446,11 @@ export class ZoneManager {
     const topCard = this.getCardsInZone(playerId, 'DECK')[0]!;
     this.moveCard(topCard.instanceId, 'PROCESSING', { isFaceUp: true });
 
+    // 8.10.1.a 若进入处理区被置换到其他区域 (如 BP01-037 改放费用区)，不触发进入处理区后的充能事件
+    if (topCard.zone !== 'PROCESSING') {
+      return topCard.instanceId;
+    }
+
     this.onTriggerEventCallback?.({
       type: 'CARD_CHARGED',
       playerId,
@@ -453,11 +542,15 @@ export class ZoneManager {
 
   /**
    * 4.10 伤害处理：依次执行与伤害量相同次数的伤害充能，每次完毕侵蚀计数 +1
-   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用)
+   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用；经 8.10 置换引擎拦截伤害量)
    */
-  applyDamageToPlayer(defenderPlayerId: string, damageAmount: number): void {
+  applyDamageToPlayer(defenderPlayerId: string, damageAmount: number, sourceCardId?: string): void {
     if (!this.state.players[defenderPlayerId] || damageAmount <= 0) return;
-    for (let i = 0; i < damageAmount; i++) {
+    const effectiveDamage = this.replacementEngine
+      ? this.replacementEngine.interceptDealDamage(defenderPlayerId, damageAmount, sourceCardId)
+      : damageAmount;
+    if (effectiveDamage <= 0) return;
+    for (let i = 0; i < effectiveDamage; i++) {
       if (this.isFinished()) return;
       const cardId = this.revealTopForCharge(defenderPlayerId, 'DAMAGE');
       // 牌组与墓地都为空时已立即败北 (9.2.2.a)
@@ -467,8 +560,10 @@ export class ZoneManager {
   }
 
   /**
-   * 6.4.1.b.5 / 4.16.2 消除自身信号球区中任意3张相邻的信号球牌，若如此做，抽1张牌。
-   * 只要求在信号球区中相邻 (不要求同色)；不持有信号球标记的牌不能被消除 (Q&A 第4期)。
+   * 6.4.1.b.5 / 4.16.2 消除自身信号球区中相邻、等效总数为 3 的信号球，若如此做，抽1张牌。
+   * - 支持「视为信号球」(如 BP04-032 炽能球) 与等效多球 (如 Q&A·1 BP01-037 万世铭 1 张视为 3 球)
+   * - 支持禁止消除 (1.3.3，如 BP02-066 万事·明晰梦)
+   * - 不持有且未视为信号球标记的牌、背面信号球不能被消除 (4.16.2 / Q&A·4 / Q&A·6)
    */
   eliminateThreeOrbs(
     playerId: string,
@@ -477,10 +572,10 @@ export class ZoneManager {
     const requiredCount = RULE_CONSTANTS.ORB_ELIMINATION_REQUIRED_COUNT;
     if (
       !Array.isArray(orbCardInstanceIds) ||
-      orbCardInstanceIds.length !== requiredCount ||
-      new Set(orbCardInstanceIds).size !== requiredCount
+      orbCardInstanceIds.length === 0 ||
+      new Set(orbCardInstanceIds).size !== orbCardInstanceIds.length
     ) {
-      return { success: false, error: `需要选择 ${requiredCount} 张不同的信号球` };
+      return { success: false, error: `需要选择等效数量为 ${requiredCount} 的不同信号球` };
     }
 
     const orbIds = this.getCardsInZone(playerId, 'SIGNAL_ORB').map((c) => c.instanceId);
@@ -489,12 +584,33 @@ export class ZoneManager {
       return { success: false, error: '所选卡牌不在自身信号球区' };
     }
 
+    let totalOrbValue = 0;
+    const resolvedColors = new Map<string, string>();
     for (const id of orbCardInstanceIds) {
       const card = this.state.cards[id]!;
-      const def = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
-      if (!card.isFaceUp || !def?.signalOrb) {
-        return { success: false, error: '只能消除持有信号球标记的卡牌 (4.16.2)' };
+      if (this.continuousEffects) {
+        const info = this.continuousEffects.getEffectiveOrbInfo(id);
+        if (!info.isOrb) {
+          return { success: false, error: '只能消除持有或视为信号球标记的正面卡牌 (4.16.2)' };
+        }
+        if (info.cannotEliminate) {
+          return { success: false, error: '所选信号球因效果当前不能被消除 (1.3.3)' };
+        }
+        totalOrbValue += info.orbValue;
+        resolvedColors.set(id, info.colors[0] ?? 'UNKNOWN');
+      } else {
+        const def = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+        if (!card.isFaceUp || !def?.signalOrb) {
+          return { success: false, error: '只能消除持有信号球标记的卡牌 (4.16.2)' };
+        }
+        totalOrbValue += 1;
+        resolvedColors.set(id, def.signalOrb);
       }
+    }
+
+    // Q&A·1 (BP01-037)：等效数量必须精确等于 3，不可将 1 张视为 3 球的卡拆成 2 球使用或超额凑数
+    if (totalOrbValue !== requiredCount) {
+      return { success: false, error: `所选信号球等效数量必须为 ${requiredCount} (当前为 ${totalOrbValue})` };
     }
 
     const isAdjacent = positions.every((p, i) => i === 0 || p === positions[i - 1]! + 1);
@@ -504,11 +620,7 @@ export class ZoneManager {
 
     // 按信号球区中的顺序放置到墓地 (4.16.2.b 剩余信号球顺序不变)
     const sortedIds = positions.map((p) => orbIds[p]!);
-    const orbColors = sortedIds.map((id) => {
-      const card = this.state.cards[id];
-      const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
-      return def?.signalOrb ?? 'UNKNOWN';
-    });
+    const orbColors = sortedIds.map((id) => resolvedColors.get(id) ?? 'UNKNOWN');
     for (const orbId of sortedIds) {
       this.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
     }

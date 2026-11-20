@@ -10,6 +10,7 @@ export * from './priority/trigger-system.js';
 export * from './combat/combat-manager.js';
 export * from './phases/phase-machine.js';
 export * from './effects/continuous-effects.js';
+export * from './effects/replacement-engine.js';
 export * from './effects/dsl/index.js';
 export * from './effects/card-effects.js';
 export * from './state/pending-choice.js';
