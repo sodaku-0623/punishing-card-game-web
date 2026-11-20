@@ -12,7 +12,13 @@ import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class ZoneManager {
-  private onChargeAutoEffectCallback?: (playerId: string, cardInstanceId: string, cardDef: any) => void;
+  private onChargeAutoEffectCallback?: (
+    playerId: string,
+    cardInstanceId: string,
+    cardDef: any,
+    chargeKind: 'ATTACK' | 'DAMAGE',
+    attackerCardId?: string
+  ) => void;
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
   private continuousEffects?: ContinuousEffectEngine;
@@ -33,7 +39,15 @@ export class ZoneManager {
     this.replacementEngine = engine;
   }
 
-  setChargeAutoHandler(handler: (playerId: string, cardInstanceId: string, cardDef: any) => void): void {
+  setChargeAutoHandler(
+    handler: (
+      playerId: string,
+      cardInstanceId: string,
+      cardDef: any,
+      chargeKind: 'ATTACK' | 'DAMAGE',
+      attackerCardId?: string
+    ) => void
+  ): void {
     this.onChargeAutoEffectCallback = handler;
   }
 
@@ -60,6 +74,8 @@ export class ZoneManager {
       isOrphanCleanup?: boolean;
       orphanHostCardId?: string;
       appliedReplacementIds?: Set<string>;
+      preserveAttachments?: boolean;
+      skipLeftFieldTrigger?: boolean;
     }
   ): boolean {
     const card = this.state.cards[cardInstanceId];
@@ -98,16 +114,17 @@ export class ZoneManager {
     }
 
     const leftBattlefieldSnapshot =
-      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD'
+      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD' && !options?.skipLeftFieldTrigger
         ? this.snapshotProvider?.(cardInstanceId)
         : undefined;
 
     // 9.6 战场卡位上的卡牌离开战场：先解除卡位与上下方关系并收集无所属卡牌，
     // 宿主自身完成移动后再将无所属卡牌送墓/置换 (Q&A·9 BP04-065 顺序固定：先宿主，再装备)
-    const orphanIds =
+    // (10.18.2.b / 10.18.2.d.3 浮空保留下方牌与装备时跳过解绑，只释放协战搭档 8.13.4.a.3)
+    const orphanInfo =
       fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD'
-        ? this.detachFromBattlefieldAndCollectOrphans(card)
-        : [];
+        ? this.detachFromBattlefieldAndCollectOrphans(card, options?.preserveAttachments)
+        : { orphanIds: [], partnerId: undefined };
 
     card.zone = effectiveToZone;
 
@@ -129,10 +146,15 @@ export class ZoneManager {
       card.modifiers = undefined;
       card.endOfTurnToGraveyard = undefined;
       card.isFrozen = undefined;
+      if (!(card.isAirborne && effectiveToZone === 'PROCESSING')) {
+        card.isAirborne = undefined;
+      }
       card.effectiveProhibitions = undefined;
       card.effectiveOrbColors = undefined;
-      card.underneathCardIds = [];
-      card.attachedEquipmentId = undefined;
+      if (!options?.preserveAttachments) {
+        card.underneathCardIds = [];
+        card.attachedEquipmentId = undefined;
+      }
       card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
       this.replacementEngine?.cleanupForCard(cardInstanceId);
       if (effectiveToZone !== 'BATTLEFIELD') card.slotIndex = undefined;
@@ -169,8 +191,8 @@ export class ZoneManager {
       isReady: card.isReady,
     });
 
-    // 9.6 宿主完成离场移动后，依次处理原本下方的无所属卡牌 (允许置换效果介入，如 BP04-065)
-    for (const orphanId of orphanIds) {
+    // 9.6 宿主完成离场移动后，依次处理原本下方的无所属卡牌与协战搭档 (允许置换效果介入，如 BP04-065)
+    for (const orphanId of orphanInfo.orphanIds) {
       const orphan = this.state.cards[orphanId];
       if (orphan && orphan.zone === 'BATTLEFIELD') {
         this.moveCard(orphanId, 'GRAVEYARD', {
@@ -180,9 +202,21 @@ export class ZoneManager {
         });
       }
     }
+    if (orphanInfo.partnerId) {
+      const partner = this.state.cards[orphanInfo.partnerId];
+      if (partner && partner.zone === 'BATTLEFIELD') {
+        // 8.13.4.a.1 / 8.13.4.c.4：搭档解除协战状态放置到墓地，不视为离场
+        this.moveCard(orphanInfo.partnerId, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: cardInstanceId,
+          skipLeftFieldTrigger: true,
+        });
+      }
+    }
 
     // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报)
-    if (fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD') {
+    if (fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD' && !options?.skipLeftFieldTrigger) {
       this.onTriggerEventCallback?.({
         type: 'CARD_LEFT_FIELD',
         playerId: card.controllerPlayerId,
@@ -213,9 +247,12 @@ export class ZoneManager {
   }
 
   /**
-   * 卡牌离开战场时解除其与卡位、上下方卡牌的关系，并返回需作为无所属卡牌处理的卡牌 ID (9.6)
+   * 卡牌离开战场时解除其与卡位、上下方卡牌、协战状态的关系，并返回需作为无所属卡牌处理的卡牌 ID (9.6 / 8.13.4.a.3)
    */
-  private detachFromBattlefieldAndCollectOrphans(card: CardInstance): string[] {
+  private detachFromBattlefieldAndCollectOrphans(
+    card: CardInstance,
+    preserveAttachments?: boolean
+  ): { orphanIds: string[]; partnerId?: string } {
     const playerId = card.controllerPlayerId;
     for (const slot of this.state.battlefields[playerId] ?? []) {
       if (slot.roleCardId === card.instanceId) slot.roleCardId = undefined;
@@ -223,19 +260,39 @@ export class ZoneManager {
       if (slot.standaloneEquipmentId === card.instanceId) slot.standaloneEquipmentId = undefined;
     }
 
-    // 若该卡牌本身是其他卡牌的装备或下方的牌，解除关系
+    // 若该卡牌本身是其他卡牌的装备、下方牌或协战搭档，解除关系
     for (const other of Object.values(this.state.cards)) {
       if (other.attachedEquipmentId === card.instanceId) other.attachedEquipmentId = undefined;
       if (other.underneathCardIds?.includes(card.instanceId)) {
         other.underneathCardIds = other.underneathCardIds.filter((id) => id !== card.instanceId);
       }
+      if (other.partnerCardId === card.instanceId) {
+        other.partnerCardId = undefined;
+      }
+    }
+    card.partnerOfCardId = undefined;
+    card.cannotReleasePartnerUntilTurn = undefined;
+
+    let partnerId: string | undefined;
+    if (card.partnerCardId) {
+      partnerId = card.partnerCardId;
+      const partner = this.state.cards[partnerId];
+      if (partner) {
+        partner.partnerOfCardId = undefined;
+        partner.cannotReleasePartnerUntilTurn = undefined;
+      }
+      card.partnerCardId = undefined;
+    }
+
+    if (preserveAttachments) {
+      return { orphanIds: [], partnerId };
     }
 
     const orphanIds = [...(card.underneathCardIds ?? [])];
     if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
     card.underneathCardIds = [];
     card.attachedEquipmentId = undefined;
-    return orphanIds;
+    return { orphanIds, partnerId };
   }
 
   /**
@@ -461,9 +518,9 @@ export class ZoneManager {
     });
 
     const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
-    // 目前只实现了信号球牌的【充能自】，其他卡牌的充能时自动能力随卡牌效果逐步实现
-    if (cardDef?.signalOrb && cardDef.rulesText.includes('充能自')) {
-      this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef);
+    // 10.2.1.b 处理充能时自动能力【充能自】(覆盖信号球牌及非信号球牌带条件/代价的【充能自】)
+    if (cardDef && cardDef.rulesText.includes('充能自')) {
+      this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef, chargeKind, attackerCardId);
     }
     return topCard.instanceId;
   }

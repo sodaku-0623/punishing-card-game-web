@@ -126,6 +126,14 @@ export interface CardInstance {
   isReady: boolean; // 4.6.1 竖直 / 横置
   /** 10.15 冰冻状态：下个回合竖直阶段不因规则竖直，竖直阶段结束时解除 (10.15.3) */
   isFrozen?: boolean;
+  /** 10.18.3 【浮空模式】：处于处理区的浮空卡牌，操控玩家下个回合开始时因规则回到战场 */
+  isAirborne?: boolean;
+  /** 8.13.4 协战角色当前绑定的协战搭档卡牌实例 ID */
+  partnerCardId?: string;
+  /** 8.13.4 协战搭档所属的协战角色卡牌实例 ID */
+  partnerOfCardId?: string;
+  /** 8.13.4.c / BP04-038 / ST06-002：在指定回合结束前不会因规则解除协战状态 */
+  cannotReleasePartnerUntilTurn?: number;
   turnEnteredZone: number; // 进入当前区域的回合编号 (用于出场攻击限制 7.2.1.b.1)
   /** 8.9.1.e.1 进入当前区域的单调时间戳 (永久能力持续效果适用顺序基准) */
   enteredZoneTimestamp?: number;
@@ -171,7 +179,8 @@ export type TriggerEventType =
   | 'END_PHASE_TRIGGERS' // 6.5.1.b 回合结束时
   | 'ORBS_ELIMINATED' // 4.16.2 消除信号球时
   | 'DAMAGE_DEALT' // 4.10 玩家受到伤害时
-  | 'CARD_CHARGED'; // 4.12 充能翻开卡牌时
+  | 'CARD_CHARGED' // 4.12 充能翻开卡牌时
+  | 'PARTNER_GAINED'; // 8.13.3.e 获得或成为协战搭档时
 
 export interface PendingTrigger {
   id: string;
@@ -241,6 +250,8 @@ export interface PlayerState {
   turnAbilityUsage: Record<string, number>; // cardInstanceId -> 发动次数 (10.1)
   gameAbilityUsage: Record<string, number>; // cardNumber -> 发动次数 (10.11)
   costModifiers?: CostModifier[]; // 动态费用修改器 (如卡牌【起】动能力减费)
+  /** 该回合中被破坏的我方火属性角色数量 (供 BP04-028 渡边·尘铭瞬时能力条件判定) */
+  destroyedFireRoleCountThisTurn?: number;
 }
 
 export interface CostModifier {

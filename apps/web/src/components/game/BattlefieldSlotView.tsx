@@ -223,6 +223,13 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             </div>
           )}
 
+          {/* 8.13 协战状态指示 */}
+          {roleCard.partnerCardId && (
+            <div className="absolute -bottom-1.5 -left-1 bg-ink-950/95 border border-teal-400/70 text-teal-400 text-hud px-1.5 py-px z-20 font-sans font-semibold">
+              协战
+            </div>
+          )}
+
           {/* 敌方角色：可攻击目标瞄准准星 */}
           {isOpponent && isLegalAttackTarget && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">

@@ -93,6 +93,12 @@ export function formatCardModifiers(card: CardInstance): string[] {
   if (card.isFrozen) {
     tags.push('冰冻状态 (下回合竖直阶段无法因规则竖直)');
   }
+  if (card.isAirborne) {
+    tags.push('浮空模式 (下回合开始时回到战场)');
+  }
+  if (card.partnerCardId) {
+    tags.push('协战状态');
+  }
   for (const mod of modifiers) {
     const parts: string[] = [];
     if (mod.loseAbilities) parts.push('能力无效');

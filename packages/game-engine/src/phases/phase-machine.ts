@@ -8,6 +8,8 @@ import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class PhaseMachine {
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
+  private onTurnStartAirborneReturnCallback?: (playerId: string) => void;
+  private onEndPhaseReleasePartnersCallback?: () => void;
   private continuousEffects?: ContinuousEffectEngine;
   private replacementEngine?: ReplacementEngine;
 
@@ -30,6 +32,14 @@ export class PhaseMachine {
     this.onTriggerEventCallback = handler;
   }
 
+  setTurnStartAirborneReturnHandler(handler: (playerId: string) => void): void {
+    this.onTurnStartAirborneReturnCallback = handler;
+  }
+
+  setEndPhaseReleasePartnersHandler(handler: () => void): void {
+    this.onEndPhaseReleasePartnersCallback = handler;
+  }
+
   /**
    * 状态迁移与事件广播
    */
@@ -50,11 +60,17 @@ export class PhaseMachine {
     this.transitionTo('STAND_PHASE');
     const activePlayerId = this.state.activePlayerId;
 
+    // 10.18.2.c 回合开始时 (6.2.1.a) 检查处理区中的【浮空模式】卡牌并作为规则处理回到战场
+    // 注意：须先将本回合竖直的卡牌竖直，还是按 10.18.2.d.1 回到战场时已正面竖直？
+    // 6.2.1.a (浮空回归检查时机) 先于 6.2.1.b (规则竖直)，回场自身也是正面竖直表示。
+    this.onTurnStartAirborneReturnCallback?.(activePlayerId);
+
     // 6.2.1.b 回合玩家将自身战场和费用区的所有卡牌竖直 (10.15 冰冻状态的卡牌无法因规则竖直)
     for (const card of Object.values(this.state.cards)) {
       if (
         card.controllerPlayerId === activePlayerId &&
-        (card.zone === 'BATTLEFIELD' || card.zone === 'COST')
+        (card.zone === 'BATTLEFIELD' || card.zone === 'COST') &&
+        !card.partnerOfCardId
       ) {
         if (!card.isFrozen) {
           card.isReady = true;
@@ -201,9 +217,12 @@ export class PhaseMachine {
       }
     }
     this.replacementEngine?.cleanupExpired(this.state.turnNumber);
+    // 8.13.4.c.1 6.5.1.d 结束阶段清理时解除双方所有协战角色的搭档状态并置入墓地，并清理本回合计数器
+    this.onEndPhaseReleasePartnersCallback?.();
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};
       p.costModifiers = [];
+      p.destroyedFireRoleCountThisTurn = 0;
     }
 
     // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5；1.3.3 禁止送墓的暗费保留)

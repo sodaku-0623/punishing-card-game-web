@@ -1,7 +1,7 @@
 import { CardVersionData, CardType, ElementAttribute } from '@zhanshuang/shared';
 import { OFFICIAL_CARDS_DATA } from './official-cards-data.js';
 
-export { OFFICIAL_CARDS_DATA, parseAscensionConfig } from './official-cards-data.js';
+export { OFFICIAL_CARDS_DATA, parseAscensionConfig, parseAssistConfig } from './official-cards-data.js';
 
 /**
  * 引擎卡牌数据仓库接口

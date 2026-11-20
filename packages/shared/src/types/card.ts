@@ -56,6 +56,8 @@ export type AscensionRestriction =
 export interface AscensionRuleConfig {
   /** 8.11.2.a.1 升变对象 */
   targetFilter: {
+    /** 升变对象所在区域 (默认 ['BATTLEFIELD']；如 BP04-061 为 ['SIGNAL_ORB']；浮空对象为 ['BATTLEFIELD', 'AIRBORNE']) */
+    targetZones?: ('BATTLEFIELD' | 'SIGNAL_ORB' | 'AIRBORNE')[];
     /** 升变对象费用的上限 (含)。「费用8以下」按 10.12 为「小于8」，即 maxCost = 7 */
     maxCost?: number;
     /** 「费用为X的」：费用必须恰好为 X */
@@ -73,6 +75,11 @@ export interface AscensionRuleConfig {
     minCostLimit?: number;
     conditions?: AscensionRestriction[];
   };
+  /** 8.11.3.c 升变代价中的额外行动 (如 BP01-040「将我方战场1张《帕瓦》放置到该牌下方」) */
+  extraCost?: {
+    kind: 'STACK_FIELD_ROLE_UNDERNEATH';
+    exactName: string;
+  };
   /** 升变条件或代价中包含引擎尚未支持的内容时记录原因，此时不允许使用升变机制 */
   unsupportedReason?: string;
   ascensionCost: number;
@@ -80,6 +87,29 @@ export interface AscensionRuleConfig {
   grantKeywords: string[];
   /** 可以从哪些区域使用升变机制 (默认手牌) */
   sourceZones?: ('HAND' | 'GRAVEYARD')[];
+}
+
+/**
+ * 8.13.2.b 协战代价选项 (按搭档所在区域匹配对应代价)
+ */
+export interface AssistCostOption {
+  zone: 'BATTLEFIELD' | 'HAND' | 'GRAVEYARD' | 'DECK';
+  costAmount: number;
+  eliminateOrbs?: {
+    filter: 'ANY' | 'SAME' | 'RED' | 'BLUE' | 'YELLOW';
+    count: number;
+  };
+}
+
+/**
+ * 8.13 协战配置 (【协战搭档】&【协战代价】)
+ */
+export interface AssistPartnerConfig {
+  partnerFilter: {
+    traits?: string[];
+    maxCost?: number;
+  };
+  costOptions: AssistCostOption[];
 }
 
 export interface CardVersionData {
@@ -95,6 +125,7 @@ export interface CardVersionData {
   signalOrb?: SignalOrbType; // 2.10 信号球标记
   isInstant: boolean; // 10.8 是否持有【瞬时】
   ascensionConfig?: AscensionRuleConfig; // 8.11 升变配置
+  assistConfig?: AssistPartnerConfig; // 8.13 协战配置
   abilities: AbilityDefinition[];
   rulesText: string;
   flavorText?: string;

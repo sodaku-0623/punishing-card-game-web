@@ -24,7 +24,7 @@ export interface CardEffectContext {
   continuousEffects?: ContinuousEffectEngine;
   triggerMgr?: TriggerManager;
   replacementEngine?: ReplacementEngine;
-  payCost: (playerId: string, costToPay: number) => boolean;
+  payCost: (playerId: string, costToPay: number, selectedCostCardIds?: string[]) => boolean;
   setPendingChoice: (choice?: PendingChoice) => void;
 }
 
@@ -521,6 +521,17 @@ export class CardEffectEngine {
 
     if (this.presets.handlesEntry(cardNum) || this.presets.isVanillaEntry(cardNum)) {
       if (this.presets.handlesEntry(cardNum)) this.presets.enter(playerId, roleInstanceId, cardDef);
+      return;
+    }
+
+    // 0. BP04-028 (渡边·尘铭): 【出】：选择我方墓地1张《炽能球》，将其加入手牌
+    if (cardNum === 'BP04-028' || cardDef.rulesText.includes('选择我方墓地1张《炽能球》，将其加入手牌')) {
+      const gyBlazing = this.ctx.zoneMgr
+        .getCardsInZone(playerId, 'GRAVEYARD')
+        .find((c) => this.getCardDef(c)?.name === '炽能球');
+      if (gyBlazing) {
+        this.ctx.zoneMgr.moveCard(gyBlazing.instanceId, 'HAND', { isFaceUp: true });
+      }
       return;
     }
 
@@ -1728,6 +1739,164 @@ export class CardEffectEngine {
         break;
       }
 
+      // 10.2.1.b BP03-023 【充能自】确认升变出场 (无视费用上限，代价变为3费，获得【速攻】)
+      case 'BP03_023_CHARGE_ASCEND': {
+        if (selectedIds[0] !== 'opt_yes') break;
+        const chargeCardId = choice.sourceCardInstanceId;
+        const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        const targets = this.getFriendlyRoles(playerId).filter((r) => {
+          const d = this.getCardDef(r);
+          return d && d.name === '里·超刻' && d.cost < 9;
+        });
+        if (targets.length === 0) break;
+        if (targets.length === 1) {
+          if (this.ctx.payCost(playerId, 3) && this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targets[0]!.instanceId)) {
+            const def = this.getCardDef(chargeCard);
+            if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
+          }
+        } else {
+          this.ctx.setPendingChoice({
+            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            playerId,
+            choiceType: 'SELECT_CARDS',
+            prompt: '【里·超刻】充能自：请选择要升变的我方费用 9 以下的《里·超刻》：',
+            options: targets.map((r) => this.createRoleChoiceOption(r)),
+            effectType: 'BP03_023_CHOOSE_ASCEND_TARGET',
+            sourceCardInstanceId: chargeCardId,
+            minSelections: 1,
+            maxSelections: 1,
+          });
+        }
+        break;
+      }
+
+      case 'BP03_023_CHOOSE_ASCEND_TARGET': {
+        const chargeCardId = choice.sourceCardInstanceId;
+        const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
+        const targetId = selectedIds[0];
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING' || !targetId) break;
+        if (this.ctx.payCost(playerId, 3) && this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targetId)) {
+          const def = this.getCardDef(chargeCard);
+          if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
+        }
+        break;
+      }
+
+      // 10.2.1.b BP03-024 【充能自】丢弃3张手牌《里·超刻》从处理区出场并回合末回牌组底
+      case 'BP03_024_CHARGE_DEPLOY': {
+        if (selectedIds.length !== 3) break;
+        const chargeCardId = choice.sourceCardInstanceId;
+        const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
+        const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING' || slotIdx === undefined) break;
+        const player = this.ctx.state.players[playerId];
+        if (player) {
+          player.turnAbilityUsage['BP03-024:CHARGE_AUTO'] = (player.turnAbilityUsage['BP03-024:CHARGE_AUTO'] ?? 0) + 1;
+        }
+        for (const id of selectedIds) {
+          this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        }
+        if (this.ctx.fieldMgr.playRoleCard(playerId, chargeCardId!, slotIdx)) {
+          const def = this.getCardDef(chargeCard);
+          if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
+          this.ctx.triggerMgr?.registerDelayedTrigger({
+            eventType: 'END_PHASE_TRIGGERS',
+            triggerTurn: this.ctx.state.turnNumber,
+            sourceCardInstanceId: chargeCardId!,
+            sourceCardNumber: chargeCard.cardNumber,
+            controllerPlayerId: playerId,
+            abilityId: 'DELAYED_END_OF_TURN_TO_DECK_BOTTOM',
+            label: '【里·超刻】该回合结束时放置到牌组底',
+            once: true,
+          });
+        }
+        break;
+      }
+
+      // 10.2.1.b BP03-028 【充能自】进墓地并消1黄球：攻击中的《里·超刻》获得【速攻】
+      case 'BP03_028_CHARGE_AUTO': {
+        const orbId = selectedIds[0];
+        const chargeCardId = choice.sourceCardInstanceId;
+        if (!orbId || !chargeCardId) break;
+        const chargeCard = this.ctx.state.cards[chargeCardId];
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
+        this.ctx.zoneMgr.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
+        this.ctx.events.push({
+          type: 'ORBS_ELIMINATED',
+          playerId,
+          orbCardIds: [orbId],
+          cardDrawnCount: 0,
+        });
+        const targetId = choice.metadata?.attackerCardId as string | undefined;
+        const target =
+          (targetId ? this.ctx.state.cards[targetId] : undefined) ??
+          this.getFriendlyRoles(playerId).find((r) => this.getCardDef(r)?.name === '里·超刻');
+        if (target && target.zone === 'BATTLEFIELD') {
+          addCardModifier(this.ctx.state, target, {
+            keywords: ['速攻'],
+            untilTurn: this.ctx.state.turnNumber,
+            source: 'BP03-028',
+            sourceCardInstanceId: chargeCardId,
+          });
+        }
+        break;
+      }
+
+      // 10.2.1.b BP03-032 超宏爆发【充能自】进墓地并付3费：对方1张角色回牌组底
+      case 'BP03_032_CHARGE_BOUNCE_BOTTOM': {
+        const targetId = selectedIds[0];
+        const chargeCardId = choice.sourceCardInstanceId;
+        if (!targetId || !chargeCardId) break;
+        const chargeCard = this.ctx.state.cards[chargeCardId];
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        if (!this.ctx.payCost(playerId, 3)) break;
+        this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
+        if (this.ctx.state.cards[targetId]?.zone === 'BATTLEFIELD') {
+          this.ctx.zoneMgr.moveCardToBottomOfDeck(targetId);
+        }
+        break;
+      }
+
+      // 10.8 BP03-054 艾拉·万华【瞬时】：选择<艺术协会>角色直到攻击结束 PP+1000
+      case 'BP03_054_BUFF_ROLE': {
+        const targetId = selectedIds[0];
+        const role = targetId ? this.ctx.state.cards[targetId] : undefined;
+        if (role && role.zone === 'BATTLEFIELD') {
+          addCardModifier(this.ctx.state, role, {
+            id: `combat-bp03-054-${this.ctx.events.length}`,
+            pp: 1000,
+            untilTurn: this.ctx.state.turnNumber,
+            source: 'BP03-054',
+            sourceCardInstanceId: choice.sourceCardInstanceId,
+          });
+        }
+        break;
+      }
+
+      // 10.8 BP04-028 渡边·尘铭【瞬时】：选 2 相邻信号球消除后出场
+      case 'BP04_028_INSTANT_ELIM': {
+        const firstOrbId = selectedIds[0];
+        const cardId = choice.sourceCardInstanceId;
+        const card = cardId ? this.ctx.state.cards[cardId] : undefined;
+        if (!firstOrbId || !card || card.zone !== 'HAND') break;
+        const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
+        const idx = orbs.findIndex((o) => o.instanceId === firstOrbId);
+        if (idx < 0 || idx + 1 >= orbs.length) break;
+        const orbIds = [orbs[idx]!.instanceId, orbs[idx + 1]!.instanceId];
+        for (const oid of orbIds) {
+          this.ctx.zoneMgr.moveCard(oid, 'GRAVEYARD', { isFaceUp: true });
+        }
+        this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
+        const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
+        if (slotIdx !== undefined && this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx)) {
+          const def = this.getCardDef(card);
+          if (def) this.handleRoleEntryEffect(playerId, card.instanceId, def);
+        }
+        break;
+      }
+
       // 默认兼容旧格式
       default: {
         for (const selectedId of selectedIds) {
@@ -1805,19 +1974,166 @@ export class CardEffectEngine {
   }
 
   // =========================================================================
-  // 6. 充能自能力自动判定与决策窗口 (全量69张专武/招式自适应)
+  // 6. 充能自能力自动判定与决策窗口 (含信号球牌及 10.2.1.b 带条件/代价的【充能自】)
   // =========================================================================
   handleChargeAutoEffect(
     playerId: string,
     cardInstanceId: string,
-    cardDef: CardVersionData
+    cardDef: CardVersionData,
+    chargeKind: 'ATTACK' | 'DAMAGE' = 'ATTACK',
+    attackerCardId?: string
   ): boolean {
     const rules = cardDef.rulesText || '';
     const index = rules.indexOf('【充能自】');
     if (index < 0) return false;
-    // 只解析【充能自】能力本身的文本，避免把同一张卡其他能力的字样当成选项
+    const cardNum = cardDef.cardNumber;
+    const player = this.ctx.state.players[playerId];
+
+    // A. 带条件或代价的非信号球牌【充能自】(10.2.1.b)
+    if (cardNum === 'BP04-020') {
+      if (chargeKind !== 'DAMAGE') return false;
+      const veras = this.getFriendlyRoles(playerId).filter((r) =>
+        this.ctx.continuousEffects ? this.ctx.continuousEffects.hasCardName(r.instanceId, '薇拉·灼惘') : this.getCardDef(r)?.name === '薇拉·灼惘'
+      );
+      if (veras.length === 0) return false;
+      this.ctx.setPendingChoice({
+        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        playerId,
+        choiceType: 'SELECT_CARDS',
+        prompt: `【${cardDef.name}】充能自：选择我方战场1张《薇拉·灼惘》，直到回合结束 PP+2000：`,
+        options: veras.map((r) => this.createRoleChoiceOption(r)),
+        effectType: 'SELECT_ROLE_FOR_CHARGE_BUFF',
+        sourceCardInstanceId: cardInstanceId,
+        metadata: { buffType: 'PP', buffAmount: 2000, cardName: cardDef.name, cardNumber: cardNum },
+        minSelections: 1,
+        maxSelections: 1,
+      });
+      return true;
+    }
+
+    if (cardNum === 'BP04-021') {
+      if (chargeKind !== 'DAMAGE') return false;
+      const openCostRolesAllFire = this.ctx.zoneMgr
+        .getCardsInZone(playerId, 'COST')
+        .filter((c) => c.isFaceUp)
+        .every((c) => {
+          const d = this.getCardDef(c);
+          return !d || d.cardType !== CardType.ROLE || d.attribute === 'FIRE';
+        });
+      if (!openCostRolesAllFire) return false;
+      this.ctx.zoneMgr.drawCards(playerId, 1);
+      this.ctx.events.push({
+        type: 'ABILITY_ACTIVATED',
+        playerId,
+        cardInstanceId,
+        abilityName: `${cardDef.name}【充能自】`,
+        rulesText: '伤害充能且费用区所有明费角色为火属性：抽1张牌',
+      });
+      return true;
+    }
+
+    if (cardNum === 'BP03-023') {
+      if (chargeKind !== 'ATTACK' || !attackerCardId) return false;
+      const attacker = this.ctx.state.cards[attackerCardId];
+      if (!attacker || this.getCardDef(attacker)?.name !== '里·超刻') return false;
+      const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
+      if (availCost < 3) return false;
+      const eligibleTargets = this.getFriendlyRoles(playerId).filter((r) => {
+        const d = this.getCardDef(r);
+        return d && d.name === '里·超刻' && d.cost < 9;
+      });
+      if (eligibleTargets.length === 0) return false;
+      this.ctx.setPendingChoice({
+        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        playerId,
+        choiceType: 'YES_NO',
+        prompt: `【${cardDef.name}】充能自：是否支付 3 费将该牌无视费用上限升变出场并获得【速攻】？`,
+        options: [
+          { id: 'opt_yes', label: '支付 3 费升变出场' },
+          { id: 'opt_no', label: '不发动' },
+        ],
+        effectType: 'BP03_023_CHARGE_ASCEND',
+        sourceCardInstanceId: cardInstanceId,
+        metadata: { attackerCardId, cardNumber: cardNum },
+        minSelections: 1,
+        maxSelections: 1,
+      });
+      return true;
+    }
+
+    if (cardNum === 'BP03-024') {
+      if (!player || (player.turnAbilityUsage['BP03-024:CHARGE_AUTO'] ?? 0) > 0) return false;
+      const fieldRoles = this.getFriendlyRoles(playerId);
+      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.getCardDef(r)?.name === '里·超刻')) return false;
+      if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) return false;
+      const handLees = this.ctx.zoneMgr
+        .getCardsInZone(playerId, 'HAND')
+        .filter((c) => this.getCardDef(c)?.name === '里·超刻');
+      if (handLees.length < 3) return false;
+      this.ctx.setPendingChoice({
+        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        playerId,
+        choiceType: 'SELECT_CARDS',
+        prompt: `【${cardDef.name}】充能自：可丢弃手牌 3 张《里·超刻》将该牌从处理区出场 (不选则放弃)：`,
+        options: handLees.map((c) => this.createGeneralCardChoiceOption(c)),
+        effectType: 'BP03_024_CHARGE_DEPLOY',
+        sourceCardInstanceId: cardInstanceId,
+        metadata: { cardNumber: cardNum },
+        minSelections: 0,
+        maxSelections: 3,
+      });
+      return true;
+    }
+
+    if (cardNum === 'BP03-028') {
+      if (chargeKind !== 'ATTACK' || !attackerCardId) return false;
+      const attacker = this.ctx.state.cards[attackerCardId];
+      if (!attacker || this.getCardDef(attacker)?.name !== '里·超刻') return false;
+      const yellowOrbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB').filter((c) => {
+        if (!this.ctx.continuousEffects) return c.isFaceUp && this.getCardDef(c)?.signalOrb === 'YELLOW';
+        const info = this.ctx.continuousEffects.getEffectiveOrbInfo(c.instanceId);
+        return info.isOrb && !info.cannotEliminate && info.colors.includes('YELLOW');
+      });
+      if (yellowOrbs.length === 0) return false;
+      this.ctx.setPendingChoice({
+        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        playerId,
+        choiceType: 'SELECT_CARDS',
+        prompt: `【${cardDef.name}】充能自：可将其置入墓地并消除 1 张【黄色信号球】，使《里·超刻》获得【速攻】：`,
+        options: yellowOrbs.map((c) => this.createGeneralCardChoiceOption(c)),
+        effectType: 'BP03_028_CHARGE_AUTO',
+        sourceCardInstanceId: cardInstanceId,
+        metadata: { attackerCardId, cardNumber: cardNum },
+        minSelections: 0,
+        maxSelections: 1,
+      });
+      return true;
+    }
+
+    if (cardNum === 'BP03-032') {
+      const fieldRoles = this.getFriendlyRoles(playerId);
+      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.getCardDef(r)?.name === '里·超刻')) return false;
+      const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
+      if (availCost < 3) return false;
+      const oppRoles = this.getOpponentRoles(playerId);
+      if (oppRoles.length === 0) return false;
+      this.ctx.setPendingChoice({
+        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        playerId,
+        choiceType: 'SELECT_CARDS',
+        prompt: `【${cardDef.name}】充能自：可将其置入墓地并支付 3 费，选择对方战场 1 张角色放置到牌组底：`,
+        options: oppRoles.map((r) => this.createRoleChoiceOption(r)),
+        effectType: 'BP03_032_CHARGE_BOUNCE_BOTTOM',
+        sourceCardInstanceId: cardInstanceId,
+        metadata: { cardNumber: cardNum },
+        minSelections: 0,
+        maxSelections: 1,
+      });
+      return true;
+    }
+
+    // B. 信号球牌的标准【充能自】：只解析【充能自】能力本身的文本
     const segment = rules.slice(index).split(/\n(?=【)/)[0]!;
-    // 信号球牌的标准【充能自】为「从以下2项选择1项」；带条件或代价的【充能自】(如 BP03/BP04 的部分卡牌) 尚未实现
     if (!/^【充能自】[:：]\s*从以下2项选择1项/.test(segment)) return false;
 
     const options: { id: string; label: string }[] = [];
@@ -2385,10 +2701,12 @@ export class CardEffectEngine {
       return { success: true };
     }
 
-    // 4. 浮空处理
+    // 4. 浮空处理 (10.18)
     if (rules.includes('将该牌【浮空】') || rules.includes('将手牌的该牌【浮空】')) {
-      this.ctx.fieldMgr.handleCardLeaveField(sourceCardId);
-      this.ctx.zoneMgr.moveCard(sourceCardId, 'PROCESSING', { isFaceUp: true });
+      const airborned = this.ctx.fieldMgr.airborneRole(sourceCardId);
+      if (!airborned) {
+        return { success: false, error: '当前处理区已存在浮空模式卡牌或角色不在战场，无法【浮空】 (10.18.2.a)' };
+      }
       this.ctx.events.push({
         type: 'ABILITY_ACTIVATED',
         playerId,
@@ -2410,6 +2728,247 @@ export class CardEffectEngine {
       playerId,
       cardInstanceId: sourceCardId,
       abilityName: `${cardDef.name} 起动能力发动`,
+      rulesText: cardDef.rulesText,
+    });
+    return { success: true };
+  }
+
+  // =========================================================================
+  // 8. 10.8 角色牌与装备牌上的【瞬时】能力检查与执行
+  // =========================================================================
+
+  private findHostUnderneathCard(playerId: string, cardInstanceId: string, requiredHostName: string): CardInstance | undefined {
+    return this.getFriendlyRoles(playerId).find((role) => {
+      if (!role.underneathCardIds.includes(cardInstanceId)) return false;
+      return this.ctx.continuousEffects
+        ? this.ctx.continuousEffects.hasCardName(role.instanceId, requiredHostName)
+        : this.getCardDef(role)?.name === requiredHostName;
+    });
+  }
+
+  private findEliminatableAdjacentOrbPairStarts(playerId: string): string[] {
+    const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
+    const starts: string[] = [];
+    for (let i = 0; i + 1 < orbs.length; i++) {
+      const c1 = orbs[i]!;
+      const c2 = orbs[i + 1]!;
+      const ok1 = this.ctx.continuousEffects
+        ? (() => {
+            const info = this.ctx.continuousEffects.getEffectiveOrbInfo(c1.instanceId);
+            return info.isOrb && !info.cannotEliminate;
+          })()
+        : c1.isFaceUp && Boolean(this.getCardDef(c1)?.signalOrb);
+      const ok2 = this.ctx.continuousEffects
+        ? (() => {
+            const info = this.ctx.continuousEffects.getEffectiveOrbInfo(c2.instanceId);
+            return info.isOrb && !info.cannotEliminate;
+          })()
+        : c2.isFaceUp && Boolean(this.getCardDef(c2)?.signalOrb);
+      if (ok1 && ok2) starts.push(c1.instanceId);
+    }
+    return starts;
+  }
+
+  canUseNonTacticsInstant(
+    playerId: string,
+    card: CardInstance,
+    cardDef: CardVersionData
+  ): { usable: boolean; error?: string; costToPay: number } {
+    const window = this.ctx.state.timingWindow;
+    if (!window) {
+      return { usable: false, error: '当前不在使用【瞬时】的时机 (10.8)', costToPay: 0 };
+    }
+    const player = this.ctx.state.players[playerId];
+    if (!player) {
+      return { usable: false, error: '玩家不存在', costToPay: 0 };
+    }
+    const availCost = player.availableOpenCostCount + player.hiddenCostCount;
+
+    switch (cardDef.cardNumber) {
+      case 'BP03-054': {
+        if (card.zone !== 'COST' || !card.isFaceUp || card.controllerPlayerId !== playerId) {
+          return { usable: false, error: '《艾拉·万华》须存在于我方明费中才能发动', costToPay: 0 };
+        }
+        if (window.kind !== 'FREE_TIMING') {
+          return { usable: false, error: '《艾拉·万华》【瞬时】只能在角色攻击的自由时点发动', costToPay: 0 };
+        }
+        const hasIris = this.getFriendlyRoles(playerId).some((r) =>
+          this.ctx.continuousEffects
+            ? this.ctx.continuousEffects.hasTrait(r.instanceId, '艺术协会')
+            : Boolean(this.getCardDef(r)?.traits.includes('艺术协会'))
+        );
+        if (!hasIris) {
+          return { usable: false, error: '我方战场没有<艺术协会>角色', costToPay: 0 };
+        }
+        return { usable: true, costToPay: 0 };
+      }
+
+      case 'BP04-004': {
+        const host = this.findHostUnderneathCard(playerId, card.instanceId, '露娜·终焉');
+        if (!host) {
+          return { usable: false, error: '该牌须存在于我方《露娜·终焉》下方才能发动', costToPay: 0 };
+        }
+        if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
+          return { usable: false, error: '战场没有空余卡位', costToPay: 0 };
+        }
+        const isOppFreeTiming = window.kind === 'FREE_TIMING' && this.ctx.state.activePlayerId !== playerId;
+        const cost = isOppFreeTiming ? 3 : 4;
+        if (availCost < cost) {
+          return { usable: false, error: `费用不足，需要 ${cost} 费`, costToPay: cost };
+        }
+        return { usable: true, costToPay: cost };
+      }
+
+      case 'BP04-007': {
+        const host = this.findHostUnderneathCard(playerId, card.instanceId, '露娜·终焉');
+        if (!host) {
+          return { usable: false, error: '该牌须存在于我方《露娜·终焉》下方才能发动', costToPay: 0 };
+        }
+        if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
+          return { usable: false, error: '战场没有空余卡位', costToPay: 0 };
+        }
+        if (availCost < 2) {
+          return { usable: false, error: '费用不足，需要 2 费', costToPay: 2 };
+        }
+        return { usable: true, costToPay: 2 };
+      }
+
+      case 'BP04-028': {
+        if (card.zone !== 'HAND' || card.controllerPlayerId !== playerId) {
+          return { usable: false, error: '《渡边·尘铭》须在手牌才能发动', costToPay: 0 };
+        }
+        if ((player.turnAbilityUsage['BP04-028:INSTANT'] ?? 0) > 0) {
+          return { usable: false, error: '《渡边·尘铭》的该能力本回合已发动过 (【回合1】)', costToPay: 0 };
+        }
+        if ((player.destroyedFireRoleCountThisTurn ?? 0) < 3) {
+          return { usable: false, error: '本回合中被破坏的火属性角色未达到 3 张', costToPay: 0 };
+        }
+        if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
+          return { usable: false, error: '战场没有空余卡位', costToPay: 0 };
+        }
+        if (this.findEliminatableAdjacentOrbPairStarts(playerId).length === 0) {
+          return { usable: false, error: '信号球区没有 2 个相邻的可消除信号球', costToPay: 0 };
+        }
+        return { usable: true, costToPay: 0 };
+      }
+
+      default:
+        return { usable: false, error: `卡牌【${cardDef.name}】没有可从当前区域使用的【瞬时】能力`, costToPay: 0 };
+    }
+  }
+
+  handleUseNonTacticsInstant(
+    playerId: string,
+    card: CardInstance,
+    cardDef: CardVersionData,
+    costCardInstanceIds?: string[]
+  ): { success: boolean; error?: string } {
+    const check = this.canUseNonTacticsInstant(playerId, card, cardDef);
+    if (!check.usable) {
+      return { success: false, error: check.error ?? '当前无法使用该【瞬时】能力' };
+    }
+
+    if (check.costToPay > 0) {
+      if (!this.ctx.payCost(playerId, check.costToPay, costCardInstanceIds)) {
+        return { success: false, error: `费用不足或所选支付卡牌无效，需要 ${check.costToPay} 费` };
+      }
+    }
+
+    switch (cardDef.cardNumber) {
+      case 'BP03-054': {
+        this.ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
+        const irisRoles = this.getFriendlyRoles(playerId).filter((r) =>
+          this.ctx.continuousEffects
+            ? this.ctx.continuousEffects.hasTrait(r.instanceId, '艺术协会')
+            : Boolean(this.getCardDef(r)?.traits.includes('艺术协会'))
+        );
+        if (irisRoles.length === 1) {
+          addCardModifier(this.ctx.state, irisRoles[0]!, {
+            id: `combat-bp03-054-${this.ctx.events.length}`,
+            pp: 1000,
+            untilTurn: this.ctx.state.turnNumber,
+            source: 'BP03-054',
+            sourceCardInstanceId: card.instanceId,
+          });
+        } else if (irisRoles.length > 1) {
+          this.ctx.setPendingChoice({
+            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            playerId,
+            choiceType: 'SELECT_CARDS',
+            prompt: '【艾拉·万华】瞬时：选择我方战场1张<艺术协会>角色，直到那次攻击结束 PP+1000：',
+            options: irisRoles.map((r) => this.createRoleChoiceOption(r)),
+            effectType: 'BP03_054_BUFF_ROLE',
+            sourceCardInstanceId: card.instanceId,
+            minSelections: 1,
+            maxSelections: 1,
+          });
+        }
+        break;
+      }
+
+      case 'BP04-004':
+      case 'BP04-007': {
+        const host = this.findHostUnderneathCard(playerId, card.instanceId, '露娜·终焉');
+        const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
+        if (!host || slotIdx === undefined) {
+          return { success: false, error: '无法从下方出场' };
+        }
+        host.underneathCardIds = host.underneathCardIds.filter((id) => id !== card.instanceId);
+        card.zone = 'PROCESSING';
+        card.slotIndex = undefined;
+        if (!this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx)) {
+          return { success: false, error: '出场失败' };
+        }
+        this.handleRoleEntryEffect(playerId, card.instanceId, cardDef);
+        break;
+      }
+
+      case 'BP04-028': {
+        const player = this.ctx.state.players[playerId]!;
+        player.turnAbilityUsage['BP04-028:INSTANT'] = (player.turnAbilityUsage['BP04-028:INSTANT'] ?? 0) + 1;
+        const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
+        const pairStarts = this.findEliminatableAdjacentOrbPairStarts(playerId);
+        if (pairStarts.length === 1) {
+          const idx = orbs.findIndex((o) => o.instanceId === pairStarts[0]!);
+          const orbIds = [orbs[idx]!.instanceId, orbs[idx + 1]!.instanceId];
+          for (const oid of orbIds) {
+            this.ctx.zoneMgr.moveCard(oid, 'GRAVEYARD', { isFaceUp: true });
+          }
+          this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
+          const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
+          if (slotIdx !== undefined && this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx)) {
+            this.handleRoleEntryEffect(playerId, card.instanceId, cardDef);
+          }
+        } else if (pairStarts.length > 1) {
+          this.ctx.setPendingChoice({
+            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            playerId,
+            choiceType: 'SELECT_OPTION',
+            prompt: '【渡边·尘铭】瞬时：请选择要消除的 2 个相邻信号球：',
+            options: pairStarts.map((startId) => {
+              const i = orbs.findIndex((o) => o.instanceId === startId);
+              const n1 = this.getCardDef(orbs[i]!)?.name ?? orbs[i]!.cardNumber;
+              const n2 = this.getCardDef(orbs[i + 1]!)?.name ?? orbs[i + 1]!.cardNumber;
+              return { id: startId, label: `消除 [${n1}] + [${n2}]` };
+            }),
+            effectType: 'BP04_028_INSTANT_ELIM',
+            sourceCardInstanceId: card.instanceId,
+            minSelections: 1,
+            maxSelections: 1,
+          });
+        }
+        break;
+      }
+
+      default:
+        return { success: false, error: '未实现的非战术【瞬时】能力' };
+    }
+
+    this.ctx.events.push({
+      type: 'ABILITY_ACTIVATED',
+      playerId,
+      cardInstanceId: card.instanceId,
+      abilityName: `${cardDef.name}【瞬时】`,
       rulesText: cardDef.rulesText,
     });
     return { success: true };

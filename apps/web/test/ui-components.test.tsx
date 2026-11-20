@@ -292,5 +292,14 @@ describe('PGR UI Design System Components', () => {
     expect(tags.some((t) => t.includes('视为红/黄信号球'))).toBe(true);
     expect(tags.some((t) => t.includes('视为3个信号球'))).toBe(true);
     expect(tags.some((t) => t.includes('《飞叶点翠》'))).toBe(true);
+
+    const assistAirborneCard: CardInstance = {
+      ...card,
+      isAirborne: true,
+      partnerCardId: 'c-partner-1',
+    };
+    const assistTags = formatCardModifiers(assistAirborneCard);
+    expect(assistTags.some((t) => t.includes('浮空模式'))).toBe(true);
+    expect(assistTags.some((t) => t.includes('协战状态'))).toBe(true);
   });
 });
