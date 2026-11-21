@@ -682,8 +682,11 @@ export class GameEngine {
     const player = this.state.players[action.playerId]!;
 
     // 8.6.2.a.1 卡牌属性条件：属性需与自身费用区中任意一张明费属性相同
-    // 信号球牌无属性，可无视卡牌属性条件 (4.16.1.a)
-    if (cardDef.attribute !== ElementAttribute.NONE) {
+    // 信号球牌无属性 (4.16.1.a) 或满足卡牌自身「无视属性条件使用」的持续效果 (如 ST04-008 卡穆·狂犬) 时跳过检查
+    if (
+      cardDef.attribute !== ElementAttribute.NONE &&
+      !this.effectEngine.presets.canIgnoreAttributeCondition(action.playerId, cardDef.cardNumber)
+    ) {
       const openCostCards = this.zoneMgr.getCardsInZone(action.playerId, 'COST').filter((c) => c.isFaceUp);
       const hasMatchingAttribute = openCostCards.some((c) => {
         const def = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
@@ -1393,19 +1396,36 @@ export class GameEngine {
     return false;
   }
 
-  private resolveAssistCostOption(host: CardInstance, hostDef: CardVersionData, partnerZone: CardInstance['zone']) {
-    const options = [...(hostDef.assistConfig?.costOptions ?? [])];
+  private resolveAssistCostOptions(
+    host: CardInstance,
+    hostDef: CardVersionData,
+    partner: CardInstance
+  ) {
+    const partnerZone = partner.zone;
+    const options = (hostDef.assistConfig?.costOptions ?? []).filter((o) => o.zone === partnerZone);
     // ST06-010 阿斯特莉亚：装备给《亚里莎·回音》时允许从墓地支付 2 费选择协战搭档
     if (
       partnerZone === 'GRAVEYARD' &&
       host.attachedEquipmentId &&
       this.state.cards[host.attachedEquipmentId]?.cardNumber === 'ST06-010' &&
+      !this.continuousEffects.hasLostInherentAbilities(host.attachedEquipmentId) &&
+      !this.continuousEffects.hasProhibition(host.instanceId, 'CANNOT_GAIN_ABILITIES') &&
       this.continuousEffects.hasCardName(host.instanceId, '亚里莎·回音') &&
       !options.some((o) => o.zone === 'GRAVEYARD')
     ) {
       options.push({ zone: 'GRAVEYARD', costAmount: 2 });
     }
-    return options.find((o) => o.zone === partnerZone);
+    // ST06-001 坠落与新生 亚里莎·回音【永】：我方回合选择手牌《坠落与新生 塞西莉》时，协战代价可变为【2任意信号球】
+    if (
+      partnerZone === 'HAND' &&
+      host.cardNumber === 'ST06-001' &&
+      this.state.activePlayerId === host.controllerPlayerId &&
+      !this.continuousEffects.hasLostInherentAbilities(host.instanceId) &&
+      this.continuousEffects.hasCardName(partner.instanceId, '坠落与新生 塞西莉')
+    ) {
+      options.push({ zone: 'HAND', costAmount: 0, eliminateOrbs: { filter: 'ANY', count: 2 } });
+    }
+    return options;
   }
 
   private findEligibleAssistOrbIds(
@@ -1474,7 +1494,7 @@ export class GameEngine {
           : partnerDef.cost;
       if (effCost > filter.maxCost) return false;
     }
-    return Boolean(this.resolveAssistCostOption(host, hostDef, partner.zone));
+    return this.resolveAssistCostOptions(host, hostDef, partner).length > 0;
   }
 
   private hasUsableAssist(playerId: string): boolean {
@@ -1489,10 +1509,13 @@ export class GameEngine {
       if ((player.turnAbilityUsage[`${host.instanceId}:ASSIST`] ?? 0) > 0) continue;
       for (const candidate of Object.values(this.state.cards)) {
         if (!this.matchesAssistPartnerFilter(playerId, host, hostDef, candidate)) continue;
-        const costOpt = this.resolveAssistCostOption(host, hostDef, candidate.zone)!;
-        if (costOpt.costAmount > availCost) continue;
-        if (costOpt.eliminateOrbs && !this.findEligibleAssistOrbIds(playerId, costOpt.eliminateOrbs)) continue;
-        return true;
+        const costOpts = this.resolveAssistCostOptions(host, hostDef, candidate);
+        const anyPayable = costOpts.some(
+          (opt) =>
+            opt.costAmount <= availCost &&
+            (!opt.eliminateOrbs || Boolean(this.findEligibleAssistOrbIds(playerId, opt.eliminateOrbs)))
+        );
+        if (anyPayable) return true;
       }
     }
     return false;
@@ -1530,10 +1553,29 @@ export class GameEngine {
       return { success: false, error: '指定的卡牌不满足协战搭档条件或处于交战中 (8.13.2.a / 8.13.3.b.4)' };
     }
 
-    const costOpt = this.resolveAssistCostOption(host, hostDef, partner.zone);
-    if (!costOpt) {
+    const costOpts = this.resolveAssistCostOptions(host, hostDef, partner);
+    if (costOpts.length === 0) {
       return { success: false, error: '搭档所在区域不符合协战代价要求 (8.13.2.b.2)' };
     }
+
+    const availCost = player.availableOpenCostCount + player.hiddenCostCount;
+    let costOpt = costOpts[0]!;
+    if (costOpts.length > 1) {
+      if (action.orbCardInstanceIds && action.orbCardInstanceIds.length > 0) {
+        costOpt = costOpts.find((o) => Boolean(o.eliminateOrbs)) ?? costOpt;
+      } else if (action.costCardInstanceIds && action.costCardInstanceIds.length > 0) {
+        costOpt = costOpts.find((o) => o.costAmount > 0) ?? costOpt;
+      } else {
+        costOpt =
+          costOpts.find(
+            (o) =>
+              o.costAmount <= availCost &&
+              (!o.eliminateOrbs || Boolean(this.findEligibleAssistOrbIds(action.playerId, o.eliminateOrbs)))
+          ) ?? costOpt;
+      }
+    }
+
+    const partnerFromZone = partner.zone;
 
     // 8.13.3.c 支付协战代价 (费用 / 信号球消除)
     if (costOpt.costAmount > 0) {
@@ -1596,6 +1638,15 @@ export class GameEngine {
 
     if (!this.fieldMgr.attachPartner(action.playerId, host.instanceId, partner.instanceId)) {
       return { success: false, error: '绑定协战搭档失败' };
+    }
+    // ST06-002 坠落与新生 塞西莉【协战永】：从手牌成为《坠落与新生 亚里莎·回音》协战搭档的回合中，不会解除协战状态
+    if (
+      partnerFromZone === 'HAND' &&
+      partner.cardNumber === 'ST06-002' &&
+      !this.continuousEffects.hasLostInherentAbilities(partner.instanceId) &&
+      this.continuousEffects.hasCardName(host.instanceId, '坠落与新生 亚里莎·回音')
+    ) {
+      partner.cannotReleasePartnerUntilTurn = this.state.turnNumber;
     }
     player.turnAbilityUsage[`${host.instanceId}:ASSIST`] = 1;
 

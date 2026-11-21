@@ -25,10 +25,10 @@ function expandDeck(presetId: 'ST01' | 'ST02' | 'ST03'): string[] {
 }
 
 describe('声明式卡牌效果描述与严格类型/结构校验 (docs/future-work.md §3.1~3.3)', () => {
-  it('官方预组 42 张声明式描述全部通过官方卡表交叉校验，且与 @zhanshuang/game-rules EXACT_IMPLEMENTED_CARDS 一一对应', () => {
+  it('官方预组 83 张 (ST01~ST06) 声明式描述全部通过官方卡表交叉校验，且与 @zhanshuang/game-rules EXACT_IMPLEMENTED_CARDS 一一对应', () => {
     const validated = validateCardEffectRegistry(STARTER_DECK_EFFECT_SPECS, db);
-    expect(validated.size).toBe(42);
-    expect(STARTER_DECK_SPEC_MAP.size).toBe(42);
+    expect(validated.size).toBe(83);
+    expect(STARTER_DECK_SPEC_MAP.size).toBe(83);
 
     // 校验每张描述的卡号、卡名均与官方卡表一致
     for (const spec of STARTER_DECK_EFFECT_SPECS) {
@@ -237,5 +237,59 @@ describe('声明式卡牌效果描述与严格类型/结构校验 (docs/future-w
         ],
       })
     ).toThrow(/minCost .* 不能大于 maxCost/);
+  });
+
+  it('校验器拦截 CHOOSE_MODE 重复 ID、越界 max、以及 ELIMINATE_ORB_COST 内部未定义变量引用', () => {
+    expect(() =>
+      validateCardEffectSpec({
+        cardNumber: 'TEST-MODE-DUP',
+        name: '重复模式ID',
+        tactics: [
+          {
+            op: 'CHOOSE_MODE',
+            prompt: '选择',
+            modes: [
+              { id: 'm1', label: '项1', steps: [{ op: 'DRAW', count: 1 }] },
+              { id: 'm1', label: '项2', steps: [{ op: 'DRAW', count: 1 }] },
+            ],
+          },
+        ],
+      })
+    ).toThrow(/重复 id/);
+
+    expect(() =>
+      validateCardEffectSpec({
+        cardNumber: 'TEST-MODE-RANGE',
+        name: '模式数量越界',
+        tactics: [
+          {
+            op: 'CHOOSE_MODE',
+            prompt: '选择',
+            min: 1,
+            max: 3,
+            modes: [
+              { id: 'm1', label: '项1', steps: [{ op: 'DRAW', count: 1 }] },
+              { id: 'm2', label: '项2', steps: [{ op: 'DRAW', count: 1 }] },
+            ],
+          },
+        ],
+      })
+    ).toThrow(/越界/);
+
+    expect(() =>
+      validateCardEffectSpec({
+        cardNumber: 'TEST-ORB-STEP-VAR',
+        name: '步内消球未定义变量',
+        tactics: [
+          {
+            op: 'ELIMINATE_ORB_COST',
+            filter: 'ANY',
+            count: 1,
+            savePaidToVar: 'paid',
+            onPaid: [{ op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'wrongVar' }, toZone: 'HAND' }],
+          },
+        ],
+      })
+    ).toThrow(/未定义变量 "wrongVar"/);
   });
 });

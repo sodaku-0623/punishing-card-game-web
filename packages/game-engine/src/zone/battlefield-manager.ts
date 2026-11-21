@@ -710,6 +710,8 @@ export class BattlefieldManager {
         treatedAsNames: [],
         treatedAsOrbColors: [],
         orbValue: 0,
+        grantedTriggerIds: [],
+        canAttackPlayerOnEnterTurn: false,
       };
     }
     const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
@@ -738,6 +740,8 @@ export class BattlefieldManager {
       treatedAsNames: [],
       treatedAsOrbColors: [],
       orbValue: 0,
+      grantedTriggerIds: [],
+      canAttackPlayerOnEnterTurn: false,
     };
   }
 
