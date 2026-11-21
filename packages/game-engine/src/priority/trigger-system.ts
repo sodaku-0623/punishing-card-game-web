@@ -35,6 +35,7 @@ export interface TriggerEvent {
   cardInstanceId?: string;
   targetCardId?: string;
   battledCardId?: string;
+  blockerCardId?: string;
   targetType?: 'PLAYER' | 'CHARACTER';
   fromZone?: ZoneId;
   toZone?: ZoneId;
@@ -53,6 +54,7 @@ export interface TriggerMatch {
   controllerPlayerId: string;
   label: string;
   oncePerTurn?: boolean;
+  oncePerTurnByPlayer?: boolean;
   triggerContext: Record<string, unknown>;
 }
 
@@ -81,6 +83,7 @@ export interface TriggerDefinition {
   abilityId: string;
   eventTypes: TriggerEventType[];
   oncePerTurn?: boolean;
+  oncePerTurnByPlayer?: boolean;
   collect: (ctx: TriggerCollectContext) => TriggerMatch[];
   execute: (trigger: PendingTrigger, ctx: TriggerExecuteContext) => void;
 }
@@ -206,6 +209,7 @@ export class TriggerManager {
           controllerPlayerId: m.controllerPlayerId,
           label: m.label,
           oncePerTurn: m.oncePerTurn ?? def.oncePerTurn,
+          oncePerTurnByPlayer: m.oncePerTurnByPlayer ?? def.oncePerTurnByPlayer,
           triggerContext: {
             ...m.triggerContext,
             sourceAbilitiesLostAtTrigger:
@@ -322,6 +326,17 @@ export class TriggerManager {
       player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
     }
 
+    // 「《XXX》的该能力每回合最多发动1次」：按玩家+能力ID计数，跨卡牌实例共享回合上限
+    if (trigger.oncePerTurnByPlayer) {
+      const player = this.state.players[trigger.controllerPlayerId];
+      if (!player) return;
+      const usageKey = `player:${trigger.abilityId}`;
+      if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) {
+        return;
+      }
+      player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
+    }
+
     const execCtx: TriggerExecuteContext = {
       state: this.state,
       cardDb: this.cardDb,
@@ -337,14 +352,17 @@ export class TriggerManager {
   }
 
   private registerBuiltinDelayedHandlers(): void {
-    // 8.7.5 时限触发：ST02-011 等赋予的「该回合结束时，将该牌放置到墓地」
+    // 8.7.5 时限触发：ST02-011 / ST05-004~008 等「该回合结束时，将该牌放置到墓地」
     this.registerTrigger({
       abilityId: 'DELAYED_END_OF_TURN_TO_GRAVEYARD',
       eventTypes: [], // 仅通过 delayedTriggers 或 endOfTurnToGraveyard 兼容逻辑入池
       collect: () => [],
       execute: (trigger, ctx) => {
         const card = ctx.state.cards[trigger.sourceCardInstanceId];
-        if (!card || card.zone !== 'BATTLEFIELD') return;
+        const expectedZone = (trigger.triggerContext?.expectedZone as ZoneId | undefined) ?? 'BATTLEFIELD';
+        if (!card || card.zone !== expectedZone) return;
+        const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
+        if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
         ctx.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
       },
     });

@@ -118,15 +118,16 @@ export class CombatManager {
       return { success: false, error: '该角色不能攻击 (1.3.3)' };
     }
 
-    // 7.2.1.b.1 出场回合不可攻击 (10.5 速攻可以；10.6 突进可以攻击角色)
+    // 7.2.1.b.1 出场回合不可攻击 (10.5 速攻可以；10.6 突进可以攻击角色；ST05-001 暮【出】允许攻击对方玩家)
     const isEnterTurn = attacker.turnEnteredZone === this.state.turnNumber;
     const hasRush = attackerEval.keywords.includes('速攻');
     const hasAssault = attackerEval.keywords.includes('突进');
+    const canAttackPlayerOnEnter = attackerEval.canAttackPlayerOnEnterTurn;
 
-    if (isEnterTurn && !hasRush && !hasAssault) {
+    if (isEnterTurn && !hasRush && !hasAssault && !(targetType === 'PLAYER' && canAttackPlayerOnEnter)) {
       return { success: false, error: '角色在其出场的回合不可以进行攻击 (7.2.1.b.1)' };
     }
-    if (isEnterTurn && !hasRush && hasAssault && targetType === 'PLAYER') {
+    if (isEnterTurn && !hasRush && hasAssault && targetType === 'PLAYER' && !canAttackPlayerOnEnter) {
       return { success: false, error: '【突进】在出场回合只能选择对方角色作为攻击对象 (10.6.1.a)' };
     }
 
@@ -556,6 +557,7 @@ export class CombatManager {
         playerId: this.state.activePlayerId,
         cardInstanceId: combat.attackerCardId,
         battledCardId: combat.battledCardId,
+        blockerCardId: combat.blockerCardId,
         targetType: combat.targetType,
         targetCardId: combat.targetCardId,
         subjectSnapshot: this.snapshotProvider?.(combat.attackerCardId),

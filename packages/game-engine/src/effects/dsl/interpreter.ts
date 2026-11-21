@@ -28,9 +28,10 @@ type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 type PendingDslAction =
   | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
-  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
+  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; savePaidToVar?: string }
   | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
   | { kind: 'CONFIRM_YES_NO'; onYes: EffectStep[]; onNo?: EffectStep[] }
+  | { kind: 'CHOOSE_MODE'; modes: { id: string; steps: EffectStep[] }[] }
   | { kind: 'SAVE_CHOICE'; saveToVar: string; distinctTraits?: string[]; distinctTraitsError?: string }
   | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' };
 
@@ -88,13 +89,27 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
-   * 8.6.2.c 计算声明式手牌静态费用减免 (如 ST03-011 三头犬出击)
+   * 8.6.2.c 计算声明式手牌静态费用减免 (如 ST03-011、ST05-009、ST06-004)
    */
   calculateHandCostDiscount(playerId: string, cardNumber: string): number {
     const spec = this.registry.get(cardNumber);
     if (!spec?.handCostDiscount) return 0;
-    const matched = this.roles(playerId).filter((r) => this.matchesFilter(r, spec.handCostDiscount!.filter));
+    if ('condition' in spec.handCostDiscount) {
+      return this.evalCondition(spec.handCostDiscount.condition, playerId, '', {})
+        ? spec.handCostDiscount.flatDiscount
+        : 0;
+    }
+    const matched = this.roles(playerId).filter((r) => this.matchesFilter(r, spec.handCostDiscount && 'filter' in spec.handCostDiscount ? spec.handCostDiscount.filter : {}));
     return matched.length * spec.handCostDiscount.discountPerRole;
+  }
+
+  /**
+   * 【永】：检查手牌中的该牌当前是否可以无视属性条件使用 (如 ST04-008 卡穆·狂犬)
+   */
+  canIgnoreAttributeCondition(playerId: string, cardNumber: string): boolean {
+    const spec = this.registry.get(cardNumber);
+    if (!spec?.ignoreAttributeCondition) return false;
+    return this.evalCondition(spec.ignoreAttributeCondition, playerId, '', {});
   }
 
   /**
@@ -163,7 +178,11 @@ export class DeclarativeEffectInterpreter {
           abilityId: trig.abilityId,
           eventTypes: [trig.eventType],
           oncePerTurn: trig.oncePerTurn,
-          collect: ({ state, event, cardDb, fieldMgr }) => {
+          oncePerTurnByPlayer: trig.oncePerTurnByPlayer,
+          collect: ({ state, event, cardDb, fieldMgr, continuousEffects }) => {
+            const condOk = (pid: string, srcId: string) =>
+              !trig.condition || this.evalCondition(trig.condition, pid, srcId, {});
+
             switch (trig.matcher.kind) {
               case 'EQUIPPED_ROLE_ATTACKING': {
                 const attackerId = event.cardInstanceId;
@@ -182,6 +201,7 @@ export class DeclarativeEffectInterpreter {
                 ) {
                   return [];
                 }
+                if (!condOk(attacker.controllerPlayerId, attacker.instanceId)) return [];
                 return [
                   {
                     sourceCardInstanceId: attacker.instanceId,
@@ -212,6 +232,7 @@ export class DeclarativeEffectInterpreter {
                   if (!slot.roleCardId || slot.roleCardId === enteredId) continue;
                   const host = state.cards[slot.roleCardId];
                   if (!host || host.cardNumber !== spec.cardNumber) continue;
+                  if (!condOk(playerId, host.instanceId)) continue;
                   matches.push({
                     sourceCardInstanceId: host.instanceId,
                     sourceCardNumber: spec.cardNumber,
@@ -227,6 +248,7 @@ export class DeclarativeEffectInterpreter {
                 if (!attackerId) return [];
                 const attacker = state.cards[attackerId];
                 if (!attacker || attacker.cardNumber !== spec.cardNumber) return [];
+                if (!condOk(attacker.controllerPlayerId, attacker.instanceId)) return [];
                 return [
                   {
                     sourceCardInstanceId: attacker.instanceId,
@@ -237,16 +259,161 @@ export class DeclarativeEffectInterpreter {
                   },
                 ];
               }
+              case 'SELF_BLOCKED_ATTACK_END': {
+                const blockerId = event.blockerCardId;
+                if (!blockerId) return [];
+                const blocker = state.cards[blockerId];
+                if (!blocker || blocker.cardNumber !== spec.cardNumber) return [];
+                if (!fieldMgr.isSlotRole(blocker.controllerPlayerId, blockerId)) return [];
+                if (!condOk(blocker.controllerPlayerId, blockerId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: blocker.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: blocker.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext: {
+                      blockerCardId: blocker.instanceId,
+                      attackerCardId: event.cardInstanceId,
+                    },
+                  },
+                ];
+              }
+              case 'GRANTED_BLOCKED_ATTACK_END': {
+                const blockerId = event.blockerCardId;
+                if (!blockerId) return [];
+                const blocker = state.cards[blockerId];
+                if (!blocker || !fieldMgr.isSlotRole(blocker.controllerPlayerId, blockerId)) return [];
+                if (!continuousEffects.hasGrantedTrigger(blockerId, trig.abilityId)) return [];
+                if (!condOk(blocker.controllerPlayerId, blockerId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: blocker.instanceId,
+                    sourceCardNumber: blocker.cardNumber,
+                    controllerPlayerId: blocker.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext: {
+                      blockerCardId: blocker.instanceId,
+                      attackerCardId: event.cardInstanceId,
+                    },
+                  },
+                ];
+              }
+              case 'FRIENDLY_ROLE_BLOCKING': {
+                const blockerId = event.cardInstanceId;
+                const playerId = event.playerId;
+                if (!blockerId || !playerId) return [];
+                const blocker = state.cards[blockerId];
+                if (!blocker) return [];
+                if (trig.matcher.blockerTrait && !this.hasTrait(blocker, trig.matcher.blockerTrait)) {
+                  return [];
+                }
+                const matches = [];
+                for (const slot of fieldMgr.getSlots(playerId)) {
+                  if (trig.matcher.sourceKind === 'EQUIPMENT') {
+                    const role = slot.roleCardId ? state.cards[slot.roleCardId] : undefined;
+                    const equipIds = [role?.attachedEquipmentId, slot.standaloneEquipmentId].filter(
+                      (id): id is string => Boolean(id)
+                    );
+                    for (const eid of equipIds) {
+                      const eq = state.cards[eid];
+                      if (!eq || eq.cardNumber !== spec.cardNumber) continue;
+                      if (!condOk(playerId, eq.instanceId)) continue;
+                      matches.push({
+                        sourceCardInstanceId: eq.instanceId,
+                        sourceCardNumber: spec.cardNumber,
+                        controllerPlayerId: playerId,
+                        label: trig.label,
+                        triggerContext: { blockerCardId: blockerId, attackerCardId: event.targetCardId },
+                      });
+                    }
+                  } else {
+                    const role = slot.roleCardId ? state.cards[slot.roleCardId] : undefined;
+                    if (!role || role.cardNumber !== spec.cardNumber) continue;
+                    if (!condOk(playerId, role.instanceId)) continue;
+                    matches.push({
+                      sourceCardInstanceId: role.instanceId,
+                      sourceCardNumber: spec.cardNumber,
+                      controllerPlayerId: playerId,
+                      label: trig.label,
+                      triggerContext: { blockerCardId: blockerId, attackerCardId: event.targetCardId },
+                    });
+                  }
+                }
+                return matches;
+              }
+              case 'SELF_TURN_END': {
+                const activePid = event.playerId ?? state.activePlayerId;
+                const targetPid = trig.matcher.isSelfTurn
+                  ? activePid
+                  : activePid === state.activePlayerId
+                    ? state.nonActivePlayerId
+                    : state.activePlayerId;
+                const matches = [];
+                for (const slot of fieldMgr.getSlots(targetPid)) {
+                  if (!slot.roleCardId) continue;
+                  const role = state.cards[slot.roleCardId];
+                  if (!role || role.cardNumber !== spec.cardNumber) continue;
+                  if (!condOk(targetPid, role.instanceId)) continue;
+                  matches.push({
+                    sourceCardInstanceId: role.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: targetPid,
+                    label: trig.label.replace('{slot}', String((role.slotIndex ?? 0) + 1)),
+                    triggerContext: {},
+                  });
+                }
+                return matches;
+              }
+              case 'SELF_BECAME_PARTNER': {
+                const hostId = event.cardInstanceId;
+                const partnerId = event.targetCardId;
+                if (!hostId || !partnerId) return [];
+                const host = state.cards[hostId];
+                const partner = state.cards[partnerId];
+                if (!host || !partner || partner.cardNumber !== spec.cardNumber) return [];
+                if (trig.matcher.onlyOpponentTurn && state.activePlayerId === partner.controllerPlayerId) {
+                  return [];
+                }
+                if (trig.matcher.requiredHostTrait && !this.hasTrait(host, trig.matcher.requiredHostTrait)) {
+                  return [];
+                }
+                if (
+                  trig.matcher.requiredHostName &&
+                  !continuousEffects.hasCardName(host.instanceId, trig.matcher.requiredHostName)
+                ) {
+                  return [];
+                }
+                if (!condOk(partner.controllerPlayerId, partner.instanceId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: partner.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: partner.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext: { hostCardId: host.instanceId, partnerCardId: partner.instanceId },
+                  },
+                ];
+              }
             }
           },
           execute: (pending) => {
+            if (trig.condition && !this.evalCondition(trig.condition, pending.controllerPlayerId, pending.sourceCardInstanceId, {})) {
+              return;
+            }
+            const initialVars: Record<string, string[]> = {};
+            const attackerId = pending.triggerContext.attackerCardId as string | undefined;
+            const hostId = pending.triggerContext.hostCardId as string | undefined;
+            if (attackerId) initialVars.__triggerAttacker = [attackerId];
+            if (hostId) initialVars.__triggerHost = [hostId];
             this.executeWithCost(
               spec.cardNumber,
               pending.sourceCardInstanceId,
               pending.controllerPlayerId,
               trig.cost,
               trig.steps,
-              false
+              false,
+              initialVars
             );
           },
         });
@@ -268,7 +435,13 @@ export class DeclarativeEffectInterpreter {
             eff.orbValue !== undefined ||
             eff.treatedAsNames?.length
         );
-        const hasStat = eff.pp !== undefined || eff.dp !== undefined || eff.charge !== undefined;
+        const hasStat =
+          eff.pp !== undefined ||
+          eff.setPP !== undefined ||
+          eff.dp !== undefined ||
+          eff.setDP !== undefined ||
+          eff.charge !== undefined ||
+          eff.setCharge !== undefined;
 
         const matchesTargetAndCond = (
           source: CardInstance,
@@ -278,6 +451,9 @@ export class DeclarativeEffectInterpreter {
           if (eff.scope === 'SELF') {
             if (source.instanceId !== target.instanceId) return false;
             if (eff.selfFilter && !this.matchesFilterSafe(target, eff.selfFilter, ctx.hasCardTrait)) return false;
+          } else if (eff.scope === 'PARTNER_HOST') {
+            if (source.partnerOfCardId !== target.instanceId) return false;
+            if (eff.targetFilter && !this.matchesFilterSafe(target, eff.targetFilter, ctx.hasCardTrait)) return false;
           } else {
             if (source.controllerPlayerId !== target.controllerPlayerId) return false;
             if (eff.targetFilter && !this.matchesFilterSafe(target, eff.targetFilter, ctx.hasCardTrait)) return false;
@@ -298,10 +474,13 @@ export class DeclarativeEffectInterpreter {
           return true;
         };
 
+        const sourceKind = eff.scope === 'PARTNER_HOST' ? ('PARTNER' as const) : ('FIELD_ROLE' as const);
+
         if (hasNonStat) {
           continuousEffects.registerStaticRule({
             id: `dsl:${eff.id}:nonstat`,
             layer: 'NON_STAT',
+            sourceKind,
             providesTraits: Boolean(eff.addTraits?.length),
             dependsOnTraits: eff.dependsOnTraits,
             matchSource: (src) => src.cardNumber === spec.cardNumber,
@@ -323,22 +502,34 @@ export class DeclarativeEffectInterpreter {
           continuousEffects.registerStaticRule({
             id: `dsl:${eff.id}:stat`,
             layer: 'STAT',
+            sourceKind,
             dependsOnTraits: eff.dependsOnTraits,
             matchSource: (src) => src.cardNumber === spec.cardNumber,
             evaluate: (source, target, ctx) => {
               if (!matchesTargetAndCond(source, target, ctx)) return undefined;
               const pp =
                 eff.pp !== undefined ? this.evalNumberExpr(eff.pp, source.controllerPlayerId, source.instanceId) : undefined;
+              const setPP =
+                eff.setPP !== undefined ? this.evalNumberExpr(eff.setPP, source.controllerPlayerId, source.instanceId) : undefined;
               const dp =
                 eff.dp !== undefined ? this.evalNumberExpr(eff.dp, source.controllerPlayerId, source.instanceId) : undefined;
+              const setDP =
+                eff.setDP !== undefined ? this.evalNumberExpr(eff.setDP, source.controllerPlayerId, source.instanceId) : undefined;
               const charge =
                 eff.charge !== undefined
                   ? this.evalNumberExpr(eff.charge, source.controllerPlayerId, source.instanceId)
                   : undefined;
+              const setCharge =
+                eff.setCharge !== undefined
+                  ? this.evalNumberExpr(eff.setCharge, source.controllerPlayerId, source.instanceId)
+                  : undefined;
               return {
                 ...(pp !== undefined ? { pp } : {}),
+                ...(setPP !== undefined ? { setPP } : {}),
                 ...(dp !== undefined ? { dp } : {}),
+                ...(setDP !== undefined ? { setDP } : {}),
                 ...(charge !== undefined ? { charge } : {}),
+                ...(setCharge !== undefined ? { setCharge } : {}),
               };
             },
           });
@@ -379,10 +570,17 @@ export class DeclarativeEffectInterpreter {
       case 'COST_ORB': {
         const group = selected[0];
         if (!group || group === 'skip') {
-          if (pending.optional) return { success: true };
+          if (pending.optional) {
+            if (remaining.length > 0) {
+              this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            }
+            return { success: true };
+          }
           return { success: false, error: '必须支付消除信号球代价' };
         }
-        this.eliminate(playerId, group.split(','));
+        const paidIds = group.split(',');
+        this.eliminate(playerId, paidIds);
+        if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...paidIds];
         if (pending.markUsed) this.markUsed(playerId, sourceCardInstanceId);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
         return { success: true };
@@ -405,6 +603,17 @@ export class DeclarativeEffectInterpreter {
       case 'CONFIRM_YES_NO': {
         const branch = selected[0] === 'opt_yes' ? pending.onYes : (pending.onNo ?? []);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...branch, ...remaining]);
+        return { success: true };
+      }
+
+      case 'CHOOSE_MODE': {
+        const modeMap = new Map(pending.modes.map((m) => [m.id, m.steps]));
+        const chosenSteps: EffectStep[] = [];
+        for (const modeId of selected) {
+          const steps = modeMap.get(modeId);
+          if (steps) chosenSteps.push(...steps);
+        }
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...chosenSteps, ...remaining]);
         return { success: true };
       }
 
@@ -448,11 +657,13 @@ export class DeclarativeEffectInterpreter {
     playerId: string,
     cost: AbilityCost | undefined,
     steps: EffectStep[],
-    markUsed: boolean
+    markUsed: boolean,
+    initialVars: Record<string, string[]> = {}
   ): Result {
+    const vars = { ...initialVars };
     if (!cost) {
       if (markUsed) this.markUsed(playerId, sourceId);
-      this.runSteps(cardNumber, sourceId, playerId, {}, [...steps]);
+      this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
       return { success: true };
     }
 
@@ -464,7 +675,43 @@ export class DeclarativeEffectInterpreter {
         }
         card.isReady = false;
         if (markUsed) this.markUsed(playerId, sourceId);
-        this.runSteps(cardNumber, sourceId, playerId, {}, [...steps]);
+        this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        return { success: true };
+      }
+
+      case 'TAP_SELF_AND_DISCARD_HAND': {
+        const card = this.ctx.state.cards[sourceId];
+        if (!card || !card.isReady) {
+          return { success: false, error: '该牌已横置，无法支付「横置该牌」的代价' };
+        }
+        const hand = this.zone(playerId, 'HAND');
+        if (hand.length < cost.count) {
+          return { success: false, error: `手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)` };
+        }
+        card.isReady = false;
+        const effectType = cost.choiceEffectType ?? 'PRESET_DISCARD_COST';
+        const promptBase = cost.prompt ?? `请选择 ${cost.count} 张手牌丢弃作为代价`;
+        this.enqueueDslChoice(
+          {
+            id: this.choiceId('tap-discard-cost'),
+            playerId,
+            choiceType: 'SELECT_CARDS',
+            prompt: promptBase,
+            options: hand.map((c) => this.effects.createGeneralCardChoiceOption(c)),
+            effectType,
+            sourceCardInstanceId: sourceId,
+            minSelections: cost.count,
+            maxSelections: cost.count,
+          },
+          {
+            cardNumber,
+            sourceCardInstanceId: sourceId,
+            playerId,
+            vars,
+            remainingSteps: [],
+            pendingAction: { kind: 'COST_DISCARD', onPaid: [...steps], optional: false, markUsed },
+          }
+        );
         return { success: true };
       }
 
@@ -473,7 +720,7 @@ export class DeclarativeEffectInterpreter {
           return { success: false, error: `费用不足，需要支付 ${cost.amount} 费` };
         }
         if (markUsed) this.markUsed(playerId, sourceId);
-        this.runSteps(cardNumber, sourceId, playerId, {}, [...steps]);
+        this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
         return { success: true };
       }
 
@@ -503,7 +750,7 @@ export class DeclarativeEffectInterpreter {
             cardNumber,
             sourceCardInstanceId: sourceId,
             playerId,
-            vars: {},
+            vars,
             remainingSteps: [],
             pendingAction: { kind: 'COST_DISCARD', onPaid: [...steps], optional, markUsed },
           }
@@ -521,8 +768,9 @@ export class DeclarativeEffectInterpreter {
         }
         if (!optional && groups.length === 1) {
           this.eliminate(playerId, groups[0]!);
+          if (cost.savePaidToVar) vars[cost.savePaidToVar] = [...groups[0]!];
           if (markUsed) this.markUsed(playerId, sourceId);
-          this.runSteps(cardNumber, sourceId, playerId, {}, [...steps]);
+          this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
           return { success: true };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_ORB_COST';
@@ -549,9 +797,15 @@ export class DeclarativeEffectInterpreter {
             cardNumber,
             sourceCardInstanceId: sourceId,
             playerId,
-            vars: {},
+            vars,
             remainingSteps: [],
-            pendingAction: { kind: 'COST_ORB', onPaid: [...steps], optional, markUsed },
+            pendingAction: {
+              kind: 'COST_ORB',
+              onPaid: [...steps],
+              optional,
+              markUsed,
+              savePaidToVar: cost.savePaidToVar,
+            },
           }
         );
         return { success: true };
@@ -585,7 +839,7 @@ export class DeclarativeEffectInterpreter {
             cardNumber,
             sourceCardInstanceId: sourceId,
             playerId,
-            vars: {},
+            vars,
             remainingSteps: [],
             pendingAction: { kind: 'COST_ORB_OR_DISCARD', onPaid: [...steps], optional, markUsed },
           }
@@ -788,6 +1042,92 @@ export class DeclarativeEffectInterpreter {
           return;
         }
 
+        case 'CHOOSE_MODE': {
+          const min = step.min ?? 1;
+          const max = step.max ?? 1;
+          const effectType = step.choiceEffectType ?? `DSL_CHOOSE_MODE_${cardNumber}`;
+          this.enqueueDslChoice(
+            {
+              id: this.choiceId(effectType),
+              playerId,
+              choiceType: 'SELECT_OPTION',
+              prompt: this.formatPrompt(step.prompt, playerId),
+              options: step.modes.map((m) => ({ id: m.id, label: m.label })),
+              effectType,
+              sourceCardInstanceId: sourceId,
+              minSelections: min,
+              maxSelections: max,
+            },
+            {
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars,
+              remainingSteps: queue,
+              pendingAction: {
+                kind: 'CHOOSE_MODE',
+                modes: step.modes.map((m) => ({ id: m.id, steps: m.steps })),
+              },
+            }
+          );
+          return;
+        }
+
+        case 'ELIMINATE_ORB_COST': {
+          const groups = this.orbGroups(playerId, step.count, step.filter);
+          const optional = Boolean(step.optional);
+          if (groups.length === 0) {
+            break;
+          }
+          if (!optional && groups.length === 1) {
+            this.eliminate(playerId, groups[0]!);
+            if (step.savePaidToVar) vars[step.savePaidToVar] = [...groups[0]!];
+            queue.unshift(...step.onPaid);
+            break;
+          }
+          const effectType = step.choiceEffectType ?? `DSL_ORB_COST_${cardNumber}`;
+          const options = [
+            ...(optional ? [{ id: 'skip', label: '不消除信号球' }] : []),
+            ...groups.map((g) => ({
+              id: g.join(','),
+              label: `消除 ${g.map((id) => this.def(this.ctx.state.cards[id]!)?.name ?? id).join('、')}`,
+            })),
+          ];
+          this.enqueueDslChoice(
+            {
+              id: this.choiceId('step-orb-cost'),
+              playerId,
+              choiceType: 'SELECT_OPTION',
+              prompt: this.formatPrompt(step.prompt ?? '选择要消除的信号球', playerId),
+              options,
+              effectType,
+              sourceCardInstanceId: sourceId,
+              minSelections: 1,
+              maxSelections: 1,
+            },
+            {
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars,
+              remainingSteps: queue,
+              pendingAction: {
+                kind: 'COST_ORB',
+                onPaid: [...step.onPaid],
+                optional,
+                savePaidToVar: step.savePaidToVar,
+              },
+            }
+          );
+          return;
+        }
+
+        case 'SHUFFLE_DECK': {
+          const targetPlayer = this.resolveSide(playerId, step.side ?? 'SELF');
+          this.ctx.zoneMgr.shuffleDeck(targetPlayer);
+          break;
+        }
+
         case 'REORDER_ZONE': {
           const cards = this.zone(playerId, step.zone);
           if (cards.length <= 1) break;
@@ -819,11 +1159,12 @@ export class DeclarativeEffectInterpreter {
         case 'MOVE_CARDS': {
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
           const moved: string[] = [];
+          const ownersToShuffle = new Set<string>();
           for (const id of targets) {
             const card = this.ctx.state.cards[id];
             if (!card) continue;
             if (step.toZone === 'BATTLEFIELD') {
-              if (this.bringToField(playerId, id, step.triggerEntry !== false)) {
+              if (this.bringToField(playerId, id, step.triggerEntry !== false, Boolean(step.enterTapped))) {
                 moved.push(id);
               }
             } else if (step.toZone === 'DECK_BOTTOM') {
@@ -831,11 +1172,32 @@ export class DeclarativeEffectInterpreter {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
               this.ctx.zoneMgr.moveCardToBottomOfDeck(id);
               moved.push(id);
+            } else if (step.toZone === 'DECK_TOP') {
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              this.ctx.zoneMgr.moveCardToTopOfDeck(id);
+              moved.push(id);
+            } else if (step.toZone === 'DECK_SHUFFLE') {
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              this.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
+              ownersToShuffle.add(card.ownerPlayerId);
+              moved.push(id);
+            } else if (step.toZone === 'SIGNAL_ORB_BOTTOM') {
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: step.isFaceUp ?? true, toBottom: true });
+              moved.push(id);
+            } else if (step.toZone === 'COST') {
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              this.ctx.zoneMgr.moveCard(id, 'COST', { isFaceUp: step.isFaceUp ?? false, isReady: true });
+              this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
+              moved.push(id);
             } else {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
               this.ctx.zoneMgr.moveCard(id, step.toZone, { isFaceUp: step.isFaceUp ?? true });
               moved.push(id);
             }
+          }
+          for (const ownerId of ownersToShuffle) {
+            this.ctx.zoneMgr.shuffleDeck(ownerId);
           }
           if (step.saveMovedToVar) vars[step.saveMovedToVar] = moved;
           break;
@@ -853,11 +1215,16 @@ export class DeclarativeEffectInterpreter {
 
         case 'SET_READY': {
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
+          const syncCostPlayers = new Set<string>();
           for (const id of targets) {
             const card = this.ctx.state.cards[id];
             if (!card) continue;
             if (step.target.kind === 'SELF' && !this.ctx.fieldMgr.isSlotRole(playerId, id)) continue;
             card.isReady = step.isReady;
+            if (card.zone === 'COST') syncCostPlayers.add(card.controllerPlayerId);
+          }
+          for (const pid of syncCostPlayers) {
+            this.ctx.zoneMgr.syncCostStats(pid);
           }
           break;
         }
@@ -932,6 +1299,8 @@ export class DeclarativeEffectInterpreter {
               ...(step.treatedAsOrbColors ? { treatedAsOrbColors: step.treatedAsOrbColors } : {}),
               ...(step.orbValue !== undefined ? { orbValue: step.orbValue } : {}),
               ...(step.treatedAsNames ? { treatedAsNames: step.treatedAsNames } : {}),
+              ...(step.grantedTriggerIds ? { grantedTriggerIds: step.grantedTriggerIds } : {}),
+              ...(step.canAttackPlayerOnEnterTurn ? { canAttackPlayerOnEnterTurn: true } : {}),
               untilTurn,
               source,
               sourceCardInstanceId: sourceId,
@@ -991,10 +1360,11 @@ export class DeclarativeEffectInterpreter {
         case 'REGISTER_DELAYED_TRIGGER': {
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
           const triggerTurn = turn + (step.turnOffset ?? 0);
+          const expectedZone = step.expectedZone ?? 'BATTLEFIELD';
           for (const id of targets) {
             const card = this.ctx.state.cards[id];
             if (!card) continue;
-            if (step.markLegacyEndOfTurnToGraveyard) {
+            if (step.markLegacyEndOfTurnToGraveyard && expectedZone === 'BATTLEFIELD') {
               card.endOfTurnToGraveyard = triggerTurn;
             }
             this.ctx.triggerMgr?.registerDelayedTrigger({
@@ -1006,6 +1376,10 @@ export class DeclarativeEffectInterpreter {
               abilityId: step.abilityId,
               label: `【${this.def(card)?.name ?? card.cardNumber}】${step.labelSuffix ?? '该回合结束时放置到墓地'}`,
               once: true,
+              payload: {
+                expectedZone,
+                expectedEnteredTimestamp: card.enteredZoneTimestamp,
+              },
             });
           }
           break;
@@ -1037,6 +1411,10 @@ export class DeclarativeEffectInterpreter {
     switch (target.kind) {
       case 'SELF':
         return sourceId ? [sourceId] : [];
+      case 'TRIGGER_ATTACKER':
+        return vars.__triggerAttacker ?? [];
+      case 'TRIGGER_HOST':
+        return vars.__triggerHost ?? [];
       case 'VAR':
         return vars[target.varName] ?? [];
       case 'REST_OF_VAR': {
@@ -1087,6 +1465,19 @@ export class DeclarativeEffectInterpreter {
       case 'EROSION_COMPARE': {
         const pid = this.resolveSide(playerId, cond.side);
         return this.compare(this.ctx.state.players[pid]?.erosionCount ?? 0, cond.op, cond.value);
+      }
+      case 'OPEN_COST_COMPARE_OPPONENT': {
+        const oppId = this.resolveSide(playerId, 'OPPONENT');
+        const selfOpen = this.ctx.state.players[playerId]?.openCostCount ?? 0;
+        const oppOpen = this.ctx.state.players[oppId]?.openCostCount ?? 0;
+        return this.compare(selfOpen, cond.op, oppOpen);
+      }
+      case 'SIGNAL_ORB_BOTTOM_COST_PARITY': {
+        const bottom = this.zone(playerId, 'SIGNAL_ORB')[0];
+        if (!bottom || !bottom.isFaceUp) return false;
+        const cost = this.def(bottom)?.cost;
+        if (cost === undefined) return false;
+        return cond.parity === 'ODD' ? cost % 2 === 1 : cost % 2 === 0;
       }
       case 'ZONE_COUNT': {
         const pid = this.resolveSide(playerId, cond.side);
@@ -1149,6 +1540,19 @@ export class DeclarativeEffectInterpreter {
         const pid = resolveSide(cond.side);
         return this.compare(state.players[pid]?.erosionCount ?? 0, cond.op, cond.value);
       }
+      case 'OPEN_COST_COMPARE_OPPONENT': {
+        const oppId = resolveSide('OPPONENT');
+        const selfOpen = state.players[playerId]?.openCostCount ?? 0;
+        const oppOpen = state.players[oppId]?.openCostCount ?? 0;
+        return this.compare(selfOpen, cond.op, oppOpen);
+      }
+      case 'SIGNAL_ORB_BOTTOM_COST_PARITY': {
+        const bottom = getCardsInZone(playerId, 'SIGNAL_ORB')[0];
+        if (!bottom || !bottom.isFaceUp) return false;
+        const cost = this.def(bottom)?.cost;
+        if (cost === undefined) return false;
+        return cond.parity === 'ODD' ? cost % 2 === 1 : cost % 2 === 0;
+      }
       case 'ZONE_COUNT': {
         const pid = resolveSide(cond.side);
         const count = getCardsInZone(pid, cond.zone).filter(
@@ -1200,6 +1604,7 @@ export class DeclarativeEffectInterpreter {
     const def = this.def(card);
     if (filter.excludeSelf && sourceId && card.instanceId === sourceId) return false;
     if (filter.cardType !== undefined && def?.cardType !== filter.cardType) return false;
+    if (filter.attribute !== undefined && def?.attribute !== filter.attribute) return false;
     if (filter.exactName !== undefined) {
       const matchedName = hasNameFn
         ? hasNameFn(card.instanceId, filter.exactName)
@@ -1220,7 +1625,16 @@ export class DeclarativeEffectInterpreter {
     if (filter.minCost !== undefined && cost < filter.minCost) return false;
     if (filter.exactCost !== undefined && cost !== filter.exactCost) return false;
     if (filter.isSignalOrb !== undefined && this.isOrb(card) !== filter.isSignalOrb) return false;
+    if (filter.signalOrbColor !== undefined) {
+      const orbColorMatch =
+        def?.signalOrb === filter.signalOrbColor ||
+        (card.zone === 'SIGNAL_ORB' &&
+          Boolean(this.ctx.continuousEffects?.getEffectiveOrbInfo(card.instanceId).colors.includes(filter.signalOrbColor)));
+      if (!orbColorMatch) return false;
+    }
+    if (filter.isFaceUp !== undefined && card.isFaceUp !== filter.isFaceUp) return false;
     if (filter.isReady !== undefined && card.isReady !== filter.isReady) return false;
+    if (filter.hasPartner !== undefined && Boolean(card.partnerCardId) !== filter.hasPartner) return false;
     if (filter.maxEffectivePP !== undefined) {
       if (this.ctx.fieldMgr.calculateRoleEffectivePP(card.instanceId) > filter.maxEffectivePP) return false;
     }
@@ -1392,10 +1806,14 @@ export class DeclarativeEffectInterpreter {
     return milled;
   }
 
-  private bringToField(playerId: string, cardId: string, triggerEntry: boolean): boolean {
+  private bringToField(playerId: string, cardId: string, triggerEntry: boolean, enterTapped = false): boolean {
     const slot = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
     if (slot === undefined) return false;
     if (!this.ctx.fieldMgr.playRoleCard(playerId, cardId, slot)) return false;
+    if (enterTapped) {
+      const card = this.ctx.state.cards[cardId];
+      if (card) card.isReady = false;
+    }
     if (triggerEntry) {
       const def = this.def(this.ctx.state.cards[cardId]!);
       if (def) this.effects.handleRoleEntryEffect(playerId, cardId, def);

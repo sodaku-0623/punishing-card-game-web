@@ -7,11 +7,19 @@ import {
 } from '../src/index.js';
 
 describe('卡牌效果实现状态登记表 (docs/future-work.md §3.6)', () => {
-  it('官方预组 ST01~ST03 全部 42 张卡牌均登记为 EXACT，且无重复编号', () => {
-    expect(EXACT_IMPLEMENTED_CARD_LIST.length).toBe(42);
-    expect(EXACT_IMPLEMENTED_CARDS.size).toBe(42);
-    for (const prefix of ['ST01', 'ST02', 'ST03']) {
-      for (let i = 1; i <= 14; i++) {
+  it('官方预组 ST01~ST06 全部 83 张卡牌均登记为 EXACT，且无重复编号', () => {
+    expect(EXACT_IMPLEMENTED_CARD_LIST.length).toBe(83);
+    expect(EXACT_IMPLEMENTED_CARDS.size).toBe(83);
+    const packCounts: Array<[string, number]> = [
+      ['ST01', 14],
+      ['ST02', 14],
+      ['ST03', 14],
+      ['ST04', 14],
+      ['ST05', 13],
+      ['ST06', 14],
+    ];
+    for (const [prefix, count] of packCounts) {
+      for (let i = 1; i <= count; i++) {
         const num = `${prefix}-${String(i).padStart(3, '0')}`;
         expect(getCardImplementationStatus(num, '【出】：测试文本')).toBe('EXACT');
         expect(isCardApproximatelyImplemented(num, '【出】：测试文本')).toBe(false);

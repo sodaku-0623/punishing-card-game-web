@@ -4,4 +4,7 @@ export * from './interpreter.js';
 export * from './specs/st01.js';
 export * from './specs/st02.js';
 export * from './specs/st03.js';
+export * from './specs/st04.js';
+export * from './specs/st05.js';
+export * from './specs/st06.js';
 export * from './specs/starter-decks.js';

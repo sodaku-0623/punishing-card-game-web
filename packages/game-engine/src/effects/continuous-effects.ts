@@ -46,6 +46,8 @@ export interface StaticContinuousRule {
   layer: 'NON_STAT' | 'STAT';
   /** 允许生效的来源卡区域 (默认为仅战场 ['BATTLEFIELD']；如 BP04-032 炽能球在 SIGNAL_ORB，BP02-040 在所有区域) */
   sourceZones?: CardInstance['zone'][];
+  /** 来源卡类别：默认 FIELD_ROLE (战场卡位角色)；PARTNER 表示协战搭档的【协战永】 */
+  sourceKind?: 'FIELD_ROLE' | 'PARTNER';
   /** 8.9.1.d 依赖标注：若会赋予特征，将在同一层内先于依赖特征的规则适用 */
   providesTraits?: boolean;
   dependsOnTraits?: boolean;
@@ -90,6 +92,8 @@ export interface StaticContribution {
   treatedAsOrbColors?: SignalOrbColor[];
   orbValue?: number;
   treatedAsNames?: string[];
+  grantedTriggerIds?: string[];
+  canAttackPlayerOnEnterTurn?: boolean;
   appliedByPlayerId?: string;
 }
 
@@ -104,6 +108,8 @@ export interface EvaluatedCardStats {
   treatedAsNames: string[];
   treatedAsOrbColors: SignalOrbColor[];
   orbValue: number;
+  grantedTriggerIds: string[];
+  canAttackPlayerOnEnterTurn: boolean;
 }
 
 export interface EffectiveOrbInfo {
@@ -125,6 +131,8 @@ interface TimestampedNonStat {
   treatedAsOrbColors?: SignalOrbColor[];
   orbValue?: number;
   treatedAsNames?: string[];
+  grantedTriggerIds?: string[];
+  canAttackPlayerOnEnterTurn?: boolean;
 }
 
 interface TimestampedStat {
@@ -206,6 +214,8 @@ export class ContinuousEffectEngine {
         treatedAsNames: [],
         treatedAsOrbColors: [],
         orbValue: 0,
+        grantedTriggerIds: [],
+        canAttackPlayerOnEnterTurn: false,
       };
     }
 
@@ -245,6 +255,8 @@ export class ContinuousEffectEngine {
     const keywordsSet = new Set<string>(baseKeywords);
     const prohibitionsSet = new Set<ProhibitionFlag>();
     const treatedAsNamesSet = new Set<string>();
+    const grantedTriggersSet = new Set<string>();
+    let canAttackPlayerOnEnterTurn = false;
     const orbColorsSet = new Set<SignalOrbColor>();
     if (cardDef?.signalOrb) {
       orbColorsSet.add(cardDef.signalOrb as SignalOrbColor);
@@ -280,7 +292,9 @@ export class ContinuousEffectEngine {
         m.prohibitions?.length ||
         m.treatedAsOrbColors?.length ||
         m.orbValue !== undefined ||
-        m.treatedAsNames?.length
+        m.treatedAsNames?.length ||
+        m.grantedTriggerIds?.length ||
+        m.canAttackPlayerOnEnterTurn
       ) {
         nonStatOps.push({
           timestamp: m.timestamp ?? 0,
@@ -293,6 +307,8 @@ export class ContinuousEffectEngine {
           treatedAsOrbColors: m.treatedAsOrbColors,
           orbValue: m.orbValue,
           treatedAsNames: m.treatedAsNames,
+          grantedTriggerIds: m.grantedTriggerIds,
+          canAttackPlayerOnEnterTurn: m.canAttackPlayerOnEnterTurn,
         });
       }
     }
@@ -302,6 +318,10 @@ export class ContinuousEffectEngine {
       ...this.getFieldRoles(this.state.activePlayerId),
       ...this.getFieldRoles(this.state.nonActivePlayerId),
     ];
+    // 8.13 协战搭档的【协战永】来源集合
+    const allActivePartners = allFieldRoles
+      .map((r) => (r.partnerCardId ? this.state.cards[r.partnerCardId] : undefined))
+      .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
 
     const layer1StaticRules = this.staticRules
       .filter((r) => r.layer === 'NON_STAT')
@@ -312,7 +332,9 @@ export class ContinuousEffectEngine {
         ? rule.sourceZones.includes(card.zone)
           ? [card]
           : []
-        : allFieldRoles;
+        : rule.sourceKind === 'PARTNER'
+          ? allActivePartners
+          : allFieldRoles;
       for (const source of candidateSources) {
         if (this.hasLostInherentAbilities(source.instanceId)) continue;
         if (!rule.matchSource(source, baseCtx)) continue;
@@ -338,6 +360,8 @@ export class ContinuousEffectEngine {
           treatedAsOrbColors: contrib.treatedAsOrbColors,
           orbValue: contrib.orbValue,
           treatedAsNames: contrib.treatedAsNames,
+          grantedTriggerIds: contrib.grantedTriggerIds,
+          canAttackPlayerOnEnterTurn: contrib.canAttackPlayerOnEnterTurn,
         });
       }
     }
@@ -354,8 +378,9 @@ export class ContinuousEffectEngine {
     for (const op of nonStatOps) {
       if (op.loseAbilities) {
         abilitiesLost = true;
-        // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字，并解除自身固有「不能攻击」
+        // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字/赋予触发，并解除自身固有「不能攻击」
         keywordsSet.clear();
+        grantedTriggersSet.clear();
         if (hasInherentCannotAttack) {
           prohibitionsSet.delete('CANNOT_ATTACK');
         }
@@ -371,6 +396,12 @@ export class ContinuousEffectEngine {
       }
       if (op.keywords && !cannotGainAbilities) {
         for (const kw of op.keywords) keywordsSet.add(kw);
+      }
+      if (op.grantedTriggerIds && !cannotGainAbilities) {
+        for (const tid of op.grantedTriggerIds) grantedTriggersSet.add(tid);
+      }
+      if (op.canAttackPlayerOnEnterTurn) {
+        canAttackPlayerOnEnterTurn = true;
       }
       if (op.removeKeywords) {
         for (const kw of op.removeKeywords) keywordsSet.delete(kw);
@@ -425,7 +456,8 @@ export class ContinuousEffectEngine {
 
     const layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
     for (const rule of layer2StaticRules) {
-      for (const source of allFieldRoles) {
+      const candidateSources = rule.sourceKind === 'PARTNER' ? allActivePartners : allFieldRoles;
+      for (const source of candidateSources) {
         // 8.3.4 失去能力的来源卡其【永】不产生效果 (Q&A·10 BP04-001 失去永久能力时 PP 变为 0)
         const sourceLost =
           source.instanceId === card.instanceId ? abilitiesLost : this.hasLostInherentAbilities(source.instanceId);
@@ -485,11 +517,17 @@ export class ContinuousEffectEngine {
       treatedAsNames: Array.from(treatedAsNamesSet),
       treatedAsOrbColors: Array.from(orbColorsSet),
       orbValue,
+      grantedTriggerIds: Array.from(grantedTriggersSet),
+      canAttackPlayerOnEnterTurn,
     };
   }
 
   hasKeyword(cardInstanceId: string, keyword: string): boolean {
     return this.evaluateCard(cardInstanceId).keywords.includes(keyword);
+  }
+
+  hasGrantedTrigger(cardInstanceId: string, triggerId: string): boolean {
+    return this.evaluateCard(cardInstanceId).grantedTriggerIds.includes(triggerId);
   }
 
   /**

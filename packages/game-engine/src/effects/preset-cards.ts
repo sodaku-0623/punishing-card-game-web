@@ -8,13 +8,13 @@ type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 /**
- * 官方预组 ST01 (灰鸦小队)、ST02 (升格者)、ST03 (三头犬小队) 全部 42 张卡牌的效果入口。
+ * 官方预组 ST01~ST06 全部 83 张卡牌的效果入口。
  *
  * 现已全部迁移为经类型与运行时结构校验的声明式描述 (effects/dsl/specs/starter-decks.ts)，
  * 由 DeclarativeEffectInterpreter 统一解释执行，所有暂停状态均以纯 JSON 帧存于 PendingChoice.metadata 中，
  * 支持 Durable Object 快照持久化与完整恢复。
  *
- * 信号球牌 (ST0x-012~014) 的【充能自】与其他卡包通用，由 CardEffectEngine.handleChargeAutoEffect 处理。
+ * 信号球牌的【充能自】与其他卡包通用，由 CardEffectEngine.handleChargeAutoEffect 处理。
  */
 export class PresetCardEffects {
   readonly interpreter: DeclarativeEffectInterpreter;
@@ -49,6 +49,10 @@ export class PresetCardEffects {
 
   calculateHandCostDiscount(playerId: string, cardNumber: string): number {
     return this.interpreter.calculateHandCostDiscount(playerId, cardNumber);
+  }
+
+  canIgnoreAttributeCondition(playerId: string, cardNumber: string): boolean {
+    return this.interpreter.canIgnoreAttributeCondition(playerId, cardNumber);
   }
 
   playTactics(playerId: string, cardId: string, def: CardVersionData): Result {

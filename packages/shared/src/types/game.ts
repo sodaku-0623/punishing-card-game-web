@@ -105,6 +105,10 @@ export interface CardModifier {
   orbValue?: number;
   /** 「视为」效果：卡牌名称可视为指定卡名 (Q&A·4/5 BP02-040 视为《飞叶点翠》) */
   treatedAsNames?: string[];
+  /** 8.9.1.b 效果赋予的【自】能力 ID (如 ST04-001 荣光护盾赋予的阻挡攻击结束能力) */
+  grantedTriggerIds?: string[];
+  /** 出场回合允许攻击对方玩家 (如 ST05-001 比安卡·晖暮 暮【出】) */
+  canAttackPlayerOnEnterTurn?: boolean;
   /** 施加该修改器的玩家 ID (供 Q&A·9 BP04-016 区分己方与对方效果) */
   appliedByPlayerId?: string;
   untilTurn?: number;
@@ -190,7 +194,8 @@ export interface PendingTrigger {
   sourceCardNumber?: string;
   controllerPlayerId: string;
   label?: string; // 展示给玩家的触发能力说明 (用于多触发顺序选择与前端展示)
-  oncePerTurn?: boolean; // 10.1 【回合1】限制
+  oncePerTurn?: boolean; // 10.1 【回合1】限制 (按实例计数)
+  oncePerTurnByPlayer?: boolean; // 「《XXX》的该能力每回合最多发动1次」(按玩家+能力ID计数)
   triggerContext: Record<string, unknown>;
 }
 
