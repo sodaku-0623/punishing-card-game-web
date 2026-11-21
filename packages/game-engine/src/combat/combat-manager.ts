@@ -237,6 +237,17 @@ export class CombatManager {
       if (this.hasProhibition(blockerCardId, 'CANNOT_BLOCK')) {
         return { success: false, error: '该角色不能阻挡 (1.3.3)' };
       }
+      // 不可被 PP<=X 角色阻挡检查 (如 BP01-040 下方>=4张 / BP01-023)
+      const attackerEval = this.fieldMgr.evaluateRoleStats(combat.attackerCardId);
+      if (attackerEval.unblockableMaxPP !== undefined) {
+        const blockerPP = this.fieldMgr.calculateRoleEffectivePP(blockerCardId);
+        if (blockerPP <= attackerEval.unblockableMaxPP) {
+          return {
+            success: false,
+            error: `攻击角色的本次攻击不会被 PP 为 ${attackerEval.unblockableMaxPP} 及以下的角色阻挡`,
+          };
+        }
+      }
 
       blocker.isReady = false;
       combat.blockerCardId = blockerCardId;
@@ -273,14 +284,20 @@ export class CombatManager {
     if (!combat) return;
     combat.step = 'BLOCK';
     this.state.priorityPlayerId = this.state.nonActivePlayerId;
+    const attackerUnblockableMaxPP = this.fieldMgr.evaluateRoleStats(combat.attackerCardId).unblockableMaxPP;
     const canBlock = this.fieldMgr
       .getSlots(this.state.nonActivePlayerId)
-      .some(
-        (s) =>
-          s.roleCardId &&
-          this.state.cards[s.roleCardId]?.isReady &&
-          !this.hasProhibition(s.roleCardId, 'CANNOT_BLOCK')
-      );
+      .some((s) => {
+        if (!s.roleCardId || !this.state.cards[s.roleCardId]?.isReady) return false;
+        if (this.hasProhibition(s.roleCardId, 'CANNOT_BLOCK')) return false;
+        if (
+          attackerUnblockableMaxPP !== undefined &&
+          this.fieldMgr.calculateRoleEffectivePP(s.roleCardId) <= attackerUnblockableMaxPP
+        ) {
+          return false;
+        }
+        return true;
+      });
     if (!canBlock) {
       this.declareBlock(this.state.nonActivePlayerId, undefined);
     }

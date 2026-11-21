@@ -6,9 +6,10 @@ import { ST03_EFFECT_SPECS } from './st03.js';
 import { ST04_EFFECT_SPECS } from './st04.js';
 import { ST05_EFFECT_SPECS } from './st05.js';
 import { ST06_EFFECT_SPECS } from './st06.js';
+import { BP01_PART1_EFFECT_SPECS } from './bp01-part1.js';
 
 /**
- * 官方预组 ST01~ST06 全部 83 张卡牌的声明式效果描述集合
+ * 所有已完成精确声明式迁移的卡牌效果描述集合 (ST01~ST06 83 张 + BP01 第一批 47 张 = 130 张)
  */
 export const STARTER_DECK_EFFECT_SPECS: readonly CardEffectSpec[] = [
   ...ST01_EFFECT_SPECS,
@@ -17,10 +18,11 @@ export const STARTER_DECK_EFFECT_SPECS: readonly CardEffectSpec[] = [
   ...ST04_EFFECT_SPECS,
   ...ST05_EFFECT_SPECS,
   ...ST06_EFFECT_SPECS,
+  ...BP01_PART1_EFFECT_SPECS,
 ];
 
 /**
- * 经结构校验后的官方预组声明式效果索引 (启动加载时即验证，格式错误直接抛出异常)
+ * 经结构校验后的声明式效果总索引 (启动加载时即验证，格式错误直接抛出异常)
  */
 export const STARTER_DECK_SPEC_MAP: ReadonlyMap<string, CardEffectSpec> =
   validateCardEffectRegistry(STARTER_DECK_EFFECT_SPECS);

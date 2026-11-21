@@ -223,6 +223,9 @@ export class PhaseMachine {
       p.turnAbilityUsage = {};
       p.costModifiers = [];
       p.destroyedFireRoleCountThisTurn = 0;
+      p.erosionChangedThisTurn = false;
+      p.turnCardPlayedCountByName = undefined;
+      p.turnEquipmentPlayedCount = 0;
     }
 
     // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5；1.3.3 禁止送墓的暗费保留)

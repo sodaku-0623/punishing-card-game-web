@@ -55,6 +55,14 @@ export class PresetCardEffects {
     return this.interpreter.canIgnoreAttributeCondition(playerId, cardNumber);
   }
 
+  calculateFieldHandCostAdjustment(
+    playerId: string,
+    cardDef: CardVersionData,
+    isAscension: boolean
+  ): { setCost?: number; discount: number } {
+    return this.interpreter.calculateFieldHandCostAdjustment(playerId, cardDef, isAscension);
+  }
+
   playTactics(playerId: string, cardId: string, def: CardVersionData): Result {
     return this.interpreter.playTactics(playerId, cardId, def);
   }

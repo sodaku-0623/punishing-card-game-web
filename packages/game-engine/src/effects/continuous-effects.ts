@@ -46,8 +46,8 @@ export interface StaticContinuousRule {
   layer: 'NON_STAT' | 'STAT';
   /** 允许生效的来源卡区域 (默认为仅战场 ['BATTLEFIELD']；如 BP04-032 炽能球在 SIGNAL_ORB，BP02-040 在所有区域) */
   sourceZones?: CardInstance['zone'][];
-  /** 来源卡类别：默认 FIELD_ROLE (战场卡位角色)；PARTNER 表示协战搭档的【协战永】 */
-  sourceKind?: 'FIELD_ROLE' | 'PARTNER';
+  /** 来源卡类别：默认 FIELD_ROLE (战场卡位角色)；PARTNER 表示协战搭档的【协战永】；UNDERNEATH 表示角色下方牌的【永】 */
+  sourceKind?: 'FIELD_ROLE' | 'PARTNER' | 'UNDERNEATH';
   /** 8.9.1.d 依赖标注：若会赋予特征，将在同一层内先于依赖特征的规则适用 */
   providesTraits?: boolean;
   dependsOnTraits?: boolean;
@@ -94,6 +94,7 @@ export interface StaticContribution {
   treatedAsNames?: string[];
   grantedTriggerIds?: string[];
   canAttackPlayerOnEnterTurn?: boolean;
+  unblockableMaxPP?: number;
   appliedByPlayerId?: string;
 }
 
@@ -110,6 +111,7 @@ export interface EvaluatedCardStats {
   orbValue: number;
   grantedTriggerIds: string[];
   canAttackPlayerOnEnterTurn: boolean;
+  unblockableMaxPP?: number;
 }
 
 export interface EffectiveOrbInfo {
@@ -133,6 +135,7 @@ interface TimestampedNonStat {
   treatedAsNames?: string[];
   grantedTriggerIds?: string[];
   canAttackPlayerOnEnterTurn?: boolean;
+  unblockableMaxPP?: number;
 }
 
 interface TimestampedStat {
@@ -257,6 +260,7 @@ export class ContinuousEffectEngine {
     const treatedAsNamesSet = new Set<string>();
     const grantedTriggersSet = new Set<string>();
     let canAttackPlayerOnEnterTurn = false;
+    let unblockableMaxPP: number | undefined;
     const orbColorsSet = new Set<SignalOrbColor>();
     if (cardDef?.signalOrb) {
       orbColorsSet.add(cardDef.signalOrb as SignalOrbColor);
@@ -294,7 +298,8 @@ export class ContinuousEffectEngine {
         m.orbValue !== undefined ||
         m.treatedAsNames?.length ||
         m.grantedTriggerIds?.length ||
-        m.canAttackPlayerOnEnterTurn
+        m.canAttackPlayerOnEnterTurn ||
+        m.unblockableMaxPP !== undefined
       ) {
         nonStatOps.push({
           timestamp: m.timestamp ?? 0,
@@ -309,6 +314,7 @@ export class ContinuousEffectEngine {
           treatedAsNames: m.treatedAsNames,
           grantedTriggerIds: m.grantedTriggerIds,
           canAttackPlayerOnEnterTurn: m.canAttackPlayerOnEnterTurn,
+          unblockableMaxPP: m.unblockableMaxPP,
         });
       }
     }
@@ -322,6 +328,14 @@ export class ContinuousEffectEngine {
     const allActivePartners = allFieldRoles
       .map((r) => (r.partnerCardId ? this.state.cards[r.partnerCardId] : undefined))
       .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
+    // 角色下方叠置牌的【永】来源集合 (如 BP01-049/050/051 帕瓦在《七实·遥星之座》下方)
+    const allActiveUnderneath: CardInstance[] = [];
+    for (const r of allFieldRoles) {
+      for (const uid of r.underneathCardIds ?? []) {
+        const uCard = this.state.cards[uid];
+        if (uCard) allActiveUnderneath.push(uCard);
+      }
+    }
 
     const layer1StaticRules = this.staticRules
       .filter((r) => r.layer === 'NON_STAT')
@@ -334,7 +348,9 @@ export class ContinuousEffectEngine {
           : []
         : rule.sourceKind === 'PARTNER'
           ? allActivePartners
-          : allFieldRoles;
+          : rule.sourceKind === 'UNDERNEATH'
+            ? allActiveUnderneath
+            : allFieldRoles;
       for (const source of candidateSources) {
         if (this.hasLostInherentAbilities(source.instanceId)) continue;
         if (!rule.matchSource(source, baseCtx)) continue;
@@ -362,6 +378,7 @@ export class ContinuousEffectEngine {
           treatedAsNames: contrib.treatedAsNames,
           grantedTriggerIds: contrib.grantedTriggerIds,
           canAttackPlayerOnEnterTurn: contrib.canAttackPlayerOnEnterTurn,
+          unblockableMaxPP: contrib.unblockableMaxPP,
         });
       }
     }
@@ -381,6 +398,7 @@ export class ContinuousEffectEngine {
         // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字/赋予触发，并解除自身固有「不能攻击」
         keywordsSet.clear();
         grantedTriggersSet.clear();
+        unblockableMaxPP = undefined;
         if (hasInherentCannotAttack) {
           prohibitionsSet.delete('CANNOT_ATTACK');
         }
@@ -402,6 +420,10 @@ export class ContinuousEffectEngine {
       }
       if (op.canAttackPlayerOnEnterTurn) {
         canAttackPlayerOnEnterTurn = true;
+      }
+      if (op.unblockableMaxPP !== undefined) {
+        unblockableMaxPP =
+          unblockableMaxPP === undefined ? op.unblockableMaxPP : Math.max(unblockableMaxPP, op.unblockableMaxPP);
       }
       if (op.removeKeywords) {
         for (const kw of op.removeKeywords) keywordsSet.delete(kw);
@@ -456,7 +478,12 @@ export class ContinuousEffectEngine {
 
     const layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
     for (const rule of layer2StaticRules) {
-      const candidateSources = rule.sourceKind === 'PARTNER' ? allActivePartners : allFieldRoles;
+      const candidateSources =
+        rule.sourceKind === 'PARTNER'
+          ? allActivePartners
+          : rule.sourceKind === 'UNDERNEATH'
+            ? allActiveUnderneath
+            : allFieldRoles;
       for (const source of candidateSources) {
         // 8.3.4 失去能力的来源卡其【永】不产生效果 (Q&A·10 BP04-001 失去永久能力时 PP 变为 0)
         const sourceLost =
@@ -519,6 +546,7 @@ export class ContinuousEffectEngine {
       orbValue,
       grantedTriggerIds: Array.from(grantedTriggersSet),
       canAttackPlayerOnEnterTurn,
+      unblockableMaxPP,
     };
   }
 

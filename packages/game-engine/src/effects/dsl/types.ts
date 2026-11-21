@@ -21,10 +21,18 @@ export interface CardFilter {
   trait?: string;
   /** 满足列表中任意一个特征即匹配 */
   anyTraits?: string[];
+  /** 满足列表中任意一个子过滤条件即匹配 (如 BP01-046《帕瓦》或<机械教会>角色) */
+  anyFilters?: CardFilter[];
   exactName?: string;
   maxCost?: number;
   minCost?: number;
   exactCost?: number;
+  /** true 时要求卡牌费用 <= 操控玩家的明费上限 (如 BP01-073) */
+  maxCostOpenCostLimit?: boolean;
+  /** 基本 DP 上限 (如 BP01-051 要求基本 DP<=1 的《七实·遥星之座》) */
+  maxBaseDP?: number;
+  /** true 时要求为升变角色 (如 BP01-054 / BP01-055) */
+  isAscended?: boolean;
   maxEffectivePP?: number;
   minEffectivePP?: number;
   isSignalOrb?: boolean;
@@ -45,7 +53,8 @@ export type NumberExpr =
   | number
   | { kind: 'EROSION_MULT'; side: PlayerSide; multiplier: number }
   | { kind: 'ROLE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
-  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number };
+  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number }
+  | { kind: 'VAR_COUNT_MULT'; varName: string; multiplier: number };
 
 /**
  * 声明式条件表达式 (支持前置条件、静态持续效果条件、「若如此做」等分支判定)
@@ -53,8 +62,13 @@ export type NumberExpr =
 export type ConditionExpr =
   | { kind: 'HAS_ROLE'; side: PlayerSide; filter?: CardFilter; minCount?: number }
   | { kind: 'EROSION_COMPARE'; side: PlayerSide; op: CompareOp; value: number }
+  | { kind: 'EROSION_CHANGED_THIS_TURN'; side: PlayerSide }
   | { kind: 'OPEN_COST_COMPARE_OPPONENT'; op: CompareOp }
   | { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY'; parity: 'ODD' | 'EVEN' }
+  | { kind: 'SELF_UNDERNEATH_COUNT'; op: CompareOp; value: number; filter?: CardFilter }
+  | { kind: 'SELF_MATCHES_FILTER'; filter: CardFilter }
+  | { kind: 'GAME_ABILITY_UNUSED'; abilityKey: string }
+  | { kind: 'TURN_ABILITY_UNUSED'; abilityKey: string }
   | { kind: 'ZONE_COUNT'; side: PlayerSide; zone: ZoneId; filter?: CardFilter; op: CompareOp; value: number }
   | { kind: 'HAS_EMPTY_SLOT'; side: PlayerSide }
   | { kind: 'TURN_OWNER'; isSelfTurn: boolean }
@@ -73,6 +87,7 @@ export type CardTargetRef =
   | { kind: 'REST_OF_VAR'; allVar: string; excludeVar: string }
   | { kind: 'ALL_MATCHING_ROLES'; side: PlayerSide; filter?: CardFilter }
   | { kind: 'TRIGGER_ATTACKER' }
+  | { kind: 'TRIGGER_BLOCKER' }
   | { kind: 'TRIGGER_HOST' };
 
 /**
@@ -82,6 +97,7 @@ export type AbilityCost =
   | {
       kind: 'DISCARD_HAND';
       count: number;
+      filter?: CardFilter;
       optional?: boolean;
       prompt?: string;
       choiceEffectType?: string;
@@ -108,8 +124,12 @@ export type AbilityCost =
   | {
       kind: 'TAP_SELF_AND_DISCARD_HAND';
       count: number;
+      filter?: CardFilter;
       prompt?: string;
       choiceEffectType?: string;
+    }
+  | {
+      kind: 'SELF_TO_DECK_BOTTOM';
     }
   | {
       kind: 'PAY_COST';
@@ -148,7 +168,7 @@ export type EffectStep =
     }
   | {
       op: 'CHOOSE_ROLES';
-      side: PlayerSide;
+      side: PlayerSide | 'ANY';
       prompt: string;
       /** 决定出现在候选列表中的角色 */
       filter?: CardFilter;
@@ -163,7 +183,7 @@ export type EffectStep =
   | {
       op: 'CHOOSE_ZONE_CARDS';
       side: PlayerSide;
-      zone: 'HAND' | 'GRAVEYARD' | 'SIGNAL_ORB' | 'COST';
+      zone: 'HAND' | 'GRAVEYARD' | 'SIGNAL_ORB' | 'COST' | 'DECK';
       prompt: string;
       filter?: CardFilter;
       requireEmptySlot?: boolean;
@@ -179,6 +199,8 @@ export type EffectStep =
       prompt: string;
       filter?: CardFilter;
       requireEmptySlot?: boolean;
+      /** 选多张时要求所选卡牌费用合计 <= maxTotalCost (如 BP01-001 费用合计为6及以下) */
+      maxTotalCost?: number;
       /** 选多张时要求各自对应到不同特征 (如 ST03-003 最多1张<21号>和最多1张<诺克提>) */
       distinctTraits?: string[];
       distinctTraitsError?: string;
@@ -208,6 +230,16 @@ export type EffectStep =
       onPaid: EffectStep[];
     }
   | {
+      op: 'DISCARD_COST_STEP';
+      count: number;
+      filter?: CardFilter;
+      optional?: boolean;
+      prompt?: string;
+      choiceEffectType?: string;
+      savePaidToVar?: string;
+      onPaid: EffectStep[];
+    }
+  | {
       op: 'SHUFFLE_DECK';
       side?: PlayerSide;
     }
@@ -229,7 +261,10 @@ export type EffectStep =
         | 'DECK_BOTTOM'
         | 'DECK_SHUFFLE'
         | 'COST'
+        | 'UNDERNEATH'
         | 'BATTLEFIELD';
+      /** 仅 toZone === 'UNDERNEATH' 时必填：指定置入哪张战场角色下方 */
+      underneathHost?: CardTargetRef;
       isFaceUp?: boolean;
       /** 仅 toZone === 'BATTLEFIELD' 时有效：是否以横置状态出场 (如 ST05-002) */
       enterTapped?: boolean;
@@ -237,6 +272,29 @@ export type EffectStep =
       triggerEntry?: boolean;
       /** 保存实际完成移动/出场的卡牌 ID (供后续 8.6.4「若如此做」判定) */
       saveMovedToVar?: string;
+    }
+  | {
+      op: 'ASCEND_FROM_VAR';
+      /** 待升变出场的卡牌变量 (如 BP01-055 从牌组选出的升变角色) */
+      cardVar: string;
+      /** 升变目标角色变量 */
+      targetVar: string;
+      /** 可选额外置入下方的角色变量 (如 BP01-055 同步选的《帕瓦》) */
+      extraStackVar?: string;
+      shuffleDeckAfter?: boolean;
+    }
+  | {
+      op: 'DEAL_DAMAGE';
+      side: PlayerSide;
+      amount: number;
+    }
+  | {
+      op: 'MARK_GAME_ABILITY_USED';
+      abilityKey: string;
+    }
+  | {
+      op: 'MARK_TURN_ABILITY_USED';
+      abilityKey: string;
     }
   | {
       op: 'DESTROY_ROLES';
@@ -285,6 +343,7 @@ export type EffectStep =
       treatedAsNames?: string[];
       grantedTriggerIds?: string[];
       canAttackPlayerOnEnterTurn?: boolean;
+      unblockableMaxPP?: number;
       duration: ModifierDuration;
       /** 覆盖来源卡号 (默认为当前能力所属卡牌编号) */
       source?: string;
@@ -385,10 +444,10 @@ export interface DeclarativeTriggerSpec {
  */
 export interface DeclarativeStaticEffectSpec {
   id: string;
-  scope: 'SELF' | 'ALL_FRIENDLY_ROLES' | 'PARTNER_HOST';
+  scope: 'SELF' | 'ALL_FRIENDLY_ROLES' | 'PARTNER_HOST' | 'UNDERNEATH_HOST';
   /** scope === 'SELF' 时限制自身状态 (如 ST03-004 自身须横置) */
   selfFilter?: CardFilter;
-  /** scope === 'ALL_FRIENDLY_ROLES' 或 'PARTNER_HOST' 时筛选被增益的我方角色 */
+  /** scope === 'ALL_FRIENDLY_ROLES' / 'PARTNER_HOST' / 'UNDERNEATH_HOST' 时筛选被增益的我方角色 */
   targetFilter?: CardFilter;
   condition?: ConditionExpr;
   pp?: NumberExpr;
@@ -403,6 +462,7 @@ export interface DeclarativeStaticEffectSpec {
   treatedAsOrbColors?: SignalOrbColor[];
   orbValue?: number;
   treatedAsNames?: string[];
+  unblockableMaxPP?: number;
   /** 是否依赖特征层 (8.9.1.d) */
   dependsOnTraits?: boolean;
 }
@@ -434,6 +494,9 @@ export interface CardEffectSpec {
   /** 【起】起动能力 */
   activate?: {
     oncePerTurn?: boolean;
+    /** 发动前置条件 (不满足时拒绝发动并报错，如 BP01-070 需3张<三头犬小队>、帕瓦需自身竖直) */
+    condition?: ConditionExpr;
+    conditionError?: string;
     cost?: AbilityCost;
     steps: EffectStep[];
   };
@@ -441,6 +504,14 @@ export interface CardEffectSpec {
   triggers?: DeclarativeTriggerSpec[];
   /** 【永】持续效果列表 */
   staticEffects?: DeclarativeStaticEffectSpec[];
+  /** 【永】该角色在场时对我方手牌使用的费用修正 (如 BP01-077 首张《荣光护盾》变1费、BP01-015 首张装备-1费) */
+  fieldCardCostRule?: {
+    targetName?: string;
+    cardType?: CardType;
+    firstPerTurnOnly?: boolean;
+    setCost?: number;
+    discount?: number;
+  };
   /** 【永】手牌静态费用减免 (8.6.2.c，如 ST03-011 按角色计数减费、ST05-009 晖形态固定减费) */
   handCostDiscount?:
     | {

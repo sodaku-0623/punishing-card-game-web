@@ -712,6 +712,7 @@ export class BattlefieldManager {
         orbValue: 0,
         grantedTriggerIds: [],
         canAttackPlayerOnEnterTurn: false,
+        unblockableMaxPP: undefined,
       };
     }
     const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
@@ -742,6 +743,7 @@ export class BattlefieldManager {
       orbValue: 0,
       grantedTriggerIds: [],
       canAttackPlayerOnEnterTurn: false,
+      unblockableMaxPP: undefined,
     };
   }
 
