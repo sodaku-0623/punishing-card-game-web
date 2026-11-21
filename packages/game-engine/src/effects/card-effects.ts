@@ -902,6 +902,7 @@ export class CardEffectEngine {
           const opp = this.ctx.state.players[oppId];
           if (player && opp && player.erosionCount >= opp.erosionCount && player.erosionCount > 0) {
             player.erosionCount -= 1;
+            player.erosionChangedThisTurn = true;
           }
         } else if (option === 'opt_dp_plus_1') {
           const friendlyRoles = this.getFriendlyRoles(playerId);
@@ -1735,7 +1736,12 @@ export class CardEffectEngine {
           return { success: false, error: '装备对象必须是自身战场上未装备装备牌的角色 (4.18.3)' };
         }
         const equipDef = this.getCardDef(equipCard);
-        if (equipDef) this.handleEquipmentBuff(roleId, equipDef);
+        if (equipDef) {
+          this.handleEquipmentBuff(roleId, equipDef);
+          if (this.presets.handlesEntry(equipDef.cardNumber)) {
+            this.presets.enter(playerId, equipCard.instanceId, equipDef);
+          }
+        }
         break;
       }
 

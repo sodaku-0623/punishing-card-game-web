@@ -220,7 +220,7 @@ describe('PGR UI Design System Components', () => {
     expect(modTags.some((t) => t.includes('PP=70') && t.includes('至离场'))).toBe(true);
   });
 
-  it('shows 近似效果 badge on unmigrated booster cards and hides it on exact ST01~ST03 starter cards', () => {
+  it('shows 近似效果 badge on unmigrated booster cards and hides it on exact migrated cards', () => {
     const exactHtml = renderToString(
       <CardDetailPanel
         card={{
@@ -239,7 +239,7 @@ describe('PGR UI Design System Components', () => {
     expect(exactHtml).toContain('ST01-001');
     expect(exactHtml).not.toContain('近似效果');
 
-    const approxHtml = renderToString(
+    const exactBp01Html = renderToString(
       <CardDetailPanel
         card={{
           cardNumber: 'BP01-001',
@@ -254,7 +254,25 @@ describe('PGR UI Design System Components', () => {
         }}
       />
     );
-    expect(approxHtml).toContain('BP01-001');
+    expect(exactBp01Html).toContain('BP01-001');
+    expect(exactBp01Html).not.toContain('近似效果');
+
+    const approxHtml = renderToString(
+      <CardDetailPanel
+        card={{
+          cardNumber: 'BP01-014',
+          name: '未迁移补充包卡',
+          cardType: 'ROLE',
+          attribute: 'FIRE',
+          cost: 4,
+          basePP: 4000,
+          baseDP: 1,
+          traits: ['工程部队'],
+          rulesText: '【自】测试未迁移补充包卡牌。',
+        }}
+      />
+    );
+    expect(approxHtml).toContain('BP01-014');
     expect(approxHtml).toContain('近似效果');
   });
 

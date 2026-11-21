@@ -447,6 +447,7 @@ export class ZoneManager {
 
     const oldErosion = player.erosionCount;
     player.erosionCount += 1;
+    player.erosionChangedThisTurn = true;
     this.events.push({
       type: 'DECK_REFRESHED',
       playerId,
@@ -569,6 +570,7 @@ export class ZoneManager {
 
     const oldErosion = player.erosionCount;
     player.erosionCount += 1;
+    player.erosionChangedThisTurn = true;
     this.events.push({
       type: 'EROSION_INCREASED',
       playerId: defenderPlayerId,

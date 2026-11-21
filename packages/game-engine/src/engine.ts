@@ -633,8 +633,16 @@ export class GameEngine {
       discount += cerberusRoleCount;
     }
 
-    const costToPay = Math.max(0, baseCost - discount);
-    return { costToPay, appliedModifiers };
+      // 战场卡牌【永】带来的手牌费用覆写/减免 (如 BP01-077 首张《荣光护盾》变1费、BP01-015 首张装备-1费)
+      const fieldAdj = this.effectEngine.presets.calculateFieldHandCostAdjustment(playerId, cardDef, isAscensionPlay);
+      let effectiveBase = baseCost;
+      if (fieldAdj.setCost !== undefined) {
+        effectiveBase = fieldAdj.setCost;
+      }
+      discount += fieldAdj.discount;
+
+      const costToPay = Math.max(0, effectiveBase - discount);
+      return { costToPay, appliedModifiers };
   }
 
   /**
@@ -700,6 +708,7 @@ export class GameEngine {
 
     // 8.11 升变：检查升变对象、限制条件 (8.11.3.b~d)，升变代价在下方与费用一并支付 (8.11.3.e)
     let extraStackRoleCardId: string | undefined;
+    let bp01001GraveyardShuffleIds: string[] | undefined;
     if (action.isAscension) {
       const ascensionCheck = this.validateAscensionPlan(
         action.playerId,
@@ -710,6 +719,7 @@ export class GameEngine {
       );
       if (ascensionCheck.error) return { success: false, error: ascensionCheck.error };
       extraStackRoleCardId = ascensionCheck.extraStackRoleCardId;
+      bp01001GraveyardShuffleIds = ascensionCheck.bp01001GraveyardShuffleIds;
     }
 
     // 8.6.2.c 支付费用 (计算动态费用减免与固有静态减费，2.5 支持自选明费/暗费)
@@ -722,6 +732,21 @@ export class GameEngine {
     if (!this.payCost(action.playerId, costToPay, action.costCardInstanceIds)) {
       const avail = player.availableOpenCostCount + player.hiddenCostCount;
       return { success: false, error: `费用不足或自选支付无效，需要 ${costToPay} 费，当前可用 ${avail}` };
+    }
+
+    // BP01-001 露西亚·鸦羽【永】：将墓地 10 张<灰鸦小队>加入牌组并洗切以无视「费用上限8及以上」升变条件
+    if (bp01001GraveyardShuffleIds && bp01001GraveyardShuffleIds.length >= 10) {
+      for (const gid of bp01001GraveyardShuffleIds) {
+        this.zoneMgr.moveCard(gid, 'DECK', { isFaceUp: false });
+      }
+      this.zoneMgr.shuffleDeck(action.playerId);
+    }
+
+    // 记录本回合卡牌使用计数 (供 BP01-077 首张《荣光护盾》变1费、BP01-015 首张装备-1费等判断)
+    player.turnCardPlayedCountByName = player.turnCardPlayedCountByName ?? {};
+    player.turnCardPlayedCountByName[cardDef.name] = (player.turnCardPlayedCountByName[cardDef.name] ?? 0) + 1;
+    if (cardDef.cardType === CardType.EQUIPMENT) {
+      player.turnEquipmentPlayedCount = (player.turnEquipmentPlayedCount ?? 0) + 1;
     }
 
     // 扣减已适用的修改器使用次数 (如“下1张”)
@@ -776,12 +801,18 @@ export class GameEngine {
           return { success: false, error: '装备对象必须是自身战场上未装备装备牌的角色 (4.18.3)' };
         }
         this.effectEngine.handleEquipmentBuff(action.targetEquipRoleId, cardDef);
+        if (this.effectEngine.presets.handlesEntry(cardDef.cardNumber)) {
+          this.effectEngine.presets.enter(action.playerId, action.cardInstanceId, cardDef);
+        }
       } else if (action.targetSlotIndex !== undefined || roleCards.length === 0) {
         // 8.6.2.e.2 以正面竖直状态放置到自身战场空余卡位
         const slotIndex = action.targetSlotIndex ?? this.fieldMgr.findFirstEmptySlot(action.playerId);
         if (slotIndex === undefined) return { success: false, error: '战场没有空余卡位 (8.6.2.b.3)' };
         if (!this.fieldMgr.playStandaloneEquipment(action.playerId, action.cardInstanceId, slotIndex)) {
           return { success: false, error: '所选卡位已被占用 (8.6.2.b.3)' };
+        }
+        if (this.effectEngine.presets.handlesEntry(cardDef.cardNumber)) {
+          this.effectEngine.presets.enter(action.playerId, action.cardInstanceId, cardDef);
         }
       } else {
         // 未指定放置方式：移动到处理区，由玩家选择要装备的角色
@@ -836,7 +867,7 @@ export class GameEngine {
     targetCardId: string | undefined,
     targetSlotIndex?: number,
     extraAscensionCostCardId?: string
-  ): { error?: string; extraStackRoleCardId?: string } {
+  ): { error?: string; extraStackRoleCardId?: string; bp01001GraveyardShuffleIds?: string[] } {
     const config = cardDef.ascensionConfig;
     if (!config) return { error: `【${cardDef.name}】没有升变机制 (8.11.1.a)` };
     if (config.unsupportedReason) return { error: `【${cardDef.name}】的升变机制${config.unsupportedReason}` };
@@ -906,10 +937,22 @@ export class GameEngine {
       return { error: '升变对象必须为竖直状态 (8.11.2.a.1)' };
     }
 
-    // 8.11.2.a.2 / 8.11.3.d 限制条件
+    // 8.11.2.a.2 / 8.11.3.d 限制条件 (含 BP01-001 露西亚·鸦羽：墓地 10 张<灰鸦小队>洗回牌组可无视「费用上限8及以上」)
+    let bp01001GraveyardShuffleIds: string[] | undefined;
     for (const condition of config.restrictionFilter?.conditions ?? []) {
       const error = this.checkAscensionRestriction(playerId, condition);
-      if (error) return { error };
+      if (error) {
+        if (cardDef.cardNumber === 'BP01-001' && condition.kind === 'MIN_COST_LIMIT') {
+          const grayRavensInGy = this.zoneMgr
+            .getCardsInZone(playerId, 'GRAVEYARD')
+            .filter((c) => this.continuousEffects.hasTrait(c.instanceId, '灰鸦小队'));
+          if (grayRavensInGy.length >= 10) {
+            bp01001GraveyardShuffleIds = grayRavensInGy.slice(0, 10).map((c) => c.instanceId);
+            continue;
+          }
+        }
+        return { error };
+      }
     }
 
     // 8.11.3.c 额外升变代价 (如 BP01-040「将我方战场1张《帕瓦》放置到该牌下方」)
@@ -939,7 +982,7 @@ export class GameEngine {
       }
     }
 
-    return { extraStackRoleCardId };
+    return { extraStackRoleCardId, bp01001GraveyardShuffleIds };
   }
 
   private checkAscensionRestriction(playerId: string, condition: AscensionRestriction): string | undefined {

@@ -7,9 +7,9 @@ import {
 } from '../src/index.js';
 
 describe('卡牌效果实现状态登记表 (docs/future-work.md §3.6)', () => {
-  it('官方预组 ST01~ST06 全部 83 张卡牌均登记为 EXACT，且无重复编号', () => {
-    expect(EXACT_IMPLEMENTED_CARD_LIST.length).toBe(83);
-    expect(EXACT_IMPLEMENTED_CARDS.size).toBe(83);
+  it('官方预组 ST01~ST06 (83 张) 与 BP01 第一批 (47 张) 共 130 张卡牌均登记为 EXACT，且无重复编号', () => {
+    expect(EXACT_IMPLEMENTED_CARD_LIST.length).toBe(130);
+    expect(EXACT_IMPLEMENTED_CARDS.size).toBe(130);
     const packCounts: Array<[string, number]> = [
       ['ST01', 14],
       ['ST02', 14],
@@ -25,6 +25,9 @@ describe('卡牌效果实现状态登记表 (docs/future-work.md §3.6)', () => 
         expect(isCardApproximatelyImplemented(num, '【出】：测试文本')).toBe(false);
       }
     }
+    expect(getCardImplementationStatus('BP01-001', '【出】消除2同色信号球：…')).toBe('EXACT');
+    expect(getCardImplementationStatus('BP01-040', '【永】：…')).toBe('EXACT');
+    expect(getCardImplementationStatus('BP01-086', '【充能自】：…')).toBe('EXACT');
   });
 
   it('2.7.3 异画同编号 (末尾小写字母如 ST01-001a) 共享精确实现判定', () => {
@@ -37,8 +40,8 @@ describe('卡牌效果实现状态登记表 (docs/future-work.md §3.6)', () => 
     expect(getCardImplementationStatus('BP01-099', '   ')).toBe('VANILLA');
     expect(isCardApproximatelyImplemented('BP01-099', '')).toBe(false);
 
-    expect(getCardImplementationStatus('BP01-001', '【出】消除2同色信号球：…')).toBe('APPROXIMATE');
-    expect(isCardApproximatelyImplemented('BP01-001', '【出】消除2同色信号球：…')).toBe(true);
+    expect(getCardImplementationStatus('BP01-014', '【起】【回合1】：…')).toBe('APPROXIMATE');
+    expect(isCardApproximatelyImplemented('BP01-014', '【起】【回合1】：…')).toBe(true);
     expect(isCardApproximatelyImplemented('BP04-001', '【永】：该牌下方的牌每有1张…')).toBe(true);
   });
 });

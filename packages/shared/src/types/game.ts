@@ -109,6 +109,8 @@ export interface CardModifier {
   grantedTriggerIds?: string[];
   /** 出场回合允许攻击对方玩家 (如 ST05-001 比安卡·晖暮 暮【出】) */
   canAttackPlayerOnEnterTurn?: boolean;
+  /** 该牌的攻击不会被 PP 为此值及以下的角色阻挡 (如 BP01-040 下方>=4张 / BP01-023) */
+  unblockableMaxPP?: number;
   /** 施加该修改器的玩家 ID (供 Q&A·9 BP04-016 区分己方与对方效果) */
   appliedByPlayerId?: string;
   untilTurn?: number;
@@ -257,6 +259,12 @@ export interface PlayerState {
   costModifiers?: CostModifier[]; // 动态费用修改器 (如卡牌【起】动能力减费)
   /** 该回合中被破坏的我方火属性角色数量 (供 BP04-028 渡边·尘铭瞬时能力条件判定) */
   destroyedFireRoleCountThisTurn?: number;
+  /** 该回合中我方侵蚀计数是否发生过变化 (供 BP01-011 冕饵等条件判定) */
+  erosionChangedThisTurn?: boolean;
+  /** 本回合按卡名统计已使用过的卡牌次数 (供 BP01-077 万事·明觉首张《荣光护盾》变1费等) */
+  turnCardPlayedCountByName?: Record<string, number>;
+  /** 本回合已使用过的装备牌次数 (供 BP01-015 首张装备-1费等) */
+  turnEquipmentPlayedCount?: number;
 }
 
 export interface CostModifier {

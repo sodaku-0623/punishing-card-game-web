@@ -27,12 +27,19 @@ type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 type PendingDslAction =
-  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
+  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; savePaidToVar?: string }
   | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; savePaidToVar?: string }
   | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
   | { kind: 'CONFIRM_YES_NO'; onYes: EffectStep[]; onNo?: EffectStep[] }
   | { kind: 'CHOOSE_MODE'; modes: { id: string; steps: EffectStep[] }[] }
-  | { kind: 'SAVE_CHOICE'; saveToVar: string; distinctTraits?: string[]; distinctTraitsError?: string }
+  | {
+      kind: 'SAVE_CHOICE';
+      saveToVar: string;
+      distinctTraits?: string[];
+      distinctTraitsError?: string;
+      maxTotalCost?: number;
+      requireEmptySlotCount?: boolean;
+    }
   | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' };
 
 /**
@@ -113,6 +120,44 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
+   * 【永】：计算我方战场角色的持续能力对手牌卡牌费用的覆写与减免 (如 BP01-077 首张《荣光护盾》变1费、BP01-015 首张装备-1费)
+   */
+  calculateFieldHandCostAdjustment(
+    playerId: string,
+    cardDef: CardVersionData,
+    isAscension: boolean
+  ): { setCost?: number; discount: number } {
+    if (isAscension) return { discount: 0 };
+    const player = this.ctx.state.players[playerId];
+    if (!player) return { discount: 0 };
+    let setCost: number | undefined;
+    let discount = 0;
+
+    for (const role of this.roles(playerId)) {
+      if (this.ctx.continuousEffects?.hasLostInherentAbilities(role.instanceId)) continue;
+      const spec = this.registry.get(role.cardNumber);
+      const rule = spec?.fieldCardCostRule;
+      if (!rule) continue;
+      if (rule.cardType && cardDef.cardType !== rule.cardType) continue;
+      if (rule.targetName && cardDef.name !== rule.targetName) continue;
+      if (rule.firstPerTurnOnly) {
+        if (rule.targetName) {
+          if ((player.turnCardPlayedCountByName?.[rule.targetName] ?? 0) > 0) continue;
+        } else if (rule.cardType === 'EQUIPMENT') {
+          if ((player.turnEquipmentPlayedCount ?? 0) > 0) continue;
+        }
+      }
+      if (rule.setCost !== undefined) {
+        setCost = setCost === undefined ? rule.setCost : Math.min(setCost, rule.setCost);
+      }
+      if (rule.discount !== undefined) {
+        discount += rule.discount;
+      }
+    }
+    return { setCost, discount };
+  }
+
+  /**
    * 执行声明式战术牌效果
    */
   playTactics(playerId: string, cardId: string, def: CardVersionData): Result {
@@ -156,6 +201,9 @@ export class DeclarativeEffectInterpreter {
     const player = this.ctx.state.players[playerId]!;
     if (spec.activate.oncePerTurn && (player.turnAbilityUsage[cardId] ?? 0) > 0) {
       return { success: false, error: '该能力本回合已发动过 (【回合1】)' };
+    }
+    if (spec.activate.condition && !this.evalCondition(spec.activate.condition, playerId, cardId, {})) {
+      return { success: false, error: spec.activate.conditionError ?? '不满足该起动能力的发动条件' };
     }
 
     return this.executeWithCost(
@@ -403,8 +451,10 @@ export class DeclarativeEffectInterpreter {
             }
             const initialVars: Record<string, string[]> = {};
             const attackerId = pending.triggerContext.attackerCardId as string | undefined;
+            const blockerId = pending.triggerContext.blockerCardId as string | undefined;
             const hostId = pending.triggerContext.hostCardId as string | undefined;
             if (attackerId) initialVars.__triggerAttacker = [attackerId];
+            if (blockerId) initialVars.__triggerBlocker = [blockerId];
             if (hostId) initialVars.__triggerHost = [hostId];
             this.executeWithCost(
               spec.cardNumber,
@@ -433,7 +483,8 @@ export class DeclarativeEffectInterpreter {
             eff.prohibitions?.length ||
             eff.treatedAsOrbColors?.length ||
             eff.orbValue !== undefined ||
-            eff.treatedAsNames?.length
+            eff.treatedAsNames?.length ||
+            eff.unblockableMaxPP !== undefined
         );
         const hasStat =
           eff.pp !== undefined ||
@@ -454,6 +505,9 @@ export class DeclarativeEffectInterpreter {
           } else if (eff.scope === 'PARTNER_HOST') {
             if (source.partnerOfCardId !== target.instanceId) return false;
             if (eff.targetFilter && !this.matchesFilterSafe(target, eff.targetFilter, ctx.hasCardTrait)) return false;
+          } else if (eff.scope === 'UNDERNEATH_HOST') {
+            if (!(target.underneathCardIds ?? []).includes(source.instanceId)) return false;
+            if (eff.targetFilter && !this.matchesFilterSafe(target, eff.targetFilter, ctx.hasCardTrait)) return false;
           } else {
             if (source.controllerPlayerId !== target.controllerPlayerId) return false;
             if (eff.targetFilter && !this.matchesFilterSafe(target, eff.targetFilter, ctx.hasCardTrait)) return false;
@@ -463,6 +517,7 @@ export class DeclarativeEffectInterpreter {
             !this.evalStaticCondition(
               eff.condition,
               source.controllerPlayerId,
+              source.instanceId,
               ctx.state,
               ctx.getCardsInZone,
               ctx.getFieldRoles,
@@ -474,7 +529,12 @@ export class DeclarativeEffectInterpreter {
           return true;
         };
 
-        const sourceKind = eff.scope === 'PARTNER_HOST' ? ('PARTNER' as const) : ('FIELD_ROLE' as const);
+        const sourceKind =
+          eff.scope === 'PARTNER_HOST'
+            ? ('PARTNER' as const)
+            : eff.scope === 'UNDERNEATH_HOST'
+              ? ('UNDERNEATH' as const)
+              : ('FIELD_ROLE' as const);
 
         if (hasNonStat) {
           continuousEffects.registerStaticRule({
@@ -493,6 +553,7 @@ export class DeclarativeEffectInterpreter {
                 ...(eff.treatedAsOrbColors ? { treatedAsOrbColors: eff.treatedAsOrbColors } : {}),
                 ...(eff.orbValue !== undefined ? { orbValue: eff.orbValue } : {}),
                 ...(eff.treatedAsNames ? { treatedAsNames: eff.treatedAsNames } : {}),
+                ...(eff.unblockableMaxPP !== undefined ? { unblockableMaxPP: eff.unblockableMaxPP } : {}),
               };
             },
           });
@@ -556,12 +617,18 @@ export class DeclarativeEffectInterpreter {
     switch (pending.kind) {
       case 'COST_DISCARD': {
         if (selected.length === 0) {
-          if (pending.optional) return { success: true };
+          if (pending.optional) {
+            if (remaining.length > 0) {
+              this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            }
+            return { success: true };
+          }
           return { success: false, error: '必须支付丢弃手牌代价' };
         }
         for (const id of selected) {
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
         }
+        if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...selected];
         if (pending.markUsed) this.markUsed(playerId, sourceCardInstanceId);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
         return { success: true };
@@ -618,6 +685,30 @@ export class DeclarativeEffectInterpreter {
       }
 
       case 'SAVE_CHOICE': {
+        if (pending.requireEmptySlotCount && selected.length > this.emptySlotCount(playerId)) {
+          return {
+            success: false,
+            error: `战场空余卡位不足，最多只能出场 ${this.emptySlotCount(playerId)} 张角色`,
+          };
+        }
+        if (pending.maxTotalCost !== undefined && selected.length > 0) {
+          let totalCost = 0;
+          for (const id of selected) {
+            const card = this.ctx.state.cards[id];
+            const def = card ? this.def(card) : undefined;
+            if (!def) continue;
+            // 支持牌组中费用减免 (如 BP01-002 露西亚·鸦羽：若场上有<里>和<丽芙>手牌和牌组费用-3)
+            const discount =
+              def.cardNumber === 'BP01-002' ? this.calculateHandCostDiscount(playerId, def.cardNumber) : 0;
+            totalCost += Math.max(0, def.cost - discount);
+          }
+          if (totalCost > pending.maxTotalCost) {
+            return {
+              success: false,
+              error: `所选卡牌费用合计 (${totalCost}) 超过了上限 ${pending.maxTotalCost}`,
+            };
+          }
+        }
         if (pending.distinctTraits && selected.length > 1) {
           const cards = selected.map((id) => this.ctx.state.cards[id]!).filter(Boolean);
           if (!this.canAssignDistinctTraits(cards, pending.distinctTraits)) {
@@ -684,9 +775,11 @@ export class DeclarativeEffectInterpreter {
         if (!card || !card.isReady) {
           return { success: false, error: '该牌已横置，无法支付「横置该牌」的代价' };
         }
-        const hand = this.zone(playerId, 'HAND');
+        const hand = this.zone(playerId, 'HAND').filter(
+          (c) => !cost.filter || this.matchesFilter(c, cost.filter, sourceId)
+        );
         if (hand.length < cost.count) {
-          return { success: false, error: `手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)` };
+          return { success: false, error: `符合条件的手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)` };
         }
         card.isReady = false;
         const effectType = cost.choiceEffectType ?? 'PRESET_DISCARD_COST';
@@ -715,6 +808,17 @@ export class DeclarativeEffectInterpreter {
         return { success: true };
       }
 
+      case 'SELF_TO_DECK_BOTTOM': {
+        const card = this.ctx.state.cards[sourceId];
+        if (!card || card.zone !== 'BATTLEFIELD') {
+          return { success: false, error: '该牌不在战场，无法支付「放置到牌组底」的代价' };
+        }
+        this.ctx.zoneMgr.moveCardToBottomOfDeck(sourceId);
+        if (markUsed) this.markUsed(playerId, sourceId);
+        this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        return { success: true };
+      }
+
       case 'PAY_COST': {
         if (!this.ctx.payCost(playerId, cost.amount)) {
           return { success: false, error: `费用不足，需要支付 ${cost.amount} 费` };
@@ -725,12 +829,14 @@ export class DeclarativeEffectInterpreter {
       }
 
       case 'DISCARD_HAND': {
-        const hand = this.zone(playerId, 'HAND');
+        const hand = this.zone(playerId, 'HAND').filter(
+          (c) => !cost.filter || this.matchesFilter(c, cost.filter, sourceId)
+        );
         const optional = Boolean(cost.optional);
         if (hand.length < cost.count) {
           return optional
             ? { success: true }
-            : { success: false, error: `手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)` };
+            : { success: false, error: `符合条件的手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)` };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_DISCARD_COST';
         const promptBase = cost.prompt ?? `请选择 ${cost.count} 张手牌丢弃作为代价`;
@@ -910,10 +1016,11 @@ export class DeclarativeEffectInterpreter {
         }
 
         case 'CHOOSE_ROLES': {
-          const targetPlayer = this.resolveSide(playerId, step.side);
-          const candidates = this.roles(targetPlayer).filter((r) =>
-            !step.filter || this.matchesFilter(r, step.filter, sourceId)
-          );
+          const allRoles =
+            step.side === 'ANY'
+              ? [...this.roles(playerId), ...this.roles(this.resolveSide(playerId, 'OPPONENT'))]
+              : this.roles(this.resolveSide(playerId, step.side));
+          const candidates = allRoles.filter((r) => !step.filter || this.matchesFilter(r, step.filter, sourceId));
           const isEligible = (c: CardInstance) =>
             !step.eligibilityFilter || this.matchesFilter(c, step.eligibilityFilter, sourceId);
           const eligibleCount = candidates.filter(isEligible).length;
@@ -1003,8 +1110,9 @@ export class DeclarativeEffectInterpreter {
             vars[step.saveToVar] = [];
             break;
           }
-          const max = Math.min(step.max ?? 1, eligibleCount);
-          const min = Math.min(step.min ?? 1, eligibleCount);
+          const slotCap = step.requireEmptySlot ? this.emptySlotCount(playerId) : eligibleCount;
+          const max = Math.min(step.max ?? 1, eligibleCount, slotCap);
+          const min = Math.min(step.min ?? 1, max);
           const effectType = step.choiceEffectType ?? `DSL_CHOOSE_VAR_${cardNumber}`;
           const prompt = this.formatPrompt(step.prompt, playerId);
           this.enqueueDslChoice(
@@ -1035,6 +1143,8 @@ export class DeclarativeEffectInterpreter {
                 saveToVar: step.saveToVar,
                 distinctTraits: step.distinctTraits,
                 distinctTraitsError: step.distinctTraitsError,
+                maxTotalCost: step.maxTotalCost,
+                requireEmptySlotCount: Boolean(step.requireEmptySlot && (step.max ?? 1) > 1),
               },
             },
             { revealed: ids }
@@ -1122,6 +1232,45 @@ export class DeclarativeEffectInterpreter {
           return;
         }
 
+        case 'DISCARD_COST_STEP': {
+          const hand = this.zone(playerId, 'HAND').filter(
+            (c) => !step.filter || this.matchesFilter(c, step.filter, sourceId)
+          );
+          const optional = Boolean(step.optional);
+          if (hand.length < step.count) {
+            break;
+          }
+          const effectType = step.choiceEffectType ?? `DSL_DISCARD_COST_${cardNumber}`;
+          const promptBase = step.prompt ?? `请选择 ${step.count} 张手牌丢弃作为代价`;
+          this.enqueueDslChoice(
+            {
+              id: this.choiceId('step-discard-cost'),
+              playerId,
+              choiceType: 'SELECT_CARDS',
+              prompt: optional ? `${promptBase} (不选择则不发动)` : promptBase,
+              options: hand.map((c) => this.effects.createGeneralCardChoiceOption(c)),
+              effectType,
+              sourceCardInstanceId: sourceId,
+              minSelections: optional ? 0 : step.count,
+              maxSelections: step.count,
+            },
+            {
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars,
+              remainingSteps: queue,
+              pendingAction: {
+                kind: 'COST_DISCARD',
+                onPaid: [...step.onPaid],
+                optional,
+                savePaidToVar: step.savePaidToVar,
+              },
+            }
+          );
+          return;
+        }
+
         case 'SHUFFLE_DECK': {
           const targetPlayer = this.resolveSide(playerId, step.side ?? 'SELF');
           this.ctx.zoneMgr.shuffleDeck(targetPlayer);
@@ -1190,6 +1339,26 @@ export class DeclarativeEffectInterpreter {
               this.ctx.zoneMgr.moveCard(id, 'COST', { isFaceUp: step.isFaceUp ?? false, isReady: true });
               this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
               moved.push(id);
+            } else if (step.toZone === 'UNDERNEATH') {
+              if (!step.underneathHost) continue;
+              const hostId = this.resolveTargetIds(step.underneathHost, playerId, sourceId, vars)[0];
+              const host = hostId ? this.ctx.state.cards[hostId] : undefined;
+              if (!host || host.zone !== 'BATTLEFIELD' || host.instanceId === id) continue;
+              // 若目标牌原本在战场占位，先清空其原卡位占位 (不视为离场破坏)
+              if (card.zone === 'BATTLEFIELD') {
+                for (const s of this.ctx.fieldMgr.getSlots(card.controllerPlayerId)) {
+                  if (s.roleCardId === id) s.roleCardId = undefined;
+                }
+                card.slotIndex = undefined;
+              } else {
+                this.ctx.zoneMgr.moveCard(id, 'BATTLEFIELD', { isFaceUp: true, isReady: true });
+              }
+              card.isFaceUp = true;
+              card.slotIndex = undefined;
+              if (!host.underneathCardIds.includes(id)) {
+                host.underneathCardIds.push(id);
+              }
+              moved.push(id);
             } else {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
               this.ctx.zoneMgr.moveCard(id, step.toZone, { isFaceUp: step.isFaceUp ?? true });
@@ -1200,6 +1369,48 @@ export class DeclarativeEffectInterpreter {
             this.ctx.zoneMgr.shuffleDeck(ownerId);
           }
           if (step.saveMovedToVar) vars[step.saveMovedToVar] = moved;
+          break;
+        }
+
+        case 'ASCEND_FROM_VAR': {
+          const cardId = (vars[step.cardVar] ?? [])[0];
+          const targetId = (vars[step.targetVar] ?? [])[0];
+          const extraId = step.extraStackVar ? (vars[step.extraStackVar] ?? [])[0] : undefined;
+          if (cardId && targetId) {
+            const ok = this.ctx.fieldMgr.playAscensionCard(playerId, cardId, targetId, {
+              extraStackRoleCardId: extraId,
+            });
+            if (ok) {
+              const ascDef = this.def(this.ctx.state.cards[cardId]!);
+              if (ascDef) this.effects.handleRoleEntryEffect(playerId, cardId, ascDef);
+            }
+          }
+          if (step.shuffleDeckAfter) {
+            this.ctx.zoneMgr.shuffleDeck(playerId);
+          }
+          break;
+        }
+
+        case 'DEAL_DAMAGE': {
+          const targetPlayer = this.resolveSide(playerId, step.side);
+          this.ctx.zoneMgr.applyDamageToPlayer(targetPlayer, step.amount);
+          break;
+        }
+
+        case 'MARK_GAME_ABILITY_USED': {
+          const player = this.ctx.state.players[playerId];
+          if (player) {
+            player.gameAbilityUsage[step.abilityKey] = (player.gameAbilityUsage[step.abilityKey] ?? 0) + 1;
+          }
+          break;
+        }
+
+        case 'MARK_TURN_ABILITY_USED': {
+          const player = this.ctx.state.players[playerId];
+          if (player) {
+            const key = `${sourceId}:${step.abilityKey}`;
+            player.turnAbilityUsage[key] = (player.turnAbilityUsage[key] ?? 0) + 1;
+          }
           break;
         }
 
@@ -1285,12 +1496,12 @@ export class DeclarativeEffectInterpreter {
             if (!card) continue;
             if (step.target.kind === 'SELF' && !this.ctx.fieldMgr.isSlotRole(playerId, id)) continue;
             const mod: CardModifier = {
-              ...(step.pp !== undefined ? { pp: this.evalNumberExpr(step.pp, playerId, sourceId) } : {}),
-              ...(step.dp !== undefined ? { dp: this.evalNumberExpr(step.dp, playerId, sourceId) } : {}),
-              ...(step.setPP !== undefined ? { setPP: this.evalNumberExpr(step.setPP, playerId, sourceId) } : {}),
-              ...(step.setDP !== undefined ? { setDP: this.evalNumberExpr(step.setDP, playerId, sourceId) } : {}),
-              ...(step.charge !== undefined ? { charge: this.evalNumberExpr(step.charge, playerId, sourceId) } : {}),
-              ...(step.setCharge !== undefined ? { setCharge: this.evalNumberExpr(step.setCharge, playerId, sourceId) } : {}),
+              ...(step.pp !== undefined ? { pp: this.evalNumberExpr(step.pp, playerId, sourceId, vars) } : {}),
+              ...(step.dp !== undefined ? { dp: this.evalNumberExpr(step.dp, playerId, sourceId, vars) } : {}),
+              ...(step.setPP !== undefined ? { setPP: this.evalNumberExpr(step.setPP, playerId, sourceId, vars) } : {}),
+              ...(step.setDP !== undefined ? { setDP: this.evalNumberExpr(step.setDP, playerId, sourceId, vars) } : {}),
+              ...(step.charge !== undefined ? { charge: this.evalNumberExpr(step.charge, playerId, sourceId, vars) } : {}),
+              ...(step.setCharge !== undefined ? { setCharge: this.evalNumberExpr(step.setCharge, playerId, sourceId, vars) } : {}),
               ...(step.keywords ? { keywords: step.keywords } : {}),
               ...(step.removeKeywords ? { removeKeywords: step.removeKeywords } : {}),
               ...(step.addTraits ? { addTraits: step.addTraits } : {}),
@@ -1301,6 +1512,7 @@ export class DeclarativeEffectInterpreter {
               ...(step.treatedAsNames ? { treatedAsNames: step.treatedAsNames } : {}),
               ...(step.grantedTriggerIds ? { grantedTriggerIds: step.grantedTriggerIds } : {}),
               ...(step.canAttackPlayerOnEnterTurn ? { canAttackPlayerOnEnterTurn: true } : {}),
+              ...(step.unblockableMaxPP !== undefined ? { unblockableMaxPP: step.unblockableMaxPP } : {}),
               untilTurn,
               source,
               sourceCardInstanceId: sourceId,
@@ -1345,6 +1557,9 @@ export class DeclarativeEffectInterpreter {
           if (!player) break;
           const previous = player.erosionCount;
           player.erosionCount = Math.max(0, player.erosionCount + step.delta);
+          if (player.erosionCount !== previous) {
+            player.erosionChangedThisTurn = true;
+          }
           if (step.delta > 0) {
             this.ctx.events.push({
               type: 'EROSION_INCREASED',
@@ -1413,6 +1628,8 @@ export class DeclarativeEffectInterpreter {
         return sourceId ? [sourceId] : [];
       case 'TRIGGER_ATTACKER':
         return vars.__triggerAttacker ?? [];
+      case 'TRIGGER_BLOCKER':
+        return vars.__triggerBlocker ?? [];
       case 'TRIGGER_HOST':
         return vars.__triggerHost ?? [];
       case 'VAR':
@@ -1431,7 +1648,12 @@ export class DeclarativeEffectInterpreter {
     }
   }
 
-  private evalNumberExpr(expr: NumberExpr, playerId: string, sourceId: string): number {
+  private evalNumberExpr(
+    expr: NumberExpr,
+    playerId: string,
+    sourceId: string,
+    vars: Record<string, string[]> = {}
+  ): number {
     if (typeof expr === 'number') return expr;
     switch (expr.kind) {
       case 'EROSION_MULT': {
@@ -1447,6 +1669,8 @@ export class DeclarativeEffectInterpreter {
         const card = this.ctx.state.cards[sourceId];
         return (card?.underneathCardIds?.length ?? 0) * expr.multiplier;
       }
+      case 'VAR_COUNT_MULT':
+        return (vars[expr.varName]?.length ?? 0) * expr.multiplier;
     }
   }
 
@@ -1466,6 +1690,10 @@ export class DeclarativeEffectInterpreter {
         const pid = this.resolveSide(playerId, cond.side);
         return this.compare(this.ctx.state.players[pid]?.erosionCount ?? 0, cond.op, cond.value);
       }
+      case 'EROSION_CHANGED_THIS_TURN': {
+        const pid = this.resolveSide(playerId, cond.side);
+        return Boolean(this.ctx.state.players[pid]?.erosionChangedThisTurn);
+      }
       case 'OPEN_COST_COMPARE_OPPONENT': {
         const oppId = this.resolveSide(playerId, 'OPPONENT');
         const selfOpen = this.ctx.state.players[playerId]?.openCostCount ?? 0;
@@ -1479,6 +1707,22 @@ export class DeclarativeEffectInterpreter {
         if (cost === undefined) return false;
         return cond.parity === 'ODD' ? cost % 2 === 1 : cost % 2 === 0;
       }
+      case 'SELF_UNDERNEATH_COUNT': {
+        const src = this.ctx.state.cards[sourceId];
+        const underCards = (src?.underneathCardIds ?? [])
+          .map((id) => this.ctx.state.cards[id])
+          .filter((c): c is CardInstance => Boolean(c));
+        const count = underCards.filter((c) => !cond.filter || this.matchesFilter(c, cond.filter, sourceId)).length;
+        return this.compare(count, cond.op, cond.value);
+      }
+      case 'SELF_MATCHES_FILTER': {
+        const src = this.ctx.state.cards[sourceId];
+        return Boolean(src && this.matchesFilter(src, cond.filter, sourceId));
+      }
+      case 'GAME_ABILITY_UNUSED':
+        return (this.ctx.state.players[playerId]?.gameAbilityUsage?.[cond.abilityKey] ?? 0) === 0;
+      case 'TURN_ABILITY_UNUSED':
+        return (this.ctx.state.players[playerId]?.turnAbilityUsage?.[`${sourceId}:${cond.abilityKey}`] ?? 0) === 0;
       case 'ZONE_COUNT': {
         const pid = this.resolveSide(playerId, cond.side);
         const count = this.zone(pid, cond.zone).filter(
@@ -1516,6 +1760,7 @@ export class DeclarativeEffectInterpreter {
   private evalStaticCondition(
     cond: ConditionExpr,
     playerId: string,
+    sourceId: string,
     state: CardEffectContext['state'],
     getCardsInZone: (pid: string, z: ZoneId) => CardInstance[],
     getFieldRoles: (pid: string) => CardInstance[],
@@ -1540,6 +1785,10 @@ export class DeclarativeEffectInterpreter {
         const pid = resolveSide(cond.side);
         return this.compare(state.players[pid]?.erosionCount ?? 0, cond.op, cond.value);
       }
+      case 'EROSION_CHANGED_THIS_TURN': {
+        const pid = resolveSide(cond.side);
+        return Boolean(state.players[pid]?.erosionChangedThisTurn);
+      }
       case 'OPEN_COST_COMPARE_OPPONENT': {
         const oppId = resolveSide('OPPONENT');
         const selfOpen = state.players[playerId]?.openCostCount ?? 0;
@@ -1553,6 +1802,22 @@ export class DeclarativeEffectInterpreter {
         if (cost === undefined) return false;
         return cond.parity === 'ODD' ? cost % 2 === 1 : cost % 2 === 0;
       }
+      case 'SELF_UNDERNEATH_COUNT': {
+        const src = state.cards[sourceId];
+        const underCards = (src?.underneathCardIds ?? [])
+          .map((id) => state.cards[id])
+          .filter((c): c is CardInstance => Boolean(c));
+        const count = underCards.filter(
+          (c) => !cond.filter || this.matchesFilterSafe(c, cond.filter, hasTrait, sourceId)
+        ).length;
+        return this.compare(count, cond.op, cond.value);
+      }
+      case 'SELF_MATCHES_FILTER': {
+        const src = state.cards[sourceId];
+        return Boolean(src && this.matchesFilterSafe(src, cond.filter, hasTrait, sourceId));
+      }
+      case 'GAME_ABILITY_UNUSED':
+        return (state.players[playerId]?.gameAbilityUsage?.[cond.abilityKey] ?? 0) === 0;
       case 'ZONE_COUNT': {
         const pid = resolveSide(cond.side);
         const count = getCardsInZone(pid, cond.zone).filter(
@@ -1568,14 +1833,14 @@ export class DeclarativeEffectInterpreter {
         return cond.isSelfTurn ? state.activePlayerId === playerId : state.activePlayerId !== playerId;
       case 'ALL':
         return cond.conditions.every((c) =>
-          this.evalStaticCondition(c, playerId, state, getCardsInZone, getFieldRoles, hasTrait)
+          this.evalStaticCondition(c, playerId, sourceId, state, getCardsInZone, getFieldRoles, hasTrait)
         );
       case 'ANY':
         return cond.conditions.some((c) =>
-          this.evalStaticCondition(c, playerId, state, getCardsInZone, getFieldRoles, hasTrait)
+          this.evalStaticCondition(c, playerId, sourceId, state, getCardsInZone, getFieldRoles, hasTrait)
         );
       case 'NOT':
-        return !this.evalStaticCondition(cond.condition, playerId, state, getCardsInZone, getFieldRoles, hasTrait);
+        return !this.evalStaticCondition(cond.condition, playerId, sourceId, state, getCardsInZone, getFieldRoles, hasTrait);
       default:
         return false;
     }
@@ -1603,6 +1868,11 @@ export class DeclarativeEffectInterpreter {
   ): boolean {
     const def = this.def(card);
     if (filter.excludeSelf && sourceId && card.instanceId === sourceId) return false;
+    if (filter.anyFilters !== undefined) {
+      if (!filter.anyFilters.some((sub) => this.matchesFilterSafe(card, sub, hasTraitFn, sourceId, hasNameFn))) {
+        return false;
+      }
+    }
     if (filter.cardType !== undefined && def?.cardType !== filter.cardType) return false;
     if (filter.attribute !== undefined && def?.attribute !== filter.attribute) return false;
     if (filter.exactName !== undefined) {
@@ -1624,6 +1894,15 @@ export class DeclarativeEffectInterpreter {
     if (filter.maxCost !== undefined && cost > filter.maxCost) return false;
     if (filter.minCost !== undefined && cost < filter.minCost) return false;
     if (filter.exactCost !== undefined && cost !== filter.exactCost) return false;
+    if (filter.maxCostOpenCostLimit) {
+      const openLimit = this.ctx.state.players[card.controllerPlayerId]?.openCostCount ?? 0;
+      if (cost > openLimit) return false;
+    }
+    if (filter.maxBaseDP !== undefined && (def?.baseDP ?? 0) > filter.maxBaseDP) return false;
+    if (filter.isAscended !== undefined) {
+      const isAsc = Boolean(def?.ascensionConfig);
+      if (isAsc !== filter.isAscended) return false;
+    }
     if (filter.isSignalOrb !== undefined && this.isOrb(card) !== filter.isSignalOrb) return false;
     if (filter.signalOrbColor !== undefined) {
       const orbColorMatch =
@@ -1890,6 +2169,12 @@ export class DeclarativeEffectInterpreter {
 
   private hasEmptySlot(playerId: string): boolean {
     return this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined;
+  }
+
+  private emptySlotCount(playerId: string): number {
+    return this.ctx.fieldMgr
+      .getSlots(playerId)
+      .filter((s) => !s.roleCardId && !s.standaloneEquipmentId && !s.assistCardId).length;
   }
 
   private resolveSide(playerId: string, side: PlayerSide): string {
