@@ -8,4 +8,5 @@ export * from './specs/st04.js';
 export * from './specs/st05.js';
 export * from './specs/st06.js';
 export * from './specs/bp01-part1.js';
+export * from './specs/bp01-part2.js';
 export * from './specs/starter-decks.js';

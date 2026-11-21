@@ -17,9 +17,14 @@ import type {
 
 const VALID_SIDES = new Set<PlayerSide>(['SELF', 'OPPONENT']);
 const VALID_ORB_FILTERS = new Set<OrbColorFilter>(['ANY', 'SAME', 'RED', 'BLUE', 'YELLOW']);
-const VALID_DURATIONS = new Set<ModifierDuration>(['END_OF_TURN', 'END_OF_NEXT_TURN', 'UNTIL_LEAVE_ZONE']);
+const VALID_DURATIONS = new Set<ModifierDuration>([
+  'END_OF_TURN',
+  'END_OF_NEXT_TURN',
+  'END_OF_COMBAT',
+  'UNTIL_LEAVE_ZONE',
+]);
 const VALID_COMPARE_OPS = new Set<CompareOp>(['>=', '<=', '==', '>', '<']);
-const VALID_CHOOSE_ZONES = new Set(['HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'DECK']);
+const VALID_CHOOSE_ZONES = new Set(['HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'DECK', 'BATTLEFIELD']);
 const VALID_MOVE_ZONES = new Set([
   'HAND',
   'GRAVEYARD',
@@ -38,6 +43,10 @@ const VALID_TRIGGER_MATCHERS = new Set([
   'EQUIPPED_ROLE_ATTACKING',
   'OTHER_FRIENDLY_ROLE_ENTERED',
   'SELF_ATTACKING',
+  'SELF_ATTACKING_OR_BLOCKING',
+  'SELF_ATTACK_END',
+  'GRANTED_ATTACK_CHARGE_CARD',
+  'SELF_IN_GRAVEYARD_ON_SELF_ORBS_ELIMINATED',
   'SELF_BLOCKED_ATTACK_END',
   'GRANTED_BLOCKED_ATTACK_END',
   'FRIENDLY_ROLE_BLOCKING',
@@ -122,6 +131,10 @@ function validateNumberExpr(
       assert(typeof expr.varName === 'string' && expr.varName.length > 0, `${path}.varName 不能为空`);
       if (definedVars) assert(definedVars.has(expr.varName), `${path} 引用了未定义变量 "${expr.varName}"`);
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      return;
+    case 'FLOOR_DIV':
+      validateNumberExpr(expr.expr, `${path}.expr`, definedVars);
+      assertPositiveInt(expr.divisor, `${path}.divisor`);
       return;
     default:
       throw new Error(`卡牌声明式效果校验失败：${path} 未知的数值表达式类型 ${(expr as { kind?: unknown }).kind}`);
@@ -214,6 +227,11 @@ function validateTarget(target: CardTargetRef, definedVars: ReadonlySet<string>,
       assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
       validateFilter(target.filter, `${path}.filter`);
       return;
+    case 'ZONE_CARDS':
+      assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
+      assert(target.zone === 'SIGNAL_ORB' || target.zone === 'BATTLEFIELD', `${path}.zone 非法: ${String(target.zone)}`);
+      validateFilter(target.filter, `${path}.filter`);
+      return;
     default:
       throw new Error(`卡牌声明式效果校验失败：${path} 未知的目标类型 ${(target as { kind?: unknown }).kind}`);
   }
@@ -239,6 +257,10 @@ function validateCost(cost: AbilityCost | undefined, path: string): Set<string> 
     case 'TAP_SELF_AND_DISCARD_HAND':
       assertPositiveInt(cost.count, `${path}.count`);
       validateFilter(cost.filter, `${path}.filter`);
+      return vars;
+    case 'TAP_SELF_AND_ELIMINATE_ORBS':
+      assert(VALID_ORB_FILTERS.has(cost.filter), `${path}.filter 非法: ${String(cost.filter)}`);
+      assertPositiveInt(cost.count, `${path}.count`);
       return vars;
     case 'PAY_COST':
       assertPositiveInt(cost.amount, `${path}.amount`);
@@ -295,6 +317,12 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
       case 'CHOOSE_ZONE_CARDS': {
         assert(VALID_SIDES.has(step.side), `${sp}.side 非法`);
         assert(VALID_CHOOSE_ZONES.has(step.zone), `${sp}.zone 非法: ${String(step.zone)}`);
+        if (step.zones !== undefined) {
+          assert(Array.isArray(step.zones) && step.zones.length > 0, `${sp}.zones 不能为空数组`);
+          for (const z of step.zones) {
+            assert(VALID_CHOOSE_ZONES.has(z), `${sp}.zones 非法元素: ${String(z)}`);
+          }
+        }
         assert(step.prompt.length > 0, `${sp}.prompt 不能为空`);
         const min = step.min ?? 1;
         const max = step.max ?? 1;
@@ -329,11 +357,15 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
       case 'CHOOSE_MODE': {
         assert(step.prompt.length > 0, `${sp}.prompt 不能为空`);
         assert(Array.isArray(step.modes) && step.modes.length >= 2, `${sp}.modes 至少需要 2 个选项`);
-        const min = step.min ?? 1;
-        const max = step.max ?? 1;
-        assertNonNegativeInt(min, `${sp}.min`);
-        assertPositiveInt(max, `${sp}.max`);
-        assert(min <= max && max <= step.modes.length, `${sp} min/max (${min}/${max}) 越界`);
+        if (step.pickCountExpr !== undefined) {
+          validateNumberExpr(step.pickCountExpr, `${sp}.pickCountExpr`, vars);
+        } else {
+          const min = step.min ?? 1;
+          const max = step.max ?? 1;
+          assertNonNegativeInt(min, `${sp}.min`);
+          assertPositiveInt(max, `${sp}.max`);
+          assert(min <= max && max <= step.modes.length, `${sp} min/max (${min}/${max}) 越界`);
+        }
         const modeIds = new Set<string>();
         step.modes.forEach((m, mi) => {
           assert(m.id.length > 0 && m.label.length > 0, `${sp}.modes[${mi}] id 与 label 不能为空`);
@@ -354,11 +386,29 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
       }
       case 'DISCARD_COST_STEP': {
         assertPositiveInt(step.count, `${sp}.count`);
+        if (step.minCount !== undefined) {
+          assertNonNegativeInt(step.minCount, `${sp}.minCount`);
+          assert(step.minCount <= step.count, `${sp}.minCount 不能大于 count`);
+        }
         validateFilter(step.filter, `${sp}.filter`);
         assert(step.onPaid.length > 0, `${sp}.onPaid 不能为空`);
         const innerVars = new Set(vars);
         if (step.savePaidToVar) innerVars.add(step.savePaidToVar);
         validateSteps(step.onPaid, innerVars, `${sp}.onPaid`);
+        break;
+      }
+      case 'TAP_FIELD_CARD_COST_STEP': {
+        assert(step.onPaid.length > 0, `${sp}.onPaid 不能为空`);
+        validateSteps(step.onPaid, vars, `${sp}.onPaid`);
+        break;
+      }
+      case 'EQUIP_FROM_VAR': {
+        assert(vars.has(step.varName), `${sp} 引用了未定义变量 "${step.varName}"`);
+        validateTarget(step.host, vars, `${sp}.host`);
+        break;
+      }
+      case 'PLACE_ORB_AT_POSITION': {
+        assert(vars.has(step.varName), `${sp} 引用了未定义变量 "${step.varName}"`);
         break;
       }
       case 'SHUFFLE_DECK':
@@ -417,6 +467,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法: ${String(step.duration)}`);
         validateNumberExpr(step.pp, `${sp}.pp`, vars);
         validateNumberExpr(step.dp, `${sp}.dp`, vars);
+        validateNumberExpr(step.setBasePP, `${sp}.setBasePP`, vars);
         validateNumberExpr(step.setPP, `${sp}.setPP`, vars);
         validateNumberExpr(step.setDP, `${sp}.setDP`, vars);
         validateNumberExpr(step.charge, `${sp}.charge`, vars);
@@ -445,6 +496,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         const hasAnyMod =
           step.pp !== undefined ||
           step.dp !== undefined ||
+          step.setBasePP !== undefined ||
           step.setPP !== undefined ||
           step.setDP !== undefined ||
           step.charge !== undefined ||
@@ -537,7 +589,8 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
     (eff.treatedAsOrbColors && eff.treatedAsOrbColors.length > 0) ||
     eff.orbValue !== undefined ||
     (eff.treatedAsNames && eff.treatedAsNames.length > 0) ||
-    eff.unblockableMaxPP !== undefined;
+    eff.unblockableMaxPP !== undefined ||
+    eff.canDualEquipFengren === true;
   assert(hasAnyEffect, `${path} 至少须指定一项静态增益`);
 }
 
@@ -590,10 +643,27 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
       `${spec.cardNumber}.fieldCardCostRule 必须指定 setCost 或 discount`
     );
   }
+  if (spec.equipmentGrantedActivate) {
+    assert(spec.equipmentGrantedActivate.label.length > 0, `${spec.cardNumber}.equipmentGrantedActivate.label 不能为空`);
+    const act = spec.equipmentGrantedActivate.activate;
+    if (act.condition) {
+      validateCondition(act.condition, new Set(), `${spec.cardNumber}.equipmentGrantedActivate.activate.condition`);
+    }
+    const costVars = validateCost(act.cost, `${spec.cardNumber}.equipmentGrantedActivate.activate.cost`);
+    validateSteps(act.steps, costVars, `${spec.cardNumber}.equipmentGrantedActivate.activate.steps`);
+  }
+  if (spec.playDiscardDiscount) {
+    validateFilter(spec.playDiscardDiscount.filter, `${spec.cardNumber}.playDiscardDiscount.filter`);
+    assertPositiveInt(spec.playDiscardDiscount.discountPerCard, `${spec.cardNumber}.playDiscardDiscount.discountPerCard`);
+  }
   if (spec.handCostDiscount) {
     if ('condition' in spec.handCostDiscount) {
       validateCondition(spec.handCostDiscount.condition, new Set(), `${spec.cardNumber}.handCostDiscount.condition`);
       assertPositiveInt(spec.handCostDiscount.flatDiscount, `${spec.cardNumber}.handCostDiscount.flatDiscount`);
+    } else if ('zone' in spec.handCostDiscount) {
+      assert(VALID_ZONES.has(spec.handCostDiscount.zone), `${spec.cardNumber}.handCostDiscount.zone 非法`);
+      validateFilter(spec.handCostDiscount.filter, `${spec.cardNumber}.handCostDiscount.filter`);
+      assertPositiveInt(spec.handCostDiscount.discountPerCard, `${spec.cardNumber}.handCostDiscount.discountPerCard`);
     } else {
       validateFilter(spec.handCostDiscount.filter, `${spec.cardNumber}.handCostDiscount.filter`);
       assertPositiveInt(spec.handCostDiscount.discountPerRole, `${spec.cardNumber}.handCostDiscount.discountPerRole`);

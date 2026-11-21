@@ -1,4 +1,7 @@
 import {
+  CardInstance,
+  CardType,
+  CardVersionData,
   GameState,
   GameEvent,
   BattlefieldSlot,
@@ -11,6 +14,33 @@ import {
   EvaluatedCardStats,
 } from '../effects/continuous-effects.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
+
+/** 获取角色当前附着的全部装备牌实例 ID (兼容单装备 attachedEquipmentId 与双持 extraAttachedEquipmentIds) */
+export function getAttachedEquipmentIds(card: CardInstance | undefined): string[] {
+  if (!card) return [];
+  const ids: string[] = [];
+  if (card.attachedEquipmentId) ids.push(card.attachedEquipmentId);
+  if (card.extraAttachedEquipmentIds?.length) {
+    for (const id of card.extraAttachedEquipmentIds) {
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/** 写回角色的附着装备牌实例 ID 列表 (首张写入 attachedEquipmentId，其余写入 extraAttachedEquipmentIds) */
+export function setAttachedEquipmentIds(card: CardInstance, ids: string[]): void {
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  card.attachedEquipmentId = unique[0];
+  card.extraAttachedEquipmentIds = unique.length > 1 ? unique.slice(1) : undefined;
+}
+
+/** 判断卡牌定义是否为<封刃太刀>装备 (官方数据中特征写作 小太刀/大太刀/太刀 或 封刃太刀) */
+export function isFengrenTachiEquipmentDef(def: CardVersionData | undefined): boolean {
+  if (!def || def.cardType !== CardType.EQUIPMENT) return false;
+  const traits = def.traits ?? [];
+  return traits.some((t) => t === '封刃太刀' || t === '太刀' || t === '小太刀' || t === '大太刀');
+}
 
 export class BattlefieldManager {
   /** 永久能力带来的 PP 增减 (8.9.1.c)，保留扩展钩子以兼容旧调用 */
@@ -221,15 +251,18 @@ export class BattlefieldManager {
       }
     }
 
-    // 8.11.3.f.2 升变对象原本的装备将保留并成为升变出场的卡牌的装备
-    if (targetCard.attachedEquipmentId) {
-      const eqCard = this.state.cards[targetCard.attachedEquipmentId];
-      if (eqCard) {
-        eqCard.zone = 'BATTLEFIELD';
-        eqCard.slotIndex = slotIndex;
+    // 8.11.3.f.2 升变对象原本的装备将保留并成为升变出场的卡牌的装备 (支持双持装备)
+    const inheritedEqIds = getAttachedEquipmentIds(targetCard);
+    if (inheritedEqIds.length > 0) {
+      for (const eqId of inheritedEqIds) {
+        const eqCard = this.state.cards[eqId];
+        if (eqCard) {
+          eqCard.zone = 'BATTLEFIELD';
+          eqCard.slotIndex = slotIndex;
+        }
       }
-      ascensionCard.attachedEquipmentId = targetCard.attachedEquipmentId;
-      targetCard.attachedEquipmentId = undefined;
+      setAttachedEquipmentIds(ascensionCard, inheritedEqIds);
+      setAttachedEquipmentIds(targetCard, []);
     }
 
     // BP01-040 额外升变代价：将我方战场 1 张《帕瓦》放置到该牌下方
@@ -242,10 +275,9 @@ export class BattlefieldManager {
         for (const s of this.getSlots(playerId)) {
           if (s.roleCardId === extraCard.instanceId) s.roleCardId = undefined;
         }
-        const extraOrphans = [...extraCard.underneathCardIds];
-        if (extraCard.attachedEquipmentId) extraOrphans.push(extraCard.attachedEquipmentId);
+        const extraOrphans = [...extraCard.underneathCardIds, ...getAttachedEquipmentIds(extraCard)];
         extraCard.underneathCardIds = [];
-        extraCard.attachedEquipmentId = undefined;
+        setAttachedEquipmentIds(extraCard, []);
         for (const oid of extraOrphans) {
           const o = this.state.cards[oid];
           if (o && o.zone === 'BATTLEFIELD') {
@@ -318,17 +350,39 @@ export class BattlefieldManager {
   }
 
   /**
-   * 4.18 装备道具牌给角色
+   * 4.18.3 检查指定装备牌当前能否装备给目标角色 (支持 BP01-014/016/017 双持2张<封刃太刀>装备)
    */
-  equipToRole(playerId: string, equipmentCardId: string, roleCardId: string): boolean {
+  canEquipToRole(playerId: string, equipmentCardId: string, roleCardId: string): boolean {
     const equipCard = this.state.cards[equipmentCardId];
     const roleCard = this.state.cards[roleCardId];
     if (!equipCard || !roleCard) return false;
     if (equipCard.controllerPlayerId !== playerId) return false;
     if (!this.isSlotRole(playerId, roleCardId)) return false;
 
-    // 4.18.3 每张角色只能装备最多1张装备牌
-    if (roleCard.attachedEquipmentId) return false;
+    const existingIds = getAttachedEquipmentIds(roleCard);
+    if (existingIds.includes(equipmentCardId)) return false;
+    if (existingIds.length === 0) return true;
+    if (existingIds.length >= 2) return false;
+
+    // 已有 1 张装备时，仅当角色拥有有效的双持<封刃太刀>永久能力且已有与新装备均为<封刃太刀>时允许
+    const stats = this.evaluateRoleStats(roleCardId);
+    if (!stats.canDualEquipFengren) return false;
+    const existingCard = this.state.cards[existingIds[0]!];
+    const existingDef = existingCard
+      ? this.cardDb.getCard(existingCard.cardNumber) || (existingCard.cardId ? this.cardDb.getCard(existingCard.cardId) : undefined)
+      : undefined;
+    const newDef =
+      this.cardDb.getCard(equipCard.cardNumber) || (equipCard.cardId ? this.cardDb.getCard(equipCard.cardId) : undefined);
+    return isFengrenTachiEquipmentDef(existingDef) && isFengrenTachiEquipmentDef(newDef);
+  }
+
+  /**
+   * 4.18 装备道具牌给角色
+   */
+  equipToRole(playerId: string, equipmentCardId: string, roleCardId: string): boolean {
+    if (!this.canEquipToRole(playerId, equipmentCardId, roleCardId)) return false;
+    const equipCard = this.state.cards[equipmentCardId]!;
+    const roleCard = this.state.cards[roleCardId]!;
 
     // 如果装备牌原本单独占位，清空原卡位
     if (equipCard.zone === 'BATTLEFIELD' && equipCard.slotIndex !== undefined) {
@@ -338,12 +392,13 @@ export class BattlefieldManager {
       }
     }
 
-    roleCard.attachedEquipmentId = equipmentCardId;
+    const nextEqIds = [...getAttachedEquipmentIds(roleCard), equipmentCardId];
     this.zoneMgr.moveCard(equipmentCardId, 'BATTLEFIELD', {
       slotIndex: roleCard.slotIndex,
       isFaceUp: true,
       isReady: true,
     });
+    setAttachedEquipmentIds(roleCard, nextEqIds);
 
     this.events.push({
       type: 'CARD_EQUIPPED',
@@ -419,15 +474,17 @@ export class BattlefieldManager {
       }
     }
 
-    // 4.18.6 装备角色离开战场时，其装备牌因规则处理 (9.6) 放置到墓地 (允许 BP04-065 等置换效果拦截)
-    if (card.attachedEquipmentId) {
-      const eqId = card.attachedEquipmentId;
-      card.attachedEquipmentId = undefined;
-      this.zoneMgr.moveCard(eqId, 'GRAVEYARD', {
-        isFaceUp: true,
-        isOrphanCleanup: true,
-        orphanHostCardId: cardInstanceId,
-      });
+    // 4.18.6 装备角色离开战场时，其全部装备牌因规则处理 (9.6) 放置到墓地 (允许 BP04-065 等置换效果拦截)
+    const attachedEqIds = getAttachedEquipmentIds(card);
+    if (attachedEqIds.length > 0) {
+      setAttachedEquipmentIds(card, []);
+      for (const eqId of attachedEqIds) {
+        this.zoneMgr.moveCard(eqId, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: cardInstanceId,
+        });
+      }
     }
 
     // 8.13.4.a.3 协战角色离开战场时，其搭档因规则放置到墓地 (不视为离场)
@@ -460,7 +517,7 @@ export class BattlefieldManager {
     }
 
     const underIds = [...card.underneathCardIds];
-    const eqId = card.attachedEquipmentId;
+    const eqIds = getAttachedEquipmentIds(card);
 
     for (const slot of this.getSlots(playerId)) {
       if (slot.roleCardId === cardInstanceId) {
@@ -480,8 +537,8 @@ export class BattlefieldManager {
     }
 
     card.underneathCardIds = underIds;
-    card.attachedEquipmentId = eqId;
-    for (const id of [...underIds, ...(eqId ? [eqId] : [])]) {
+    setAttachedEquipmentIds(card, eqIds);
+    for (const id of [...underIds, ...eqIds]) {
       const sub = this.state.cards[id];
       if (sub) {
         sub.zone = 'PROCESSING';
@@ -506,13 +563,13 @@ export class BattlefieldManager {
 
     airborne.isAirborne = undefined;
     const underIds = [...airborne.underneathCardIds];
-    const eqId = airborne.attachedEquipmentId;
+    const eqIds = getAttachedEquipmentIds(airborne);
     const slotIndex = this.findFirstEmptySlot(playerId);
 
     if (slotIndex === undefined) {
       // 10.18.2.e 没有空余卡位，本体与下方/装备卡牌一并置入墓地
       this.zoneMgr.moveCard(airborne.instanceId, 'GRAVEYARD', { isFaceUp: true });
-      for (const id of [...underIds, ...(eqId ? [eqId] : [])]) {
+      for (const id of [...underIds, ...eqIds]) {
         if (this.state.cards[id]) {
           this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
         }
@@ -529,7 +586,7 @@ export class BattlefieldManager {
       preserveAttachments: true,
     });
     airborne.underneathCardIds = underIds;
-    airborne.attachedEquipmentId = eqId;
+    setAttachedEquipmentIds(airborne, eqIds);
     for (const id of underIds) {
       const uc = this.state.cards[id];
       if (uc) {
@@ -537,12 +594,14 @@ export class BattlefieldManager {
         uc.slotIndex = undefined;
       }
     }
-    if (eqId && this.state.cards[eqId]) {
-      const eq = this.state.cards[eqId]!;
-      eq.zone = 'BATTLEFIELD';
-      eq.slotIndex = slotIndex;
-      eq.isFaceUp = true;
-      eq.isReady = true;
+    for (const eqId of eqIds) {
+      if (this.state.cards[eqId]) {
+        const eq = this.state.cards[eqId]!;
+        eq.zone = 'BATTLEFIELD';
+        eq.slotIndex = slotIndex;
+        eq.isFaceUp = true;
+        eq.isReady = true;
+      }
     }
 
     this.events.push({
@@ -594,9 +653,9 @@ export class BattlefieldManager {
         this.releasePartner(partnerCardId, true);
       }
       const oldUnder = [...partner.underneathCardIds];
-      const oldEq = partner.attachedEquipmentId;
+      const oldEqIds = getAttachedEquipmentIds(partner);
       partner.underneathCardIds = [];
-      partner.attachedEquipmentId = undefined;
+      setAttachedEquipmentIds(partner, []);
       for (const oid of oldUnder) {
         if (this.state.cards[oid]?.zone === 'BATTLEFIELD') {
           this.zoneMgr.moveCard(oid, 'GRAVEYARD', {
@@ -606,12 +665,14 @@ export class BattlefieldManager {
           });
         }
       }
-      if (oldEq && this.state.cards[oldEq]?.zone === 'BATTLEFIELD') {
-        this.zoneMgr.moveCard(oldEq, 'GRAVEYARD', {
-          isFaceUp: true,
-          isOrphanCleanup: true,
-          orphanHostCardId: partnerCardId,
-        });
+      for (const oldEq of oldEqIds) {
+        if (this.state.cards[oldEq]?.zone === 'BATTLEFIELD') {
+          this.zoneMgr.moveCard(oldEq, 'GRAVEYARD', {
+            isFaceUp: true,
+            isOrphanCleanup: true,
+            orphanHostCardId: partnerCardId,
+          });
+        }
       }
     }
 
@@ -629,7 +690,7 @@ export class BattlefieldManager {
     partner.isFrozen = undefined;
     partner.isAirborne = undefined;
     partner.underneathCardIds = [];
-    partner.attachedEquipmentId = undefined;
+    setAttachedEquipmentIds(partner, []);
     partner.partnerOfCardId = hostRoleCardId;
     host.partnerCardId = partnerCardId;
 
@@ -717,8 +778,8 @@ export class BattlefieldManager {
     }
     const cardDef = (card.cardId ? this.cardDb.getCard(card.cardId) : undefined) || this.cardDb.getCard(card.cardNumber);
     let pp = cardDef?.basePP ?? 0;
-    if (card.attachedEquipmentId) {
-      const eqCard = this.state.cards[card.attachedEquipmentId];
+    for (const eqId of getAttachedEquipmentIds(card)) {
+      const eqCard = this.state.cards[eqId];
       if (eqCard) pp += this.cardDb.getCard(eqCard.cardNumber)?.basePP ?? 0;
     }
     if (card.tempPPBonus) pp += card.tempPPBonus;

@@ -25,10 +25,10 @@ function expandDeck(presetId: 'ST01' | 'ST02' | 'ST03'): string[] {
 }
 
 describe('声明式卡牌效果描述与严格类型/结构校验 (docs/future-work.md §3.1~3.3)', () => {
-  it('全部 130 张 (ST01~ST06 + BP01 第一批) 声明式描述全部通过官方卡表交叉校验，且与 @zhanshuang/game-rules EXACT_IMPLEMENTED_CARDS 一一对应', () => {
+  it('全部 171 张 (ST01~ST06 + BP01 全部 88 张) 声明式描述全部通过官方卡表交叉校验，且与 @zhanshuang/game-rules EXACT_IMPLEMENTED_CARDS 一一对应', () => {
     const validated = validateCardEffectRegistry(STARTER_DECK_EFFECT_SPECS, db);
-    expect(validated.size).toBe(130);
-    expect(STARTER_DECK_SPEC_MAP.size).toBe(130);
+    expect(validated.size).toBe(171);
+    expect(STARTER_DECK_SPEC_MAP.size).toBe(171);
 
     // 校验每张描述的卡号、卡名均与官方卡表一致
     for (const spec of STARTER_DECK_EFFECT_SPECS) {

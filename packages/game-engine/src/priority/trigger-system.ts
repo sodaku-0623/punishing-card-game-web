@@ -54,7 +54,11 @@ export interface TriggerMatch {
   controllerPlayerId: string;
   label: string;
   oncePerTurn?: boolean;
+  oncePerTurnKey?: string;
+  deferOncePerTurnUntilCostPaid?: boolean;
   oncePerTurnByPlayer?: boolean;
+  maxPerTurnByPlayer?: number;
+  sharedTurnKey?: string;
   triggerContext: Record<string, unknown>;
 }
 
@@ -83,7 +87,10 @@ export interface TriggerDefinition {
   abilityId: string;
   eventTypes: TriggerEventType[];
   oncePerTurn?: boolean;
+  deferOncePerTurnUntilCostPaid?: boolean;
   oncePerTurnByPlayer?: boolean;
+  maxPerTurnByPlayer?: number;
+  sharedTurnKey?: string;
   collect: (ctx: TriggerCollectContext) => TriggerMatch[];
   execute: (trigger: PendingTrigger, ctx: TriggerExecuteContext) => void;
 }
@@ -209,7 +216,11 @@ export class TriggerManager {
           controllerPlayerId: m.controllerPlayerId,
           label: m.label,
           oncePerTurn: m.oncePerTurn ?? def.oncePerTurn,
+          oncePerTurnKey: m.oncePerTurnKey,
+          deferOncePerTurnUntilCostPaid: m.deferOncePerTurnUntilCostPaid ?? def.deferOncePerTurnUntilCostPaid,
           oncePerTurnByPlayer: m.oncePerTurnByPlayer ?? def.oncePerTurnByPlayer,
+          maxPerTurnByPlayer: m.maxPerTurnByPlayer ?? def.maxPerTurnByPlayer,
+          sharedTurnKey: m.sharedTurnKey ?? def.sharedTurnKey,
           triggerContext: {
             ...m.triggerContext,
             sourceAbilitiesLostAtTrigger:
@@ -315,23 +326,26 @@ export class TriggerManager {
       return;
     }
 
-    // 10.1 【回合1】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 计数，移区自动清空)
+    // 10.1 【回合1】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 或自定义 oncePerTurnKey 计数，移区自动清空)
     if (trigger.oncePerTurn) {
       const player = this.state.players[trigger.controllerPlayerId];
       if (!player) return;
-      const usageKey = `${trigger.sourceCardInstanceId}:${trigger.abilityId}`;
+      const usageKey = trigger.oncePerTurnKey ?? `${trigger.sourceCardInstanceId}:${trigger.abilityId}`;
       if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) {
         return;
       }
-      player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
+      if (!trigger.deferOncePerTurnUntilCostPaid) {
+        player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
+      }
     }
 
-    // 「《XXX》的该能力每回合最多发动1次」：按玩家+能力ID计数，跨卡牌实例共享回合上限
-    if (trigger.oncePerTurnByPlayer) {
+    // 「《XXX》的该能力每回合最多发动 N 次」(默认 N=1；Q&A·7 BP01-056 梦赴光寥之乡 N=2 同编号共享且触发即消耗)
+    const maxByPlayer = trigger.maxPerTurnByPlayer ?? (trigger.oncePerTurnByPlayer ? 1 : undefined);
+    if (maxByPlayer !== undefined) {
       const player = this.state.players[trigger.controllerPlayerId];
       if (!player) return;
-      const usageKey = `player:${trigger.abilityId}`;
-      if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) {
+      const usageKey = `player:${trigger.sharedTurnKey ?? trigger.abilityId}`;
+      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxByPlayer) {
         return;
       }
       player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;

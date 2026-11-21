@@ -260,7 +260,7 @@ describe('PGR UI Design System Components', () => {
     const approxHtml = renderToString(
       <CardDetailPanel
         card={{
-          cardNumber: 'BP01-014',
+          cardNumber: 'BP02-001',
           name: '未迁移补充包卡',
           cardType: 'ROLE',
           attribute: 'FIRE',
@@ -272,7 +272,7 @@ describe('PGR UI Design System Components', () => {
         }}
       />
     );
-    expect(approxHtml).toContain('BP01-014');
+    expect(approxHtml).toContain('BP02-001');
     expect(approxHtml).toContain('近似效果');
   });
 

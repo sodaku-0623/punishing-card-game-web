@@ -17,7 +17,7 @@ import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { createInitialGameState, PlayerInitConfig } from './state/create-game.js';
 import { sanitizeGameStateForPlayer } from './state/sanitize-state.js';
 import { ZoneManager } from './zone/zone-manager.js';
-import { BattlefieldManager } from './zone/battlefield-manager.js';
+import { BattlefieldManager, getAttachedEquipmentIds } from './zone/battlefield-manager.js';
 import { SbaEngine } from './sba/sba-engine.js';
 import { CheckTimingManager } from './priority/check-timing.js';
 import { TriggerManager } from './priority/trigger-system.js';
@@ -110,6 +110,29 @@ export class GameEngine {
       (cardId, name) => this.continuousEffects.hasCardName(cardId, name)
     );
     this.zoneMgr.setReplacementEngine(this.replacementEngine);
+    this.replacementEngine.setSendCardToGraveyardHandler((cid) => {
+      this.zoneMgr.moveCard(cid, 'GRAVEYARD', { isFaceUp: true });
+    });
+    this.zoneMgr.setWanshimingChargeHandler((playerId, cardInstanceId, attackerCardId) => {
+      const card = this.state.cards[cardInstanceId];
+      const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
+      enqueuePendingChoice(this.state, {
+        id: `choice-wanshiming-charge-${this.state.turnNumber}-${this.events.length}`,
+        playerId,
+        choiceType: 'SELECT_OPTION',
+        prompt: `【${def?.name ?? '万世铭'}】因<曲>角色攻击充能进入处理区，是否改为以横置状态放置到费用区（满10张时改放墓地）？`,
+        options: [
+          { id: 'to_cost', label: '改为横置放置到费用区 (8.10 置换)' },
+          { id: 'keep', label: '保持原处理 (正常充能加入手牌)' },
+        ],
+        effectType: 'BP01_WANSHIMING_TO_COST',
+        sourceCardInstanceId: cardInstanceId,
+        minSelections: 1,
+        maxSelections: 1,
+        metadata: { cardInstanceId, attackerCardId },
+      });
+      return true;
+    });
 
     this.triggerMgr = new TriggerManager(
       this.state,
@@ -729,6 +752,60 @@ export class GameEngine {
       action.isAscension
     );
 
+    // BP01-067 最后的晚空：使用时可丢弃手牌任意张符合条件的卡牌来减费
+    const playDiscardRule = !action.isAscension
+      ? this.effectEngine.presets.getSpec(cardDef.cardNumber)?.playDiscardDiscount
+      : undefined;
+    if (playDiscardRule) {
+      const handCandidates = this.zoneMgr
+        .getCardsInZone(action.playerId, 'HAND')
+        .filter((c) => {
+          if (c.instanceId === action.cardInstanceId) return false;
+          const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+          if (!d) return false;
+          if (playDiscardRule.filter.exactName && d.name !== playDiscardRule.filter.exactName) return false;
+          if (playDiscardRule.filter.trait && !this.continuousEffects.hasTrait(c.instanceId, playDiscardRule.filter.trait)) {
+            return false;
+          }
+          if (playDiscardRule.filter.cardType && d.cardType !== playDiscardRule.filter.cardType) return false;
+          return true;
+        });
+      if (handCandidates.length > 0) {
+        const avail = player.availableOpenCostCount + player.hiddenCostCount;
+        const maxDiscount = handCandidates.length * playDiscardRule.discountPerCard;
+        if (avail < Math.max(0, costToPay - maxDiscount)) {
+          return {
+            success: false,
+            error: `费用不足，需要至少 ${Math.max(0, costToPay - maxDiscount)} 费，当前可用 ${avail}`,
+          };
+        }
+        const minDiscard =
+          costToPay > avail ? Math.ceil((costToPay - avail) / playDiscardRule.discountPerCard) : 0;
+        this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true });
+        enqueuePendingChoice(this.state, {
+          id: `choice-play-discard-${action.cardInstanceId}-${this.events.length}`,
+          playerId: action.playerId,
+          choiceType: 'SELECT_CARDS',
+          prompt:
+            playDiscardRule.prompt ??
+            `【${cardDef.name}】可选择丢弃手牌中任意数量的指定卡牌来减费（当前基础费用 ${costToPay}，每弃1张费用-${playDiscardRule.discountPerCard}）：`,
+          options: handCandidates.map((c) => this.effectEngine.createGeneralCardChoiceOption(c)),
+          effectType: 'PLAY_CARD_DISCARD_DISCOUNT',
+          sourceCardInstanceId: action.cardInstanceId,
+          minSelections: minDiscard,
+          maxSelections: handCandidates.length,
+          metadata: {
+            cardInstanceId: action.cardInstanceId,
+            baseCostToPay: costToPay,
+            discountPerCard: playDiscardRule.discountPerCard,
+            appliedModifierIds: appliedModifiers.map((m) => m.id),
+            isTimingWindow: Boolean(timingWindow),
+          },
+        });
+        return { success: true };
+      }
+    }
+
     if (!this.payCost(action.playerId, costToPay, action.costCardInstanceIds)) {
       const avail = player.availableOpenCostCount + player.hiddenCostCount;
       return { success: false, error: `费用不足或自选支付无效，需要 ${costToPay} 费，当前可用 ${avail}` };
@@ -792,7 +869,7 @@ export class GameEngine {
       const roleCards = this.fieldMgr
         .getSlots(action.playerId)
         .map((s) => (s.roleCardId ? this.state.cards[s.roleCardId] : null))
-        .filter((c): c is CardInstance => !!c && !c.attachedEquipmentId);
+        .filter((c): c is CardInstance => !!c && this.fieldMgr.canEquipToRole(action.playerId, action.cardInstanceId, c.instanceId));
 
       if (action.targetEquipRoleId) {
         // 8.6.2.e.2 放置到可以装备该牌的自身战场角色下方进行装备
@@ -1067,9 +1144,9 @@ export class GameEngine {
 
     const player = this.state.players[action.playerId]!;
 
-    // 官方预组的起动能力：代价 (消除信号球、横置) 与【回合1】由逐卡实现处理
-    if (this.effectEngine.presets.handlesActivation(cardDef.cardNumber)) {
-      const res = this.effectEngine.presets.activate(action.playerId, card.instanceId, cardDef);
+    // 声明式起动能力：包含卡牌自身【起】及附着装备赋予的【起】(如 BP01-022 夜煌—小太刀)
+    if (this.effectEngine.presets.handlesActivationForCard(action.playerId, card.instanceId, cardDef)) {
+      const res = this.effectEngine.presets.activate(action.playerId, card.instanceId, cardDef, action.abilityIndex);
       if (res.success) {
         this.events.push({
           type: 'ABILITY_ACTIVATED',
@@ -1179,6 +1256,86 @@ export class GameEngine {
       return { success: true };
     }
 
+    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能进入处理区时的可选置换
+    if (choice.effectType === 'BP01_WANSHIMING_TO_COST') {
+      const meta = (choice.metadata ?? {}) as { cardInstanceId?: string; attackerCardId?: string };
+      this.state.currentPendingChoice = undefined;
+      const picked = action.selectedIds[0];
+      if (meta.cardInstanceId) {
+        const card = this.state.cards[meta.cardInstanceId];
+        if (picked === 'to_cost' && card && card.zone === 'PROCESSING') {
+          // 8.10.1.a / 3.6.4：改为以横置状态放置到费用区（费用区满 10 张时自动改放墓地）
+          this.zoneMgr.moveCard(card.instanceId, 'COST', { isFaceUp: true, isReady: false });
+          this.zoneMgr.syncCostStats(card.controllerPlayerId);
+        } else if (card && card.zone === 'PROCESSING') {
+          // 选择不置换：发出正常攻击充能事件 (供 BP01-028 模式3 等触发)
+          this.triggerMgr.emit({
+            type: 'CARD_CHARGED',
+            playerId: action.playerId,
+            cardInstanceId: card.instanceId,
+            targetCardId: meta.attackerCardId,
+            chargeKind: 'ATTACK',
+            subjectSnapshot: this.triggerMgr.snapshotCard(card.instanceId),
+          });
+        }
+      }
+      if (!this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
+      return { success: true };
+    }
+
+    // BP01-067 最后的晚空：使用时丢弃手牌减费结算
+    if (choice.effectType === 'PLAY_CARD_DISCARD_DISCOUNT') {
+      const meta = (choice.metadata ?? {}) as {
+        cardInstanceId: string;
+        baseCostToPay: number;
+        discountPerCard: number;
+        appliedModifierIds?: string[];
+        isTimingWindow?: boolean;
+      };
+      const player = this.state.players[action.playerId]!;
+      const card = this.state.cards[meta.cardInstanceId];
+      const cardDef = card
+        ? this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined)
+        : undefined;
+      if (!card || !cardDef) {
+        return { success: false, error: '待使用的卡牌不存在' };
+      }
+      for (const id of action.selectedIds) {
+        this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+      }
+      const finalCost = Math.max(0, meta.baseCostToPay - action.selectedIds.length * meta.discountPerCard);
+      if (!this.payCost(action.playerId, finalCost)) {
+        const avail = player.availableOpenCostCount + player.hiddenCostCount;
+        return { success: false, error: `费用不足，需要 ${finalCost} 费，当前可用 ${avail}` };
+      }
+      player.turnCardPlayedCountByName = player.turnCardPlayedCountByName ?? {};
+      player.turnCardPlayedCountByName[cardDef.name] = (player.turnCardPlayedCountByName[cardDef.name] ?? 0) + 1;
+      if (meta.appliedModifierIds?.length && player.costModifiers) {
+        const idSet = new Set(meta.appliedModifierIds);
+        for (const mod of player.costModifiers) {
+          if (idSet.has(mod.id) && mod.remainingCount !== undefined) {
+            mod.remainingCount--;
+          }
+        }
+        player.costModifiers = player.costModifiers.filter(
+          (m) => m.remainingCount === undefined || m.remainingCount > 0
+        );
+      }
+      this.state.currentPendingChoice = undefined;
+      const res = this.effectEngine.handlePlayTactics(action.playerId, meta.cardInstanceId, cardDef);
+      if (res.success && meta.isTimingWindow && this.state.timingWindow) {
+        this.state.timingWindow.consecutivePasses = 0;
+        this.state.timingWindow.priorityPlayerId = this.getOpponentId(action.playerId);
+        this.state.priorityPlayerId = this.state.timingWindow.priorityPlayerId;
+      }
+      if (res.success && !this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
+      return res;
+    }
+
     // 先摘下当前决策再结算：结算中产生的后续决策直接成为当前决策，排队中的决策随后进行
     this.state.currentPendingChoice = undefined;
     const result = this.effectEngine.handleChoiceResolution(action, choice);
@@ -1255,7 +1412,9 @@ export class GameEngine {
       if (card.isAirborne) continue; // 10.18.2 浮空模式卡牌驻留处理区直到下回合开始
       if (
         Object.values(this.state.cards).some(
-          (host) => host.isAirborne && (host.underneathCardIds.includes(card.instanceId) || host.attachedEquipmentId === card.instanceId)
+          (host) =>
+            host.isAirborne &&
+            (host.underneathCardIds.includes(card.instanceId) || getAttachedEquipmentIds(host).includes(card.instanceId))
         )
       ) {
         continue;

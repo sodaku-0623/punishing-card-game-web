@@ -9,7 +9,7 @@ import type {
 
 export type PlayerSide = 'SELF' | 'OPPONENT';
 export type OrbColorFilter = 'ANY' | 'SAME' | 'RED' | 'BLUE' | 'YELLOW';
-export type ModifierDuration = 'END_OF_TURN' | 'END_OF_NEXT_TURN' | 'UNTIL_LEAVE_ZONE';
+export type ModifierDuration = 'END_OF_TURN' | 'END_OF_NEXT_TURN' | 'END_OF_COMBAT' | 'UNTIL_LEAVE_ZONE';
 export type CompareOp = '>=' | '<=' | '==' | '>' | '<';
 
 /**
@@ -43,6 +43,8 @@ export interface CardFilter {
   isReady?: boolean;
   /** true = 仅处于协战状态的角色，false = 仅非协战状态 */
   hasPartner?: boolean;
+  /** 限制卡牌当前所在区域 (如 Q&A·7 BP01-056 结算时确认仍在墓地) */
+  inZone?: ZoneId;
   excludeSelf?: boolean;
 }
 
@@ -54,7 +56,8 @@ export type NumberExpr =
   | { kind: 'EROSION_MULT'; side: PlayerSide; multiplier: number }
   | { kind: 'ROLE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
   | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number }
-  | { kind: 'VAR_COUNT_MULT'; varName: string; multiplier: number };
+  | { kind: 'VAR_COUNT_MULT'; varName: string; multiplier: number }
+  | { kind: 'FLOOR_DIV'; expr: NumberExpr; divisor: number };
 
 /**
  * 声明式条件表达式 (支持前置条件、静态持续效果条件、「若如此做」等分支判定)
@@ -86,6 +89,7 @@ export type CardTargetRef =
   | { kind: 'VAR'; varName: string }
   | { kind: 'REST_OF_VAR'; allVar: string; excludeVar: string }
   | { kind: 'ALL_MATCHING_ROLES'; side: PlayerSide; filter?: CardFilter }
+  | { kind: 'ZONE_CARDS'; side: PlayerSide; zone: 'SIGNAL_ORB' | 'BATTLEFIELD'; filter?: CardFilter }
   | { kind: 'TRIGGER_ATTACKER' }
   | { kind: 'TRIGGER_BLOCKER' }
   | { kind: 'TRIGGER_HOST' };
@@ -125,6 +129,13 @@ export type AbilityCost =
       kind: 'TAP_SELF_AND_DISCARD_HAND';
       count: number;
       filter?: CardFilter;
+      prompt?: string;
+      choiceEffectType?: string;
+    }
+  | {
+      kind: 'TAP_SELF_AND_ELIMINATE_ORBS';
+      filter: OrbColorFilter;
+      count: number;
       prompt?: string;
       choiceEffectType?: string;
     }
@@ -183,7 +194,11 @@ export type EffectStep =
   | {
       op: 'CHOOSE_ZONE_CARDS';
       side: PlayerSide;
-      zone: 'HAND' | 'GRAVEYARD' | 'SIGNAL_ORB' | 'COST' | 'DECK';
+      zone: 'HAND' | 'GRAVEYARD' | 'SIGNAL_ORB' | 'COST' | 'DECK' | 'BATTLEFIELD';
+      /** 可选多区域联合选择 (如 BP01-028 墓地+费用区合计最多6张<万世铭>) */
+      zones?: ('HAND' | 'GRAVEYARD' | 'SIGNAL_ORB' | 'COST' | 'DECK' | 'BATTLEFIELD')[];
+      /** zone 为 BATTLEFIELD 时：true 仅匹配卡位顶层卡牌 (不含附着装备与下方牌) */
+      topLevelOnly?: boolean;
       prompt: string;
       filter?: CardFilter;
       requireEmptySlot?: boolean;
@@ -217,6 +232,8 @@ export type EffectStep =
       modes: { id: string; label: string; steps: EffectStep[] }[];
       min?: number;
       max?: number;
+      /** 动态计算需要选择的不可重复模式数量 (如 BP01-028 每2张选1项、BP01-059 每1张选1项) */
+      pickCountExpr?: NumberExpr;
       choiceEffectType?: string;
     }
   | {
@@ -232,12 +249,35 @@ export type EffectStep =
   | {
       op: 'DISCARD_COST_STEP';
       count: number;
+      /** 可选最小弃牌数 (默认等于 count；如 BP01-059「丢弃手牌最多2张」时 minCount=1, count=2) */
+      minCount?: number;
       filter?: CardFilter;
       optional?: boolean;
       prompt?: string;
       choiceEffectType?: string;
       savePaidToVar?: string;
       onPaid: EffectStep[];
+    }
+  | {
+      /** 横置我方战场顶层竖直卡牌作为可选代价 (如 BP01-023 Q&A·2/7：不含附着装备与下方牌) */
+      op: 'TAP_FIELD_CARD_COST_STEP';
+      optional?: boolean;
+      prompt?: string;
+      choiceEffectType?: string;
+      onPaid: EffectStep[];
+    }
+  | {
+      /** 将变量中选出的装备牌附着到指定战场角色 (如 BP01-014 / BP01-016 从墓地装备太刀) */
+      op: 'EQUIP_FROM_VAR';
+      varName: string;
+      host: CardTargetRef;
+    }
+  | {
+      /** 将变量中选出的信号球放置到信号球区任意位置 (如 BP01-038 万世铭·重铸) */
+      op: 'PLACE_ORB_AT_POSITION';
+      varName: string;
+      prompt?: string;
+      choiceEffectType?: string;
     }
   | {
       op: 'SHUFFLE_DECK';
@@ -266,6 +306,8 @@ export type EffectStep =
       /** 仅 toZone === 'UNDERNEATH' 时必填：指定置入哪张战场角色下方 */
       underneathHost?: CardTargetRef;
       isFaceUp?: boolean;
+      /** 移动到费用区等区域时的竖直/横置状态 (如 BP01-029 竖直放费用区、BP01-039 横置放对方费用区) */
+      isReady?: boolean;
       /** 仅 toZone === 'BATTLEFIELD' 时有效：是否以横置状态出场 (如 ST05-002) */
       enterTapped?: boolean;
       /** 仅 toZone === 'BATTLEFIELD' 时有效：是否自动触发被出场角色的【出】能力 */
@@ -329,6 +371,7 @@ export type EffectStep =
       target: CardTargetRef;
       pp?: NumberExpr;
       dp?: NumberExpr;
+      setBasePP?: NumberExpr;
       setPP?: NumberExpr;
       setDP?: NumberExpr;
       charge?: NumberExpr;
@@ -400,6 +443,21 @@ export type DeclarativeTriggerMatcher =
       kind: 'SELF_ATTACKING';
     }
   | {
+      kind: 'SELF_ATTACKING_OR_BLOCKING';
+    }
+  | {
+      kind: 'SELF_ATTACK_END';
+    }
+  | {
+      /** 由 MODIFY_STATS.grantedTriggerIds 动态赋予：该牌攻击的充能步骤中充能满足条件卡牌时触发 (如 BP01-028) */
+      kind: 'GRANTED_ATTACK_CHARGE_CARD';
+      chargedCardFilter?: CardFilter;
+    }
+  | {
+      /** 墓地中触发：我方消除信号球时触发 (如 BP01-056/056a/056b 梦赴光寥之乡) */
+      kind: 'SELF_IN_GRAVEYARD_ON_SELF_ORBS_ELIMINATED';
+    }
+  | {
       kind: 'SELF_BLOCKED_ATTACK_END';
     }
   | {
@@ -428,9 +486,17 @@ export type DeclarativeTriggerMatcher =
 export interface DeclarativeTriggerSpec {
   abilityId: string;
   eventType: TriggerEventType;
+  /** 可选多事件触发 (如 BP01-029 同时监听 ATTACK_DECLARED 与 BLOCK_DECLARED) */
+  eventTypes?: TriggerEventType[];
   oncePerTurn?: boolean;
+  /** 可选代价未支付时不消耗【回合1】次数 (如 Q&A·2/7 BP01-023) */
+  deferOncePerTurnUntilCostPaid?: boolean;
   /** 「《XXX》的该能力每回合最多发动1次」(按玩家+能力ID限制，如 ST06-008) */
   oncePerTurnByPlayer?: boolean;
+  /** 「《XXX》的该能力每回合最多发动 N 次」(如 Q&A·7 BP01-056 N=2) */
+  maxPerTurnByPlayer?: number;
+  /** 跨异画同编号共享的按玩家每回合计数键 (如 BP01-056/056a/056b) */
+  sharedTurnKey?: string;
   /** 触发与结算的前置条件 (如 10.14 晖形态有效) */
   condition?: ConditionExpr;
   matcher: DeclarativeTriggerMatcher;
@@ -463,6 +529,8 @@ export interface DeclarativeStaticEffectSpec {
   orbValue?: number;
   treatedAsNames?: string[];
   unblockableMaxPP?: number;
+  /** 允许同时装备 2 张<封刃太刀>装备 (BP01-014 / BP01-016 / BP01-017) */
+  canDualEquipFengren?: boolean;
   /** 是否依赖特征层 (8.9.1.d) */
   dependsOnTraits?: boolean;
 }
@@ -512,7 +580,20 @@ export interface CardEffectSpec {
     setCost?: number;
     discount?: number;
   };
-  /** 【永】手牌静态费用减免 (8.6.2.c，如 ST03-011 按角色计数减费、ST05-009 晖形态固定减费) */
+  /** 装备在符合条件的角色下方时，赋予该角色的【起】动能力 (如 BP01-022 夜煌—小太刀，Q&A·2 按装备实例+宿主各自计次) */
+  equipmentGrantedActivate?: {
+    requiredHostName?: string;
+    requiredHostTrait?: string;
+    label: string;
+    activate: NonNullable<CardEffectSpec['activate']>;
+  };
+  /** 使用该牌时可丢弃手牌中满足条件的任意张牌来减费 (如 BP01-067 最后的晚空) */
+  playDiscardDiscount?: {
+    filter: CardFilter;
+    discountPerCard: number;
+    prompt?: string;
+  };
+  /** 【永】手牌静态费用减免 (8.6.2.c，如 ST03-011 按角色计数减费、ST05-009 晖形态固定减费、BP01-059 墓地计数减费) */
   handCostDiscount?:
     | {
         filter: CardFilter;
@@ -521,5 +602,10 @@ export interface CardEffectSpec {
     | {
         condition: ConditionExpr;
         flatDiscount: number;
+      }
+    | {
+        zone: ZoneId;
+        filter: CardFilter;
+        discountPerCard: number;
       };
 }
