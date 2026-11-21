@@ -95,6 +95,8 @@ export interface StaticContribution {
   grantedTriggerIds?: string[];
   canAttackPlayerOnEnterTurn?: boolean;
   unblockableMaxPP?: number;
+  /** 允许同时装备 2 张<封刃太刀>装备 (BP01-014 / BP01-016 / BP01-017) */
+  canDualEquipFengren?: boolean;
   appliedByPlayerId?: string;
 }
 
@@ -112,6 +114,7 @@ export interface EvaluatedCardStats {
   grantedTriggerIds: string[];
   canAttackPlayerOnEnterTurn: boolean;
   unblockableMaxPP?: number;
+  canDualEquipFengren?: boolean;
 }
 
 export interface EffectiveOrbInfo {
@@ -136,6 +139,7 @@ interface TimestampedNonStat {
   grantedTriggerIds?: string[];
   canAttackPlayerOnEnterTurn?: boolean;
   unblockableMaxPP?: number;
+  canDualEquipFengren?: boolean;
 }
 
 interface TimestampedStat {
@@ -228,9 +232,20 @@ export class ContinuousEffectEngine {
     let pp = cardDef?.basePP ?? 0;
     let dp = cardDef?.baseDP ?? 0;
 
-    // 4.18.2 装备角色的 PP 会增加其装备牌的基本 PP 数值
-    if (card.attachedEquipmentId) {
-      const eqCard = this.state.cards[card.attachedEquipmentId];
+    // 8.9.1.a 基本 PP 覆盖效果 (如 BP01-028「基本PP变为9999」)，在装备与 Layer 2 增减之前生效
+    const basePPOverrides = (card.modifiers ?? [])
+      .filter((m) => m.setBasePP !== undefined)
+      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    for (const m of basePPOverrides) {
+      pp = m.setBasePP!;
+    }
+
+    // 4.18.2 装备角色的 PP 会增加其全部装备牌的基本 PP 数值 (支持双持装备)
+    const eqIds: string[] = [];
+    if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
+    if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
+    for (const eqId of eqIds) {
+      const eqCard = this.state.cards[eqId];
       if (eqCard) {
         const eqDef = this.getDef(eqCard);
         pp += eqDef?.basePP ?? 0;
@@ -261,6 +276,7 @@ export class ContinuousEffectEngine {
     const grantedTriggersSet = new Set<string>();
     let canAttackPlayerOnEnterTurn = false;
     let unblockableMaxPP: number | undefined;
+    let canDualEquipFengren = false;
     const orbColorsSet = new Set<SignalOrbColor>();
     if (cardDef?.signalOrb) {
       orbColorsSet.add(cardDef.signalOrb as SignalOrbColor);
@@ -379,6 +395,7 @@ export class ContinuousEffectEngine {
           grantedTriggerIds: contrib.grantedTriggerIds,
           canAttackPlayerOnEnterTurn: contrib.canAttackPlayerOnEnterTurn,
           unblockableMaxPP: contrib.unblockableMaxPP,
+          canDualEquipFengren: contrib.canDualEquipFengren,
         });
       }
     }
@@ -399,6 +416,7 @@ export class ContinuousEffectEngine {
         keywordsSet.clear();
         grantedTriggersSet.clear();
         unblockableMaxPP = undefined;
+        canDualEquipFengren = false;
         if (hasInherentCannotAttack) {
           prohibitionsSet.delete('CANNOT_ATTACK');
         }
@@ -424,6 +442,9 @@ export class ContinuousEffectEngine {
       if (op.unblockableMaxPP !== undefined) {
         unblockableMaxPP =
           unblockableMaxPP === undefined ? op.unblockableMaxPP : Math.max(unblockableMaxPP, op.unblockableMaxPP);
+      }
+      if (op.canDualEquipFengren) {
+        canDualEquipFengren = true;
       }
       if (op.removeKeywords) {
         for (const kw of op.removeKeywords) keywordsSet.delete(kw);
@@ -547,6 +568,7 @@ export class ContinuousEffectEngine {
       grantedTriggerIds: Array.from(grantedTriggersSet),
       canAttackPlayerOnEnterTurn,
       unblockableMaxPP,
+      canDualEquipFengren,
     };
   }
 

@@ -85,6 +85,8 @@ export interface CardModifier {
   /** 8.9.1.e 适用顺序时间戳 (单调递增，随快照保存) */
   timestamp?: number;
   pp?: number;
+  /** 8.9.1.a 覆盖基本 PP (如 BP01-028「基本PP变为9999」，在装备与 Layer 2 PP 增减之前生效) */
+  setBasePP?: number;
   /** 8.9.1.e / Q&A·6「PP 变为 X」，覆盖此前的 PP 增减 */
   setPP?: number;
   dp?: number;
@@ -128,6 +130,8 @@ export interface CardInstance {
   slotIndex?: number; // 战场卡位 0..4 (3.2.3)
   underneathCardIds: string[]; // 8.11 升变垫在下方的卡牌
   attachedEquipmentId?: string; // 4.18 装备的装备牌ID
+  /** 可同时装备多张装备时 (如 BP01-014/016/017 双持<封刃太刀>) 附加的其余装备牌 ID */
+  extraAttachedEquipmentIds?: string[];
   isFaceUp: boolean; // 4.6.2 正面 / 背面
   isReady: boolean; // 4.6.1 竖直 / 横置
   /** 10.15 冰冻状态：下个回合竖直阶段不因规则竖直，竖直阶段结束时解除 (10.15.3) */
@@ -197,7 +201,15 @@ export interface PendingTrigger {
   controllerPlayerId: string;
   label?: string; // 展示给玩家的触发能力说明 (用于多触发顺序选择与前端展示)
   oncePerTurn?: boolean; // 10.1 【回合1】限制 (按实例计数)
+  /** 自定义每回合次数限制键 (如 Q&A·2 不同装备分别赋予同一角色的同文本能力各自计次) */
+  oncePerTurnKey?: string;
+  /** 可选代价未支付时不消耗【回合1】次数 (如 Q&A·2/7 BP01-023 夜煌—大太刀) */
+  deferOncePerTurnUntilCostPaid?: boolean;
   oncePerTurnByPlayer?: boolean; // 「《XXX》的该能力每回合最多发动1次」(按玩家+能力ID计数)
+  /** 「《XXX》的该能力每回合最多发动 N 次」(如 Q&A·7 BP01-056 梦赴光寥之乡 N=2) */
+  maxPerTurnByPlayer?: number;
+  /** 跨同编号异画共享的按玩家每回合计数键 (如 BP01-056/056a/056b) */
+  sharedTurnKey?: string;
   triggerContext: Record<string, unknown>;
 }
 

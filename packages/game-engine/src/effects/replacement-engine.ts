@@ -60,6 +60,7 @@ export interface ReplacementRuleContext {
   getZoneCards: (playerId: string, zone: ZoneId) => CardInstance[];
   hasLostAbilities: (cardInstanceId: string) => boolean;
   hasCardName: (cardInstanceId: string, name: string) => boolean;
+  sendCardToGraveyard?: (cardInstanceId: string) => void;
 }
 
 /**
@@ -104,6 +105,7 @@ export interface InterceptMoveResult {
  */
 export class ReplacementEngine {
   private rules: ReplacementRule[] = [];
+  private sendCardToGraveyardCallback?: (cardInstanceId: string) => void;
 
   constructor(
     private state: GameState,
@@ -113,6 +115,10 @@ export class ReplacementEngine {
     private hasCardName: (cardInstanceId: string, name: string) => boolean
   ) {
     this.registerBuiltinReplacements();
+  }
+
+  setSendCardToGraveyardHandler(handler: (cardInstanceId: string) => void): void {
+    this.sendCardToGraveyardCallback = handler;
   }
 
   /** 注册卡牌级或扩展置换规则 */
@@ -406,10 +412,63 @@ export class ReplacementEngine {
       getZoneCards: this.getZoneCards,
       hasLostAbilities: this.hasLostAbilities,
       hasCardName: this.hasCardName,
+      sendCardToGraveyard: this.sendCardToGraveyardCallback,
     };
   }
 
   private registerBuiltinReplacements(): void {
+    // BP01-017 露西亚·深红囚影：该牌离场时，若同时装备<小太刀>和<大太刀>，将其放置到墓地并改为不离场 (8.10.1.a)
+    this.registerRule({
+      id: 'builtin:BP01-017_LEAVE_REPLACEMENT',
+      eventTypes: ['DESTROY_ROLE', 'MOVE_CARD'],
+      apply: (event, ctx) => {
+        if (event.type === 'MOVE_CARD') {
+          if (event.fromZone !== 'BATTLEFIELD' || event.toZone === 'BATTLEFIELD' || event.isOrphanCleanup) {
+            return undefined;
+          }
+        } else if (event.type !== 'DESTROY_ROLE') {
+          return undefined;
+        }
+        const card = ctx.state.cards[event.cardInstanceId];
+        if (!card || card.cardNumber !== 'BP01-017' || card.zone !== 'BATTLEFIELD') return undefined;
+        if (ctx.hasLostAbilities(card.instanceId)) return undefined;
+
+        const eqIds: string[] = [];
+        if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
+        if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
+        if (eqIds.length < 2) return undefined;
+
+        const getTraits = (eqId: string): string[] => {
+          const eq = ctx.state.cards[eqId];
+          if (!eq) return [];
+          const def = ctx.cardDb.getCard(eq.cardNumber) || (eq.cardId ? ctx.cardDb.getCard(eq.cardId) : undefined);
+          return def?.traits ?? [];
+        };
+
+        const smallId = eqIds.find((id) => getTraits(id).includes('小太刀'));
+        const largeId = eqIds.find((id) => id !== smallId && getTraits(id).includes('大太刀'));
+        if (!smallId || !largeId) return undefined;
+
+        // 卸下并送入墓地
+        const remain = eqIds.filter((id) => id !== smallId && id !== largeId);
+        card.attachedEquipmentId = remain[0];
+        card.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;
+        for (const sacId of [smallId, largeId]) {
+          if (ctx.sendCardToGraveyard) {
+            ctx.sendCardToGraveyard(sacId);
+          } else {
+            const sac = ctx.state.cards[sacId];
+            if (sac) {
+              sac.zone = 'GRAVEYARD';
+              sac.slotIndex = undefined;
+              sac.isFaceUp = true;
+            }
+          }
+        }
+        return { kind: 'PREVENT' };
+      },
+    });
+
     // Q&A·9 BP04-065 莱特宁：装备角色《比安卡·真理》离场导致莱特宁无所属送墓时，强制置换为放置到我方信号球区最下方
     this.registerRule({
       id: 'builtin:BP04-065_ORPHAN_TO_ORB_BOTTOM',

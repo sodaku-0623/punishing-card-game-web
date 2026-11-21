@@ -39,6 +39,14 @@ export class PresetCardEffects {
     return this.interpreter.handlesActivation(cardNumber);
   }
 
+  handlesActivationForCard(playerId: string, cardId: string, def: CardVersionData): boolean {
+    return this.interpreter.handlesActivationForCard(playerId, cardId, def);
+  }
+
+  getSpec(cardNumber: string) {
+    return this.interpreter.getSpec(cardNumber);
+  }
+
   isVanillaEntry(cardNumber: string): boolean {
     return this.interpreter.isVanillaEntry(cardNumber);
   }
@@ -71,8 +79,8 @@ export class PresetCardEffects {
     this.interpreter.enter(playerId, roleId, def);
   }
 
-  activate(playerId: string, cardId: string, def: CardVersionData): Result {
-    return this.interpreter.activate(playerId, cardId, def);
+  activate(playerId: string, cardId: string, def: CardVersionData, abilityIndex?: number): Result {
+    return this.interpreter.activate(playerId, cardId, def, abilityIndex);
   }
 
   resolveChoice(action: ChoiceAction, choice: PendingChoice): Result {

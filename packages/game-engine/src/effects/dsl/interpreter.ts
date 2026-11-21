@@ -9,6 +9,7 @@ import {
 import type { CardEffectContext, CardEffectEngine } from '../card-effects.js';
 import { addCardModifier, ContinuousEffectEngine } from '../continuous-effects.js';
 import type { TriggerManager } from '../../priority/trigger-system.js';
+import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
 import type {
   AbilityCost,
   CardEffectSpec,
@@ -27,9 +28,10 @@ type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 type PendingDslAction =
-  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; savePaidToVar?: string }
-  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; savePaidToVar?: string }
-  | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean }
+  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
+  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
+  | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string }
+  | { kind: 'COST_TAP_FIELD'; onPaid: EffectStep[]; optional: boolean }
   | { kind: 'CONFIRM_YES_NO'; onYes: EffectStep[]; onNo?: EffectStep[] }
   | { kind: 'CHOOSE_MODE'; modes: { id: string; steps: EffectStep[] }[] }
   | {
@@ -40,7 +42,20 @@ type PendingDslAction =
       maxTotalCost?: number;
       requireEmptySlotCount?: boolean;
     }
-  | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' };
+  | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' }
+  | { kind: 'PLACE_ORB_AT_POSITION'; cardInstanceId: string }
+  | { kind: 'WANSHIMING_REVEAL_TO_COST'; revealVar: string }
+  | {
+      kind: 'CHOOSE_ACTIVATED_ABILITY';
+      entries: Array<{
+        id: string;
+        cardNumber: string;
+        usageKey: string;
+        oncePerTurn: boolean;
+        cost?: AbilityCost;
+        steps: EffectStep[];
+      }>;
+    };
 
 /**
  * 声明式效果执行帧：纯 JSON 可序列化，存放于 PendingChoice.metadata.__dsl，
@@ -86,6 +101,58 @@ export class DeclarativeEffectInterpreter {
     return Boolean(this.registry.get(cardNumber)?.activate);
   }
 
+  /** 检查该战场卡牌自身或其附着装备是否拥有任何声明式【起】动能力 (支持 BP01-022 装备赋予【起】) */
+  handlesActivationForCard(playerId: string, cardId: string, def: CardVersionData): boolean {
+    if (this.registry.get(def.cardNumber)?.activate) return true;
+    return this.getEquipmentGrantedActivates(playerId, cardId).length > 0;
+  }
+
+  private getEquipmentGrantedActivates(
+    playerId: string,
+    hostCardId: string
+  ): Array<{
+    equipCardId: string;
+    equipCardNumber: string;
+    usageKey: string;
+    label: string;
+    activate: NonNullable<CardEffectSpec['activate']>;
+  }> {
+    const host = this.ctx.state.cards[hostCardId];
+    if (!host || host.zone !== 'BATTLEFIELD' || host.controllerPlayerId !== playerId) return [];
+    const hostDef = this.def(host);
+    const results: Array<{
+      equipCardId: string;
+      equipCardNumber: string;
+      usageKey: string;
+      label: string;
+      activate: NonNullable<CardEffectSpec['activate']>;
+    }> = [];
+    for (const eqId of getAttachedEquipmentIds(host)) {
+      const eq = this.ctx.state.cards[eqId];
+      if (!eq) continue;
+      if (this.ctx.continuousEffects?.hasLostInherentAbilities(eq.instanceId)) continue;
+      const eqSpec = this.registry.get(eq.cardNumber);
+      const granted = eqSpec?.equipmentGrantedActivate;
+      if (!granted) continue;
+      if (granted.requiredHostName) {
+        const nameOk = this.ctx.continuousEffects
+          ? this.ctx.continuousEffects.hasCardName(host.instanceId, granted.requiredHostName)
+          : hostDef?.name === granted.requiredHostName;
+        if (!nameOk) continue;
+      }
+      if (granted.requiredHostTrait && !this.hasTrait(host, granted.requiredHostTrait)) continue;
+      // Q&A·2：不同装备卡给予的同文本能力各自计次，且升变后宿主实例变化可再次发动
+      results.push({
+        equipCardId: eq.instanceId,
+        equipCardNumber: eq.cardNumber,
+        usageKey: `${hostCardId}:equipAct:${eq.instanceId}`,
+        label: granted.label,
+        activate: granted.activate,
+      });
+    }
+    return results;
+  }
+
   isVanillaEntry(cardNumber: string): boolean {
     return Boolean(this.registry.get(cardNumber)?.vanillaEntry);
   }
@@ -106,8 +173,14 @@ export class DeclarativeEffectInterpreter {
         ? spec.handCostDiscount.flatDiscount
         : 0;
     }
-    const matched = this.roles(playerId).filter((r) => this.matchesFilter(r, spec.handCostDiscount && 'filter' in spec.handCostDiscount ? spec.handCostDiscount.filter : {}));
-    return matched.length * spec.handCostDiscount.discountPerRole;
+    if ('zone' in spec.handCostDiscount) {
+      const rule = spec.handCostDiscount;
+      const matched = this.zone(playerId, rule.zone).filter((c) => this.matchesFilter(c, rule.filter));
+      return matched.length * rule.discountPerCard;
+    }
+    const rule = spec.handCostDiscount;
+    const matched = this.roles(playerId).filter((r) => this.matchesFilter(r, rule.filter));
+    return matched.length * rule.discountPerRole;
   }
 
   /**
@@ -192,28 +265,117 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
-   * 执行声明式【起】起动能力
+   * 执行声明式【起】起动能力 (支持角色自身【起】与装备赋予的【起】，如 BP01-022 夜煌—小太刀)
    */
-  activate(playerId: string, cardId: string, def: CardVersionData): Result {
+  activate(playerId: string, cardId: string, def: CardVersionData, abilityIndex?: number): Result {
     const spec = this.registry.get(def.cardNumber);
-    if (!spec?.activate) return { success: false, error: '未注册该起动能力的声明式效果' };
+    const grantedList = this.getEquipmentGrantedActivates(playerId, cardId);
+    const allEntries: Array<{
+      id: string;
+      label: string;
+      cardNumber: string;
+      usageKey: string;
+      activate: NonNullable<CardEffectSpec['activate']>;
+    }> = [];
+
+    if (spec?.activate) {
+      allEntries.push({
+        id: 'self',
+        label: `【${def.name}】自身【起】动能力`,
+        cardNumber: def.cardNumber,
+        usageKey: cardId,
+        activate: spec.activate,
+      });
+    }
+    grantedList.forEach((g, idx) => {
+      allEntries.push({
+        id: `equip-${idx}-${g.equipCardId}`,
+        label: g.label,
+        cardNumber: g.equipCardNumber,
+        usageKey: g.usageKey,
+        activate: g.activate,
+      });
+    });
+
+    if (allEntries.length === 0) {
+      return { success: false, error: '未注册该起动能力的声明式效果' };
+    }
 
     const player = this.ctx.state.players[playerId]!;
-    if (spec.activate.oncePerTurn && (player.turnAbilityUsage[cardId] ?? 0) > 0) {
-      return { success: false, error: '该能力本回合已发动过 (【回合1】)' };
-    }
-    if (spec.activate.condition && !this.evalCondition(spec.activate.condition, playerId, cardId, {})) {
-      return { success: false, error: spec.activate.conditionError ?? '不满足该起动能力的发动条件' };
+    const runEntry = (entry: (typeof allEntries)[number]): Result => {
+      if (entry.activate.oncePerTurn && (player.turnAbilityUsage[entry.usageKey] ?? 0) > 0) {
+        return { success: false, error: '该能力本回合已发动过 (【回合1】)' };
+      }
+      if (entry.activate.condition && !this.evalCondition(entry.activate.condition, playerId, cardId, {})) {
+        return { success: false, error: entry.activate.conditionError ?? '不满足该起动能力的发动条件' };
+      }
+      return this.executeWithCost(
+        entry.cardNumber,
+        cardId,
+        playerId,
+        entry.activate.cost,
+        entry.activate.steps,
+        Boolean(entry.activate.oncePerTurn),
+        {},
+        entry.usageKey
+      );
+    };
+
+    if (allEntries.length === 1) {
+      return runEntry(allEntries[0]!);
     }
 
-    return this.executeWithCost(
-      def.cardNumber,
-      cardId,
-      playerId,
-      spec.activate.cost,
-      spec.activate.steps,
-      true
+    // 若调用方显式指定了非 0 的 abilityIndex，则直接执行对应条目 (方便测试与精确操作)
+    if (abilityIndex !== undefined && abilityIndex > 0 && abilityIndex < allEntries.length) {
+      return runEntry(allEntries[abilityIndex]!);
+    }
+
+    // 筛出当前尚未用尽回合1且满足前置条件的条目
+    const usable = allEntries.filter((e) => {
+      if (e.activate.oncePerTurn && (player.turnAbilityUsage[e.usageKey] ?? 0) > 0) return false;
+      if (e.activate.condition && !this.evalCondition(e.activate.condition, playerId, cardId, {})) return false;
+      return true;
+    });
+    if (usable.length === 0) {
+      return runEntry(allEntries[0]!);
+    }
+    if (usable.length === 1) {
+      return runEntry(usable[0]!);
+    }
+
+    // 多个可用【起】动能力共存 (如 BP01-014 自身【起】 + 夜煌—小太刀【起】)：交由玩家选择
+    this.enqueueDslChoice(
+      {
+        id: this.choiceId('choose-act'),
+        playerId,
+        choiceType: 'SELECT_OPTION',
+        prompt: `【${def.name}】请选择要发动的【起】动能力：`,
+        options: usable.map((e) => ({ id: e.id, label: e.label })),
+        effectType: 'DSL_CHOOSE_ACTIVATED_ABILITY',
+        sourceCardInstanceId: cardId,
+        minSelections: 1,
+        maxSelections: 1,
+      },
+      {
+        cardNumber: def.cardNumber,
+        sourceCardInstanceId: cardId,
+        playerId,
+        vars: {},
+        remainingSteps: [],
+        pendingAction: {
+          kind: 'CHOOSE_ACTIVATED_ABILITY',
+          entries: usable.map((e) => ({
+            id: e.id,
+            cardNumber: e.cardNumber,
+            usageKey: e.usageKey,
+            oncePerTurn: Boolean(e.activate.oncePerTurn),
+            cost: e.activate.cost,
+            steps: e.activate.steps,
+          })),
+        },
+      }
     );
+    return { success: true };
   }
 
   /**
@@ -224,10 +386,13 @@ export class DeclarativeEffectInterpreter {
       for (const trig of spec.triggers ?? []) {
         triggerMgr.registerTrigger({
           abilityId: trig.abilityId,
-          eventTypes: [trig.eventType],
+          eventTypes: trig.eventTypes && trig.eventTypes.length > 0 ? trig.eventTypes : [trig.eventType],
           oncePerTurn: trig.oncePerTurn,
+          deferOncePerTurnUntilCostPaid: trig.deferOncePerTurnUntilCostPaid,
           oncePerTurnByPlayer: trig.oncePerTurnByPlayer,
-          collect: ({ state, event, cardDb, fieldMgr, continuousEffects }) => {
+          maxPerTurnByPlayer: trig.maxPerTurnByPlayer,
+          sharedTurnKey: trig.sharedTurnKey,
+          collect: ({ state, event, cardDb, fieldMgr, continuousEffects, zoneMgr }) => {
             const condOk = (pid: string, srcId: string) =>
               !trig.condition || this.evalCondition(trig.condition, pid, srcId, {});
 
@@ -236,11 +401,15 @@ export class DeclarativeEffectInterpreter {
                 const attackerId = event.cardInstanceId;
                 if (!attackerId) return [];
                 const attacker = state.cards[attackerId];
-                if (!attacker?.attachedEquipmentId) return [];
-                const equip = state.cards[attacker.attachedEquipmentId];
-                if (equip?.cardNumber !== spec.cardNumber) return [];
+                if (!attacker) return [];
+                const eqIds = getAttachedEquipmentIds(attacker);
+                if (eqIds.length === 0) return [];
                 const attackerDef = cardDb.getCard(attacker.cardNumber);
-                if (trig.matcher.requiredHostName && attackerDef?.name !== trig.matcher.requiredHostName) {
+                if (
+                  trig.matcher.requiredHostName &&
+                  !continuousEffects.hasCardName(attacker.instanceId, trig.matcher.requiredHostName) &&
+                  attackerDef?.name !== trig.matcher.requiredHostName
+                ) {
                   return [];
                 }
                 if (
@@ -250,15 +419,27 @@ export class DeclarativeEffectInterpreter {
                   return [];
                 }
                 if (!condOk(attacker.controllerPlayerId, attacker.instanceId)) return [];
-                return [
-                  {
+                const matches = [];
+                for (const eqId of eqIds) {
+                  const equip = state.cards[eqId];
+                  if (!equip || equip.cardNumber !== spec.cardNumber) continue;
+                  if (continuousEffects.hasLostInherentAbilities(equip.instanceId)) continue;
+                  // Q&A·2：不同装备卡给予同一角色的同文本能力各自计次，且升变后宿主实例变化可再次发动
+                  const onceKey = `${attacker.instanceId}:${trig.abilityId}:${equip.instanceId}`;
+                  matches.push({
                     sourceCardInstanceId: attacker.instanceId,
                     sourceCardNumber: spec.cardNumber,
                     controllerPlayerId: attacker.controllerPlayerId,
                     label: trig.label,
-                    triggerContext: { equipmentCardId: equip.instanceId, attackerCardId: attacker.instanceId },
-                  },
-                ];
+                    oncePerTurnKey: onceKey,
+                    triggerContext: {
+                      equipmentCardId: equip.instanceId,
+                      attackerCardId: attacker.instanceId,
+                      oncePerTurnKey: onceKey,
+                    },
+                  });
+                }
+                return matches;
               }
               case 'OTHER_FRIENDLY_ROLE_ENTERED': {
                 const enteredId = event.cardInstanceId;
@@ -306,6 +487,84 @@ export class DeclarativeEffectInterpreter {
                     triggerContext: { attackerCardId: attacker.instanceId },
                   },
                 ];
+              }
+              case 'SELF_ATTACKING_OR_BLOCKING': {
+                const targetId = event.type === 'BLOCK_DECLARED' ? event.cardInstanceId : event.cardInstanceId;
+                if (!targetId) return [];
+                const role = state.cards[targetId];
+                if (!role || role.cardNumber !== spec.cardNumber) return [];
+                if (!fieldMgr.isSlotRole(role.controllerPlayerId, role.instanceId)) return [];
+                if (!condOk(role.controllerPlayerId, role.instanceId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: role.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: role.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext:
+                      event.type === 'BLOCK_DECLARED'
+                        ? { blockerCardId: role.instanceId, attackerCardId: event.targetCardId }
+                        : { attackerCardId: role.instanceId },
+                  },
+                ];
+              }
+              case 'SELF_ATTACK_END': {
+                const attackerId = event.cardInstanceId;
+                if (!attackerId) return [];
+                const attacker = state.cards[attackerId];
+                if (!attacker || attacker.cardNumber !== spec.cardNumber) return [];
+                if (!fieldMgr.isSlotRole(attacker.controllerPlayerId, attackerId)) return [];
+                if (!condOk(attacker.controllerPlayerId, attackerId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: attacker.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: attacker.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext: { attackerCardId: attacker.instanceId },
+                  },
+                ];
+              }
+              case 'GRANTED_ATTACK_CHARGE_CARD': {
+                if (event.chargeKind !== 'ATTACK') return [];
+                const attackerId = event.targetCardId;
+                const chargedId = event.cardInstanceId;
+                if (!attackerId || !chargedId) return [];
+                const attacker = state.cards[attackerId];
+                const charged = state.cards[chargedId];
+                if (!attacker || !charged || !fieldMgr.isSlotRole(attacker.controllerPlayerId, attackerId)) return [];
+                if (!continuousEffects.hasGrantedTrigger(attackerId, trig.abilityId)) return [];
+                if (trig.matcher.chargedCardFilter && !this.matchesFilter(charged, trig.matcher.chargedCardFilter, attackerId)) {
+                  return [];
+                }
+                if (!condOk(attacker.controllerPlayerId, attackerId)) return [];
+                return [
+                  {
+                    sourceCardInstanceId: attacker.instanceId,
+                    sourceCardNumber: attacker.cardNumber,
+                    controllerPlayerId: attacker.controllerPlayerId,
+                    label: trig.label,
+                    triggerContext: { attackerCardId: attacker.instanceId, chargedCardId: charged.instanceId },
+                  },
+                ];
+              }
+              case 'SELF_IN_GRAVEYARD_ON_SELF_ORBS_ELIMINATED': {
+                const playerId = event.playerId;
+                if (!playerId) return [];
+                const gyCards = zoneMgr.getCardsInZone(playerId, 'GRAVEYARD');
+                const matches = [];
+                for (const c of gyCards) {
+                  if (c.cardNumber !== spec.cardNumber) continue;
+                  if (!condOk(playerId, c.instanceId)) continue;
+                  matches.push({
+                    sourceCardInstanceId: c.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: playerId,
+                    label: trig.label,
+                    triggerContext: {},
+                  });
+                }
+                return matches;
               }
               case 'SELF_BLOCKED_ATTACK_END': {
                 const blockerId = event.blockerCardId;
@@ -360,9 +619,10 @@ export class DeclarativeEffectInterpreter {
                 for (const slot of fieldMgr.getSlots(playerId)) {
                   if (trig.matcher.sourceKind === 'EQUIPMENT') {
                     const role = slot.roleCardId ? state.cards[slot.roleCardId] : undefined;
-                    const equipIds = [role?.attachedEquipmentId, slot.standaloneEquipmentId].filter(
-                      (id): id is string => Boolean(id)
-                    );
+                    const equipIds = [
+                      ...getAttachedEquipmentIds(role),
+                      slot.standaloneEquipmentId,
+                    ].filter((id): id is string => Boolean(id));
                     for (const eid of equipIds) {
                       const eq = state.cards[eid];
                       if (!eq || eq.cardNumber !== spec.cardNumber) continue;
@@ -453,9 +713,14 @@ export class DeclarativeEffectInterpreter {
             const attackerId = pending.triggerContext.attackerCardId as string | undefined;
             const blockerId = pending.triggerContext.blockerCardId as string | undefined;
             const hostId = pending.triggerContext.hostCardId as string | undefined;
+            const onceKey =
+              (pending.triggerContext.oncePerTurnKey as string | undefined) ??
+              pending.oncePerTurnKey ??
+              `${pending.sourceCardInstanceId}:${pending.abilityId}`;
             if (attackerId) initialVars.__triggerAttacker = [attackerId];
             if (blockerId) initialVars.__triggerBlocker = [blockerId];
             if (hostId) initialVars.__triggerHost = [hostId];
+            initialVars.__oncePerTurnKey = [onceKey];
             this.executeWithCost(
               spec.cardNumber,
               pending.sourceCardInstanceId,
@@ -484,7 +749,8 @@ export class DeclarativeEffectInterpreter {
             eff.treatedAsOrbColors?.length ||
             eff.orbValue !== undefined ||
             eff.treatedAsNames?.length ||
-            eff.unblockableMaxPP !== undefined
+            eff.unblockableMaxPP !== undefined ||
+            eff.canDualEquipFengren === true
         );
         const hasStat =
           eff.pp !== undefined ||
@@ -554,6 +820,7 @@ export class DeclarativeEffectInterpreter {
                 ...(eff.orbValue !== undefined ? { orbValue: eff.orbValue } : {}),
                 ...(eff.treatedAsNames ? { treatedAsNames: eff.treatedAsNames } : {}),
                 ...(eff.unblockableMaxPP !== undefined ? { unblockableMaxPP: eff.unblockableMaxPP } : {}),
+                ...(eff.canDualEquipFengren ? { canDualEquipFengren: true } : {}),
               };
             },
           });
@@ -629,7 +896,7 @@ export class DeclarativeEffectInterpreter {
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
         }
         if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...selected];
-        if (pending.markUsed) this.markUsed(playerId, sourceCardInstanceId);
+        if (pending.markUsed) this.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
         return { success: true };
       }
@@ -648,7 +915,7 @@ export class DeclarativeEffectInterpreter {
         const paidIds = group.split(',');
         this.eliminate(playerId, paidIds);
         if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...paidIds];
-        if (pending.markUsed) this.markUsed(playerId, sourceCardInstanceId);
+        if (pending.markUsed) this.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
         return { success: true };
       }
@@ -662,7 +929,27 @@ export class DeclarativeEffectInterpreter {
         const [kind, id] = pick.split(':') as [string, string];
         if (kind === 'orb') this.eliminate(playerId, [id]);
         else this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
-        if (pending.markUsed) this.markUsed(playerId, sourceCardInstanceId);
+        if (pending.markUsed) this.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
+        return { success: true };
+      }
+
+      case 'COST_TAP_FIELD': {
+        if (selected.length === 0) {
+          if (pending.optional) {
+            if (remaining.length > 0) {
+              this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            }
+            return { success: true };
+          }
+          return { success: false, error: '必须横置我方战场1张牌作为代价' };
+        }
+        const tapId = selected[0]!;
+        const tapCard = this.ctx.state.cards[tapId];
+        if (!tapCard || !tapCard.isReady) {
+          return { success: false, error: '所选战场卡牌不可横置' };
+        }
+        tapCard.isReady = false;
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
         return { success: true };
       }
@@ -735,6 +1022,51 @@ export class DeclarativeEffectInterpreter {
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
       }
+
+      case 'PLACE_ORB_AT_POSITION': {
+        const idx = Number(selected[0] ?? '0');
+        const safeIdx = Number.isFinite(idx) ? idx : 0;
+        this.ctx.zoneMgr.insertCardIntoZoneAtIndex(pending.cardInstanceId, 'SIGNAL_ORB', safeIdx, {
+          isFaceUp: true,
+          isReady: true,
+        });
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+        return { success: true };
+      }
+
+      case 'WANSHIMING_REVEAL_TO_COST': {
+        const movedSet = new Set<string>();
+        for (const id of selected) {
+          const card = this.ctx.state.cards[id];
+          if (!card || card.zone !== 'PROCESSING') continue;
+          // 3.6.4 / Q&A·5：以横置状态放置到费用区，费用区满 10 张时 ZoneManager 自动改放墓地
+          this.ctx.zoneMgr.moveCard(id, 'COST', { isFaceUp: true, isReady: false });
+          this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
+          movedSet.add(id);
+        }
+        if (movedSet.size > 0 && vars[pending.revealVar]) {
+          vars[pending.revealVar] = vars[pending.revealVar]!.filter((id) => !movedSet.has(id));
+        }
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+        return { success: true };
+      }
+
+      case 'CHOOSE_ACTIVATED_ABILITY': {
+        const picked = pending.entries.find((e) => e.id === selected[0]);
+        if (!picked) {
+          return { success: false, error: '未找到所选的起动能力' };
+        }
+        return this.executeWithCost(
+          picked.cardNumber,
+          sourceCardInstanceId,
+          playerId,
+          picked.cost,
+          picked.steps,
+          picked.oncePerTurn,
+          vars,
+          picked.usageKey
+        );
+      }
     }
   }
 
@@ -749,11 +1081,13 @@ export class DeclarativeEffectInterpreter {
     cost: AbilityCost | undefined,
     steps: EffectStep[],
     markUsed: boolean,
-    initialVars: Record<string, string[]> = {}
+    initialVars: Record<string, string[]> = {},
+    markUsedKey?: string
   ): Result {
     const vars = { ...initialVars };
+    const effectiveUsageKey = markUsedKey ?? sourceId;
     if (!cost) {
-      if (markUsed) this.markUsed(playerId, sourceId);
+      if (markUsed) this.markUsed(playerId, effectiveUsageKey);
       this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
       return { success: true };
     }
@@ -765,7 +1099,7 @@ export class DeclarativeEffectInterpreter {
           return { success: false, error: '该牌已横置，无法支付「横置该牌」的代价' };
         }
         card.isReady = false;
-        if (markUsed) this.markUsed(playerId, sourceId);
+        if (markUsed) this.markUsed(playerId, effectiveUsageKey);
         this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
         return { success: true };
       }
@@ -802,7 +1136,63 @@ export class DeclarativeEffectInterpreter {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: { kind: 'COST_DISCARD', onPaid: [...steps], optional: false, markUsed },
+            pendingAction: {
+              kind: 'COST_DISCARD',
+              onPaid: [...steps],
+              optional: false,
+              markUsed,
+              markUsedKey: effectiveUsageKey,
+            },
+          }
+        );
+        return { success: true };
+      }
+
+      case 'TAP_SELF_AND_ELIMINATE_ORBS': {
+        const card = this.ctx.state.cards[sourceId];
+        if (!card || !card.isReady) {
+          return { success: false, error: '该牌已横置，无法支付「横置该牌」的代价' };
+        }
+        const groups = this.orbGroups(playerId, cost.count, cost.filter);
+        if (groups.length === 0) {
+          return { success: false, error: '信号球区没有满足代价的相邻信号球，无法发动 (8.4.2.b)' };
+        }
+        card.isReady = false;
+        if (groups.length === 1) {
+          this.eliminate(playerId, groups[0]!);
+          if (markUsed) this.markUsed(playerId, effectiveUsageKey);
+          this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+          return { success: true };
+        }
+        const effectType = cost.choiceEffectType ?? 'PRESET_ORB_COST';
+        this.enqueueDslChoice(
+          {
+            id: this.choiceId('tap-orb-cost'),
+            playerId,
+            choiceType: 'SELECT_OPTION',
+            prompt: cost.prompt ?? '选择要消除的信号球 (起动能力的代价)',
+            options: groups.map((g) => ({
+              id: g.join(','),
+              label: `消除 ${g.map((id) => this.def(this.ctx.state.cards[id]!)?.name ?? id).join('、')}`,
+            })),
+            effectType,
+            sourceCardInstanceId: sourceId,
+            minSelections: 1,
+            maxSelections: 1,
+          },
+          {
+            cardNumber,
+            sourceCardInstanceId: sourceId,
+            playerId,
+            vars,
+            remainingSteps: [],
+            pendingAction: {
+              kind: 'COST_ORB',
+              onPaid: [...steps],
+              optional: false,
+              markUsed,
+              markUsedKey: effectiveUsageKey,
+            },
           }
         );
         return { success: true };
@@ -814,7 +1204,7 @@ export class DeclarativeEffectInterpreter {
           return { success: false, error: '该牌不在战场，无法支付「放置到牌组底」的代价' };
         }
         this.ctx.zoneMgr.moveCardToBottomOfDeck(sourceId);
-        if (markUsed) this.markUsed(playerId, sourceId);
+        if (markUsed) this.markUsed(playerId, effectiveUsageKey);
         this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
         return { success: true };
       }
@@ -823,7 +1213,7 @@ export class DeclarativeEffectInterpreter {
         if (!this.ctx.payCost(playerId, cost.amount)) {
           return { success: false, error: `费用不足，需要支付 ${cost.amount} 费` };
         }
-        if (markUsed) this.markUsed(playerId, sourceId);
+        if (markUsed) this.markUsed(playerId, effectiveUsageKey);
         this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
         return { success: true };
       }
@@ -858,7 +1248,13 @@ export class DeclarativeEffectInterpreter {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: { kind: 'COST_DISCARD', onPaid: [...steps], optional, markUsed },
+            pendingAction: {
+              kind: 'COST_DISCARD',
+              onPaid: [...steps],
+              optional,
+              markUsed,
+              markUsedKey: effectiveUsageKey,
+            },
           }
         );
         return { success: true };
@@ -875,7 +1271,7 @@ export class DeclarativeEffectInterpreter {
         if (!optional && groups.length === 1) {
           this.eliminate(playerId, groups[0]!);
           if (cost.savePaidToVar) vars[cost.savePaidToVar] = [...groups[0]!];
-          if (markUsed) this.markUsed(playerId, sourceId);
+          if (markUsed) this.markUsed(playerId, effectiveUsageKey);
           this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
           return { success: true };
         }
@@ -910,6 +1306,7 @@ export class DeclarativeEffectInterpreter {
               onPaid: [...steps],
               optional,
               markUsed,
+              markUsedKey: effectiveUsageKey,
               savePaidToVar: cost.savePaidToVar,
             },
           }
@@ -947,7 +1344,13 @@ export class DeclarativeEffectInterpreter {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: { kind: 'COST_ORB_OR_DISCARD', onPaid: [...steps], optional, markUsed },
+            pendingAction: {
+              kind: 'COST_ORB_OR_DISCARD',
+              onPaid: [...steps],
+              optional,
+              markUsed,
+              markUsedKey: effectiveUsageKey,
+            },
           }
         );
         return { success: true };
@@ -983,7 +1386,50 @@ export class DeclarativeEffectInterpreter {
 
         case 'REVEAL_TOP': {
           const targetPlayer = this.resolveSide(playerId, step.side ?? 'SELF');
-          vars[step.saveToVar] = this.revealTop(targetPlayer, step.count);
+          const revealedIds = this.revealTop(targetPlayer, step.count);
+          vars[step.saveToVar] = revealedIds;
+          // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色公开进入处理区时，可选改为横置放置到费用区 (Q&A·5)
+          const srcCard = sourceId ? this.ctx.state.cards[sourceId] : undefined;
+          const srcDef = srcCard ? this.def(srcCard) : undefined;
+          const isQuRole =
+            Boolean(srcCard && srcDef?.cardType === 'ROLE') &&
+            (Boolean(srcCard && this.hasTrait(srcCard, '曲')) || Boolean(srcDef?.name.includes('曲')));
+          if (isQuRole) {
+            const wanshimingCards = revealedIds
+              .map((id) => this.ctx.state.cards[id])
+              .filter(
+                (c): c is CardInstance =>
+                  Boolean(
+                    c &&
+                      c.zone === 'PROCESSING' &&
+                      (c.cardNumber === 'BP01-037' || c.cardNumber === 'BP01-038')
+                  )
+              );
+            if (wanshimingCards.length > 0) {
+              this.enqueueDslChoice(
+                {
+                  id: this.choiceId('wanshiming-reveal-cost'),
+                  playerId: targetPlayer,
+                  choiceType: 'SELECT_CARDS',
+                  prompt: '公开的《万世铭》/《万世铭·重铸》因<曲>角色进入处理区，可选择任意张改为以横置状态放置到费用区（满10张时改放墓地）：',
+                  options: wanshimingCards.map((c) => this.effects.createGeneralCardChoiceOption(c)),
+                  effectType: 'BP01_WANSHIMING_REVEAL_TO_COST',
+                  sourceCardInstanceId: sourceId,
+                  minSelections: 0,
+                  maxSelections: wanshimingCards.length,
+                },
+                {
+                  cardNumber,
+                  sourceCardInstanceId: sourceId,
+                  playerId,
+                  vars,
+                  remainingSteps: queue,
+                  pendingAction: { kind: 'WANSHIMING_REVEAL_TO_COST', revealVar: step.saveToVar },
+                }
+              );
+              return;
+            }
+          }
           break;
         }
 
@@ -1062,9 +1508,41 @@ export class DeclarativeEffectInterpreter {
 
         case 'CHOOSE_ZONE_CARDS': {
           const targetPlayer = this.resolveSide(playerId, step.side);
-          const candidates = this.zone(targetPlayer, step.zone).filter((c) =>
-            !step.filter || this.matchesFilter(c, step.filter, sourceId)
-          );
+          const zonesToScan = step.zones && step.zones.length > 0 ? step.zones : [step.zone];
+          const rawPool: CardInstance[] = [];
+          const seenIds = new Set<string>();
+          for (const z of zonesToScan) {
+            if (z === 'BATTLEFIELD') {
+              for (const slot of this.ctx.fieldMgr.getSlots(targetPlayer)) {
+                const topIds = [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId].filter(
+                  (id): id is string => Boolean(id)
+                );
+                for (const id of topIds) {
+                  if (!seenIds.has(id) && this.ctx.state.cards[id]) {
+                    seenIds.add(id);
+                    rawPool.push(this.ctx.state.cards[id]!);
+                  }
+                }
+                if (!step.topLevelOnly && slot.roleCardId) {
+                  const role = this.ctx.state.cards[slot.roleCardId];
+                  for (const eqId of getAttachedEquipmentIds(role)) {
+                    if (!seenIds.has(eqId) && this.ctx.state.cards[eqId]) {
+                      seenIds.add(eqId);
+                      rawPool.push(this.ctx.state.cards[eqId]!);
+                    }
+                  }
+                }
+              }
+            } else {
+              for (const c of this.zone(targetPlayer, z)) {
+                if (!seenIds.has(c.instanceId)) {
+                  seenIds.add(c.instanceId);
+                  rawPool.push(c);
+                }
+              }
+            }
+          }
+          const candidates = rawPool.filter((c) => !step.filter || this.matchesFilter(c, step.filter, sourceId));
           if (candidates.length === 0 || (step.requireEmptySlot && !this.hasEmptySlot(playerId))) {
             vars[step.saveToVar] = [];
             break;
@@ -1153,15 +1631,31 @@ export class DeclarativeEffectInterpreter {
         }
 
         case 'CHOOSE_MODE': {
-          const min = step.min ?? 1;
-          const max = step.max ?? 1;
+          let min = step.min ?? 1;
+          let max = step.max ?? 1;
+          if (step.pickCountExpr !== undefined) {
+            const count = Math.min(
+              step.modes.length,
+              Math.max(0, Math.floor(this.evalNumberExpr(step.pickCountExpr, playerId, sourceId, vars)))
+            );
+            if (count <= 0) break;
+            if (count === step.modes.length) {
+              // 须全选且不可重复时直接按顺序执行全部模式
+              const allSteps: EffectStep[] = [];
+              for (const m of step.modes) allSteps.push(...m.steps);
+              queue.unshift(...allSteps);
+              break;
+            }
+            min = count;
+            max = count;
+          }
           const effectType = step.choiceEffectType ?? `DSL_CHOOSE_MODE_${cardNumber}`;
           this.enqueueDslChoice(
             {
               id: this.choiceId(effectType),
               playerId,
               choiceType: 'SELECT_OPTION',
-              prompt: this.formatPrompt(step.prompt, playerId),
+              prompt: this.formatPrompt(step.prompt, playerId, { pickCount: max }),
               options: step.modes.map((m) => ({ id: m.id, label: m.label })),
               effectType,
               sourceCardInstanceId: sourceId,
@@ -1237,9 +1731,12 @@ export class DeclarativeEffectInterpreter {
             (c) => !step.filter || this.matchesFilter(c, step.filter, sourceId)
           );
           const optional = Boolean(step.optional);
-          if (hand.length < step.count) {
+          const requiredMin = step.minCount ?? step.count;
+          if (hand.length < requiredMin || hand.length === 0) {
             break;
           }
+          const maxDiscard = Math.min(step.count, hand.length);
+          const minDiscard = optional ? 0 : Math.min(requiredMin, maxDiscard);
           const effectType = step.choiceEffectType ?? `DSL_DISCARD_COST_${cardNumber}`;
           const promptBase = step.prompt ?? `请选择 ${step.count} 张手牌丢弃作为代价`;
           this.enqueueDslChoice(
@@ -1251,8 +1748,8 @@ export class DeclarativeEffectInterpreter {
               options: hand.map((c) => this.effects.createGeneralCardChoiceOption(c)),
               effectType,
               sourceCardInstanceId: sourceId,
-              minSelections: optional ? 0 : step.count,
-              maxSelections: step.count,
+              minSelections: minDiscard,
+              maxSelections: maxDiscard,
             },
             {
               cardNumber,
@@ -1266,6 +1763,111 @@ export class DeclarativeEffectInterpreter {
                 optional,
                 savePaidToVar: step.savePaidToVar,
               },
+            }
+          );
+          return;
+        }
+
+        case 'TAP_FIELD_CARD_COST_STEP': {
+          // Q&A·2/7 (BP01-023)：只能横置我方战场卡位上的竖直顶层卡牌 (角色/辅助机/单独装备)，不可横置装备中或下方的牌
+          const readyTopCards: CardInstance[] = [];
+          for (const slot of this.ctx.fieldMgr.getSlots(playerId)) {
+            for (const id of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+              if (!id) continue;
+              const c = this.ctx.state.cards[id];
+              if (c && c.isReady) readyTopCards.push(c);
+            }
+          }
+          if (readyTopCards.length === 0) break;
+          const optional = step.optional !== false;
+          const effectType = step.choiceEffectType ?? `DSL_TAP_FIELD_COST_${cardNumber}`;
+          const promptBase = step.prompt ?? '请选择我方战场 1 张竖直状态的卡牌横置作为代价';
+          this.enqueueDslChoice(
+            {
+              id: this.choiceId('tap-field-cost'),
+              playerId,
+              choiceType: 'SELECT_CARDS',
+              prompt: optional ? `${promptBase} (不选择则不发动)` : promptBase,
+              options: readyTopCards.map((c) => this.effects.createGeneralCardChoiceOption(c)),
+              effectType,
+              sourceCardInstanceId: sourceId,
+              minSelections: optional ? 0 : 1,
+              maxSelections: 1,
+            },
+            {
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars,
+              remainingSteps: queue,
+              pendingAction: {
+                kind: 'COST_TAP_FIELD',
+                onPaid: [...step.onPaid],
+                optional,
+              },
+            }
+          );
+          return;
+        }
+
+        case 'EQUIP_FROM_VAR': {
+          const eqIds = vars[step.varName] ?? [];
+          const hostId = this.resolveTargetIds(step.host, playerId, sourceId, vars)[0];
+          if (hostId) {
+            for (const eqId of eqIds) {
+              if (this.ctx.fieldMgr.equipToRole(playerId, eqId, hostId)) {
+                const eqCard = this.ctx.state.cards[eqId];
+                const eqDef = eqCard ? this.def(eqCard) : undefined;
+                if (eqDef) {
+                  this.effects.handleEquipmentBuff(hostId, eqDef);
+                  if (this.handlesEntry(eqDef.cardNumber)) {
+                    this.enter(playerId, eqId, eqDef);
+                  }
+                }
+              }
+            }
+          }
+          break;
+        }
+
+        case 'PLACE_ORB_AT_POSITION': {
+          const orbId = (vars[step.varName] ?? [])[0];
+          if (!orbId) break;
+          const orbZone = this.zone(playerId, 'SIGNAL_ORB');
+          if (orbZone.length === 0) {
+            this.ctx.zoneMgr.moveCard(orbId, 'SIGNAL_ORB', { isFaceUp: true, isReady: true });
+            break;
+          }
+          const options: { id: string; label: string }[] = [];
+          for (let pos = 0; pos <= orbZone.length; pos++) {
+            const label =
+              pos === 0
+                ? '放置到信号球区最下方 (位置 1)'
+                : pos === orbZone.length
+                  ? `放置到信号球区最上方 (位置 ${pos + 1})`
+                  : `放置到第 ${pos + 1} 位 (在【${this.def(orbZone[pos - 1]!)?.name ?? pos}】上方)`;
+            options.push({ id: String(pos), label });
+          }
+          const effectType = step.choiceEffectType ?? `DSL_PLACE_ORB_POS_${cardNumber}`;
+          this.enqueueDslChoice(
+            {
+              id: this.choiceId('place-orb-pos'),
+              playerId,
+              choiceType: 'SELECT_OPTION',
+              prompt: step.prompt ?? '请选择将该信号球放置到我方信号球区的哪个位置：',
+              options,
+              effectType,
+              sourceCardInstanceId: sourceId,
+              minSelections: 1,
+              maxSelections: 1,
+            },
+            {
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars,
+              remainingSteps: queue,
+              pendingAction: { kind: 'PLACE_ORB_AT_POSITION', cardInstanceId: orbId },
             }
           );
           return;
@@ -1335,8 +1937,11 @@ export class DeclarativeEffectInterpreter {
               this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: step.isFaceUp ?? true, toBottom: true });
               moved.push(id);
             } else if (step.toZone === 'COST') {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
-              this.ctx.zoneMgr.moveCard(id, 'COST', { isFaceUp: step.isFaceUp ?? false, isReady: true });
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'GRAVEYARD') continue;
+              this.ctx.zoneMgr.moveCard(id, 'COST', {
+                isFaceUp: step.isFaceUp ?? false,
+                isReady: step.isReady ?? true,
+              });
               this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
               moved.push(id);
             } else if (step.toZone === 'UNDERNEATH') {
@@ -1408,7 +2013,10 @@ export class DeclarativeEffectInterpreter {
         case 'MARK_TURN_ABILITY_USED': {
           const player = this.ctx.state.players[playerId];
           if (player) {
-            const key = `${sourceId}:${step.abilityKey}`;
+            const key =
+              step.abilityKey === '__TRIGGER_ONCE_KEY__' && vars.__oncePerTurnKey?.[0]
+                ? vars.__oncePerTurnKey[0]
+                : `${sourceId}:${step.abilityKey}`;
             player.turnAbilityUsage[key] = (player.turnAbilityUsage[key] ?? 0) + 1;
           }
           break;
@@ -1496,8 +2104,14 @@ export class DeclarativeEffectInterpreter {
             if (!card) continue;
             if (step.target.kind === 'SELF' && !this.ctx.fieldMgr.isSlotRole(playerId, id)) continue;
             const mod: CardModifier = {
+              ...(step.duration === 'END_OF_COMBAT'
+                ? { id: `combat-${card.instanceId}-${this.ctx.events.length}-${this.choiceSeq++}` }
+                : {}),
               ...(step.pp !== undefined ? { pp: this.evalNumberExpr(step.pp, playerId, sourceId, vars) } : {}),
               ...(step.dp !== undefined ? { dp: this.evalNumberExpr(step.dp, playerId, sourceId, vars) } : {}),
+              ...(step.setBasePP !== undefined
+                ? { setBasePP: this.evalNumberExpr(step.setBasePP, playerId, sourceId, vars) }
+                : {}),
               ...(step.setPP !== undefined ? { setPP: this.evalNumberExpr(step.setPP, playerId, sourceId, vars) } : {}),
               ...(step.setDP !== undefined ? { setDP: this.evalNumberExpr(step.setDP, playerId, sourceId, vars) } : {}),
               ...(step.charge !== undefined ? { charge: this.evalNumberExpr(step.charge, playerId, sourceId, vars) } : {}),
@@ -1645,6 +2259,12 @@ export class DeclarativeEffectInterpreter {
           .filter((r) => !target.filter || this.matchesFilter(r, target.filter, sourceId))
           .map((r) => r.instanceId);
       }
+      case 'ZONE_CARDS': {
+        const sidePlayer = this.resolveSide(playerId, target.side);
+        return this.zone(sidePlayer, target.zone)
+          .filter((c) => !target.filter || this.matchesFilter(c, target.filter, sourceId))
+          .map((c) => c.instanceId);
+      }
     }
   }
 
@@ -1671,6 +2291,8 @@ export class DeclarativeEffectInterpreter {
       }
       case 'VAR_COUNT_MULT':
         return (vars[expr.varName]?.length ?? 0) * expr.multiplier;
+      case 'FLOOR_DIV':
+        return Math.floor(this.evalNumberExpr(expr.expr, playerId, sourceId, vars) / expr.divisor);
     }
   }
 
@@ -1914,6 +2536,7 @@ export class DeclarativeEffectInterpreter {
     if (filter.isFaceUp !== undefined && card.isFaceUp !== filter.isFaceUp) return false;
     if (filter.isReady !== undefined && card.isReady !== filter.isReady) return false;
     if (filter.hasPartner !== undefined && Boolean(card.partnerCardId) !== filter.hasPartner) return false;
+    if (filter.inZone !== undefined && card.zone !== filter.inZone) return false;
     if (filter.maxEffectivePP !== undefined) {
       if (this.ctx.fieldMgr.calculateRoleEffectivePP(card.instanceId) > filter.maxEffectivePP) return false;
     }
@@ -1948,6 +2571,7 @@ export class DeclarativeEffectInterpreter {
   private resolveUntilTurn(duration: ModifierDuration, turn: number): number | undefined {
     switch (duration) {
       case 'END_OF_TURN':
+      case 'END_OF_COMBAT':
         return turn;
       case 'END_OF_NEXT_TURN':
         return turn + 1;

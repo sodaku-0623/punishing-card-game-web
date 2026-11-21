@@ -19,6 +19,11 @@ export class ZoneManager {
     chargeKind: 'ATTACK' | 'DAMAGE',
     attackerCardId?: string
   ) => void;
+  private onWanshimingChargeCallback?: (
+    playerId: string,
+    cardInstanceId: string,
+    attackerCardId: string
+  ) => boolean;
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
   private continuousEffects?: ContinuousEffectEngine;
@@ -37,6 +42,12 @@ export class ZoneManager {
 
   setReplacementEngine(engine: ReplacementEngine): void {
     this.replacementEngine = engine;
+  }
+
+  setWanshimingChargeHandler(
+    handler: (playerId: string, cardInstanceId: string, attackerCardId: string) => boolean
+  ): void {
+    this.onWanshimingChargeCallback = handler;
   }
 
   setChargeAutoHandler(
@@ -113,6 +124,18 @@ export class ZoneManager {
       effectiveToBottom = intercept.toBottom;
     }
 
+    // 3.6.4 费用区最多放置 10 张卡牌，若已满则改为正面放置到墓地
+    if (
+      effectiveToZone === 'COST' &&
+      fromZone !== 'COST' &&
+      this.getCardsInZone(card.controllerPlayerId, 'COST').length >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY
+    ) {
+      effectiveToZone = 'GRAVEYARD';
+      effectiveFaceUp = true;
+      effectiveReady = true;
+      effectiveToBottom = false;
+    }
+
     const leftBattlefieldSnapshot =
       fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD' && !options?.skipLeftFieldTrigger
         ? this.snapshotProvider?.(cardInstanceId)
@@ -154,6 +177,7 @@ export class ZoneManager {
       if (!options?.preserveAttachments) {
         card.underneathCardIds = [];
         card.attachedEquipmentId = undefined;
+        card.extraAttachedEquipmentIds = undefined;
       }
       card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
       this.replacementEngine?.cleanupForCard(cardInstanceId);
@@ -262,7 +286,17 @@ export class ZoneManager {
 
     // 若该卡牌本身是其他卡牌的装备、下方牌或协战搭档，解除关系
     for (const other of Object.values(this.state.cards)) {
-      if (other.attachedEquipmentId === card.instanceId) other.attachedEquipmentId = undefined;
+      if (other.attachedEquipmentId === card.instanceId) {
+        if (other.extraAttachedEquipmentIds && other.extraAttachedEquipmentIds.length > 0) {
+          other.attachedEquipmentId = other.extraAttachedEquipmentIds.shift();
+          if (other.extraAttachedEquipmentIds.length === 0) other.extraAttachedEquipmentIds = undefined;
+        } else {
+          other.attachedEquipmentId = undefined;
+        }
+      } else if (other.extraAttachedEquipmentIds?.includes(card.instanceId)) {
+        const rest = other.extraAttachedEquipmentIds.filter((id) => id !== card.instanceId);
+        other.extraAttachedEquipmentIds = rest.length > 0 ? rest : undefined;
+      }
       if (other.underneathCardIds?.includes(card.instanceId)) {
         other.underneathCardIds = other.underneathCardIds.filter((id) => id !== card.instanceId);
       }
@@ -290,8 +324,10 @@ export class ZoneManager {
 
     const orphanIds = [...(card.underneathCardIds ?? [])];
     if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
+    if (card.extraAttachedEquipmentIds?.length) orphanIds.push(...card.extraAttachedEquipmentIds);
     card.underneathCardIds = [];
     card.attachedEquipmentId = undefined;
+    card.extraAttachedEquipmentIds = undefined;
     return { orphanIds, partnerId };
   }
 
@@ -308,6 +344,60 @@ export class ZoneManager {
     player.availableOpenCostCount = openCards.filter((c) => c.isReady).length;
     player.exhaustedOpenCostCount = openCards.length - player.availableOpenCostCount;
     player.hiddenCostCount = costCards.length - openCards.length;
+  }
+
+  /**
+   * 将卡牌插入到指定区域的第 index 个位置 (0 = 最下方 / 队首，N = 最上方 / 队尾，供 BP01-038 任意位置放信号球)
+   */
+  insertCardIntoZoneAtIndex(
+    cardInstanceId: string,
+    zone: ZoneId,
+    index: number,
+    options?: { isFaceUp?: boolean; isReady?: boolean }
+  ): boolean {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return false;
+    const playerId = card.controllerPlayerId;
+    const moved = this.moveCard(cardInstanceId, zone, {
+      isFaceUp: options?.isFaceUp ?? true,
+      isReady: options?.isReady ?? true,
+    });
+    if (!moved || card.zone !== zone) return false;
+
+    const zoneCards = this.getCardsInZone(playerId, zone).filter((c) => c.instanceId !== cardInstanceId);
+    const clampedIndex = Math.max(0, Math.min(index, zoneCards.length));
+    const orderedIds = [
+      ...zoneCards.slice(0, clampedIndex).map((c) => c.instanceId),
+      cardInstanceId,
+      ...zoneCards.slice(clampedIndex).map((c) => c.instanceId),
+    ];
+    const zoneIdSet = new Set(orderedIds);
+    const newCards: Record<string, CardInstance> = {};
+    let inserted = false;
+    for (const [k, v] of Object.entries(this.state.cards)) {
+      if (zoneIdSet.has(k)) {
+        if (!inserted) {
+          for (const oid of orderedIds) {
+            const c = this.state.cards[oid];
+            if (c) newCards[oid] = c;
+          }
+          inserted = true;
+        }
+      } else {
+        newCards[k] = v;
+      }
+    }
+    if (!inserted) {
+      for (const oid of orderedIds) {
+        const c = this.state.cards[oid];
+        if (c) newCards[oid] = c;
+      }
+    }
+    for (const k of Object.keys(this.state.cards)) {
+      delete this.state.cards[k];
+    }
+    Object.assign(this.state.cards, newCards);
+    return true;
   }
 
   /**
@@ -507,6 +597,24 @@ export class ZoneManager {
     // 8.10.1.a 若进入处理区被置换到其他区域 (如 BP01-037 改放费用区)，不触发进入处理区后的充能事件
     if (topCard.zone !== 'PROCESSING') {
       return topCard.instanceId;
+    }
+
+    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能进入处理区时，可选改为以横置状态放置到费用区
+    if (
+      chargeKind === 'ATTACK' &&
+      attackerCardId &&
+      (topCard.cardNumber === 'BP01-037' || topCard.cardNumber === 'BP01-038')
+    ) {
+      const attacker = this.state.cards[attackerCardId];
+      const attackerDef = attacker
+        ? this.cardDb.getCard(attacker.cardNumber) || (attacker.cardId ? this.cardDb.getCard(attacker.cardId) : undefined)
+        : undefined;
+      const isQuRole =
+        Boolean(attacker && this.continuousEffects?.hasTrait(attackerCardId, '曲')) ||
+        Boolean(attackerDef?.traits?.includes('曲') || attackerDef?.name.includes('曲'));
+      if (isQuRole && this.onWanshimingChargeCallback?.(playerId, topCard.instanceId, attackerCardId)) {
+        return topCard.instanceId;
+      }
     }
 
     this.onTriggerEventCallback?.({
