@@ -5,6 +5,8 @@ import { BattlefieldManager } from '../zone/battlefield-manager.js';
 import { ICardDatabase } from '../database/card-registry.js';
 import { CheckTimingManager } from '../priority/check-timing.js';
 import { ReplacementEngine } from '../effects/replacement-engine.js';
+import type { ContinuousEffectEngine } from '../effects/continuous-effects.js';
+import { enqueuePendingChoice } from '../state/pending-choice.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 /**
@@ -18,6 +20,7 @@ export class CombatManager {
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
   private replacementEngine?: ReplacementEngine;
+  private continuousEffects?: ContinuousEffectEngine;
 
   constructor(
     private state: GameState,
@@ -30,6 +33,10 @@ export class CombatManager {
 
   setReplacementEngine(engine: ReplacementEngine): void {
     this.replacementEngine = engine;
+  }
+
+  setContinuousEffectEngine(engine: ContinuousEffectEngine): void {
+    this.continuousEffects = engine;
   }
 
   setTriggerEventHandler(
@@ -58,16 +65,24 @@ export class CombatManager {
     }
     const baseDp = Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(attackerCardId));
     if (baseDp <= 0) return 0;
-    return this.replacementEngine
+    let dmg = this.replacementEngine
       ? this.replacementEngine.interceptDealDamage(this.state.nonActivePlayerId, baseDp, attackerCardId)
       : baseDp;
+    const cap = this.state.currentCombat?.maxDamageInDamageStep;
+    if (cap !== undefined) {
+      dmg = Math.min(dmg, Math.max(0, cap));
+    }
+    return dmg;
   }
 
   /**
-   * 10.14 暮形态 / 晖形态是否有效：操控玩家信号球区最下方卡牌的费用为偶数 / 奇数；
+   * 10.14 暮形态 / 晖形态是否有效：操控玩家信号球区最下方卡牌的实时费用为偶数 / 奇数 (BP02-024 +1 后生效)；
    * 信号球区为空或最下方为背面表示的卡牌时均无效 (10.14.4、Q&A 第6期)
    */
   isFormActive(playerId: string, form: '暮' | '晖'): boolean {
+    if (this.continuousEffects) {
+      return this.continuousEffects.isFormActive(playerId, form);
+    }
     const bottom = this.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB')[0];
     if (!bottom || !bottom.isFaceUp) return false;
     const cost = this.getDef(bottom)?.cost;
@@ -131,7 +146,7 @@ export class CombatManager {
       return { success: false, error: '【突进】在出场回合只能选择对方角色作为攻击对象 (10.6.1.a)' };
     }
 
-    // 7.2.1.b.1 攻击对象：对方玩家或对方战场横置状态的角色
+    // 7.2.1.b.1 攻击对象：对方玩家或对方战场横置状态的角色 (BP03-012 / BP03-022 可选竖直角色)
     const opponentPlayerId = this.state.nonActivePlayerId;
     if (targetType === 'CHARACTER') {
       if (!targetCardId) {
@@ -141,15 +156,92 @@ export class CombatManager {
       if (!targetCard || !this.fieldMgr.isSlotRole(opponentPlayerId, targetCardId)) {
         return { success: false, error: '目标角色不存在或不属于对手战场' };
       }
+      const targetCost = this.continuousEffects
+        ? this.continuousEffects.getEffectiveCardCost(targetCardId)
+        : (this.getDef(targetCard)?.cost ?? 0);
       if (targetCard.isReady) {
-        return { success: false, error: '只能选择对方战场的横置状态的角色作为攻击对象 (7.2.1.b.1)' };
+        const maxReadyCost = attackerEval.canAttackReadyRolesMaxCost;
+        if (maxReadyCost === undefined || targetCost > maxReadyCost) {
+          return { success: false, error: '只能选择对方战场的横置状态的角色作为攻击对象 (7.2.1.b.1)' };
+        }
+      }
+      // BP02-010 丽芙·极昼【永】：对方选择角色作为攻击对象时，若可以选择该角色，则必须选择该角色
+      const targetEval = this.fieldMgr.evaluateRoleStats(targetCardId);
+      if (!targetEval.mustBeAttackTarget) {
+        const forcedExists = this.fieldMgr.getSlots(opponentPlayerId).some((s) => {
+          const rid = s.roleCardId ?? (s.assistCardId && this.fieldMgr.isSlotRole(opponentPlayerId, s.assistCardId) ? s.assistCardId : undefined);
+          if (!rid) return false;
+          const rc = this.state.cards[rid];
+          if (!rc) return false;
+          if (rc.isReady) {
+            const maxReadyCost = attackerEval.canAttackReadyRolesMaxCost;
+            const rcCost = this.continuousEffects
+              ? this.continuousEffects.getEffectiveCardCost(rid)
+              : (this.getDef(rc)?.cost ?? 0);
+            if (maxReadyCost === undefined || rcCost > maxReadyCost) return false;
+          }
+          return this.fieldMgr.evaluateRoleStats(rid).mustBeAttackTarget === true;
+        });
+        if (forcedExists) {
+          return { success: false, error: '必须选择对方战场上带有强制被攻击效果的《丽芙·极昼》作为攻击对象' };
+        }
       }
     } else if (targetType !== 'PLAYER') {
       return { success: false, error: '攻击对象类型不正确' };
     }
 
-    // 7.2.1.b 将攻击角色横置
-    attacker.isReady = false;
+    // PR-031 七实·芒星之迹【永】：若我方信号球区的牌为7张以下，攻击须先将手牌1张雷属性牌背面放信号球区最下方
+    if (
+      attacker.cardNumber === 'PR-031' &&
+      !attackerEval.abilitiesLost &&
+      this.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB').length <= 7
+    ) {
+      const handLightning = this.zoneMgr.getCardsInZone(playerId, 'HAND').filter((c) => {
+        const def = this.getDef(c);
+        return def?.attribute === 'LIGHTNING';
+      });
+      if (handLightning.length === 0) {
+        return {
+          success: false,
+          error: '信号球区为7张以下时，手牌需要有雷属性卡牌以背面表示放置到信号球区最下方才能攻击 (PR-031)',
+        };
+      }
+      enqueuePendingChoice(this.state, {
+        id: `choice-pr031-attack-${attackerCardId}-${this.events.length}`,
+        playerId,
+        choiceType: 'SELECT_CARDS',
+        prompt: '【PR-031 七实·芒星之迹】信号球区为7张以下，请选择手牌 1 张雷属性卡牌以背面表示放置到信号球区最下方：',
+        options: handLightning.map((c) => {
+          const def = this.getDef(c);
+          return {
+            id: c.instanceId,
+            label: `${def?.name ?? c.cardNumber} (${c.cardNumber})`,
+            payload: { cardInstanceId: c.instanceId, cardNumber: c.cardNumber },
+          };
+        }),
+        effectType: 'PR031_ATTACK_PAY_ORB',
+        sourceCardInstanceId: attackerCardId,
+        metadata: { attackerCardId, targetType, targetCardId },
+        minSelections: 1,
+        maxSelections: 1,
+      });
+      return { success: true };
+    }
+
+    return this.finalizeDeclaredAttack(playerId, attackerCardId, targetType, targetCardId);
+  }
+
+  /**
+   * 7.2.1.b~d 攻击条件及前置代价满足后正式横置并进入攻击流程 (供 declareAttack 与 PR-031 回调复用)
+   */
+  finalizeDeclaredAttack(
+    playerId: string,
+    attackerCardId: string,
+    targetType: 'PLAYER' | 'CHARACTER',
+    targetCardId?: string
+  ): { success: boolean; error?: string } {
+    // 7.2.1.b 将攻击角色横置 (经统一入口以触发 CARD_TAPPED)
+    this.zoneMgr.setCardReady(attackerCardId, false);
 
     this.state.phase = 'COMBAT_ATTACK_DECLARATION';
     this.state.currentCombat = {
@@ -249,7 +341,7 @@ export class CombatManager {
         }
       }
 
-      blocker.isReady = false;
+      this.zoneMgr.setCardReady(blockerCardId, false);
       combat.blockerCardId = blockerCardId;
       this.events.push({ type: 'BLOCK_DECLARED', blockerCardId, isBlocked: true });
       this.onTriggerEventCallback?.({
@@ -452,6 +544,7 @@ export class CombatManager {
     if (combat.pendingDamageCardId !== undefined) {
       const cardId = combat.pendingDamageCardId || undefined;
       combat.pendingDamageCardId = undefined;
+      combat.dealtPlayerDamage = true;
       this.zoneMgr.completeDamageCharge(defenderId, cardId);
       this.checkTimingMgr.resolveCheckTiming();
       return true;
@@ -465,9 +558,21 @@ export class CombatManager {
       return true;
     }
 
-    // 7.5.1.c 检查时机后进入「攻击结束时」
+    // 7.5.1.c 检查时机后发射「对玩家造成伤害时」事件并进入「攻击结束时」
     if (!this.checkTimingMgr.resolveCheckTiming() || this.state.status === 'FINISHED') {
       return false;
+    }
+    if (combat.dealtPlayerDamage) {
+      combat.dealtPlayerDamage = false;
+      this.onTriggerEventCallback?.({
+        type: 'ATTACK_DEALT_PLAYER_DAMAGE',
+        playerId: this.state.activePlayerId,
+        cardInstanceId: combat.attackerCardId,
+        subjectSnapshot: this.snapshotProvider?.(combat.attackerCardId),
+      });
+      if (!this.checkTimingMgr.resolveCheckTiming() || (this.state.status as string) === 'FINISHED') {
+        return false;
+      }
     }
     combat.step = 'END';
     return true;
@@ -577,6 +682,7 @@ export class CombatManager {
         blockerCardId: combat.blockerCardId,
         targetType: combat.targetType,
         targetCardId: combat.targetCardId,
+        attackChargedHasChargeAuto: combat.attackChargedHasChargeAuto,
         subjectSnapshot: this.snapshotProvider?.(combat.attackerCardId),
       });
     }

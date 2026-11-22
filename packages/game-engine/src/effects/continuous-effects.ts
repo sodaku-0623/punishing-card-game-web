@@ -1,12 +1,31 @@
 import {
   CardInstance,
   CardModifier,
+  CardType,
   GameState,
   ProhibitionFlag,
   SignalOrbColor,
 } from '@zhanshuang/shared';
 import { ICardDatabase } from '../database/card-registry.js';
 import { parseInherentChargeCount, parseInherentKeywords } from '../rules/keywords.js';
+
+/** 规范化官方卡表名称中 `· ` 与 `·` 的排版空格差异（如「卡列尼娜· 辉晓」≡「卡列尼娜·辉晓」） */
+export function normalizeCardName(name: string): string {
+  return name.replace(/·\s+/g, '·');
+}
+
+/** 展开官方卡表与卡面规则文本之间的同义特征名称 (异聚体<->神寂启示录、火花<->机械教会、太刀类->封刃太刀) */
+export function expandBaseTraits(rawTraits?: string[]): Set<string> {
+  const traits = new Set<string>(rawTraits ?? []);
+  if (traits.has('异聚体')) traits.add('神寂启示录');
+  if (traits.has('神寂启示录')) traits.add('异聚体');
+  if (traits.has('火花')) traits.add('机械教会');
+  if (traits.has('机械教会')) traits.add('火花');
+  if (traits.has('太刀') || traits.has('小太刀') || traits.has('大太刀')) {
+    traits.add('封刃太刀');
+  }
+  return traits;
+}
 
 /**
  * 8.9.1.e 分配单调递增的持续效果时间戳 (保存在 GameState 中以随快照恢复)
@@ -46,8 +65,8 @@ export interface StaticContinuousRule {
   layer: 'NON_STAT' | 'STAT';
   /** 允许生效的来源卡区域 (默认为仅战场 ['BATTLEFIELD']；如 BP04-032 炽能球在 SIGNAL_ORB，BP02-040 在所有区域) */
   sourceZones?: CardInstance['zone'][];
-  /** 来源卡类别：默认 FIELD_ROLE (战场卡位角色)；PARTNER 表示协战搭档的【协战永】；UNDERNEATH 表示角色下方牌的【永】 */
-  sourceKind?: 'FIELD_ROLE' | 'PARTNER' | 'UNDERNEATH';
+  /** 来源卡类别：默认 FIELD_ROLE (战场卡位角色)；PARTNER 表示协战搭档的【协战永】；UNDERNEATH 表示角色下方牌的【永】；EQUIPPED 表示附着装备赋予宿主的【永】 */
+  sourceKind?: 'FIELD_ROLE' | 'PARTNER' | 'UNDERNEATH' | 'EQUIPPED';
   /** 8.9.1.d 依赖标注：若会赋予特征，将在同一层内先于依赖特征的规则适用 */
   providesTraits?: boolean;
   dependsOnTraits?: boolean;
@@ -82,12 +101,19 @@ export interface StaticContribution {
   setPP?: number;
   dp?: number;
   setDP?: number;
+  setBaseDP?: number;
   charge?: number;
   setCharge?: number;
   keywords?: string[];
   removeKeywords?: string[];
   addTraits?: string[];
+  clearBaseTraits?: boolean;
   loseAbilities?: boolean;
+  setCardType?: CardType;
+  costDelta?: number;
+  setCost?: number;
+  canAttackReadyRolesMaxCost?: number;
+  mustBeAttackTarget?: boolean;
   prohibitions?: ProhibitionFlag[];
   treatedAsOrbColors?: SignalOrbColor[];
   orbValue?: number;
@@ -115,6 +141,11 @@ export interface EvaluatedCardStats {
   canAttackPlayerOnEnterTurn: boolean;
   unblockableMaxPP?: number;
   canDualEquipFengren?: boolean;
+  cardType?: CardType;
+  costDelta?: number;
+  setCost?: number;
+  canAttackReadyRolesMaxCost?: number;
+  mustBeAttackTarget?: boolean;
 }
 
 export interface EffectiveOrbInfo {
@@ -129,9 +160,15 @@ interface TimestampedNonStat {
   providesTraits?: boolean;
   dependsOnTraits?: boolean;
   addTraits?: string[];
+  clearBaseTraits?: boolean;
   keywords?: string[];
   removeKeywords?: string[];
   loseAbilities?: boolean;
+  setCardType?: CardType;
+  costDelta?: number;
+  setCost?: number;
+  canAttackReadyRolesMaxCost?: number;
+  mustBeAttackTarget?: boolean;
   prohibitions?: ProhibitionFlag[];
   treatedAsOrbColors?: SignalOrbColor[];
   orbValue?: number;
@@ -148,6 +185,7 @@ interface TimestampedStat {
   setPP?: number;
   dp?: number;
   setDP?: number;
+  setBaseDP?: number;
   charge?: number;
   setCharge?: number;
   appliedByPlayerId?: string;
@@ -185,13 +223,14 @@ export class ContinuousEffectEngine {
   }
 
   /**
-   * 10.14 暮形态 / 晖形态是否有效：操控玩家信号球区最下方卡牌费用为偶数 / 奇数
+   * 10.14 暮形态 / 晖形态是否有效：操控玩家信号球区最下方卡牌的实时费用为偶数 / 奇数 (BP02-024 +1 后生效)
    */
   isFormActive(playerId: string, form: '暮' | '晖'): boolean {
     const bottom = this.getCardsInZone(playerId, 'SIGNAL_ORB')[0];
     if (!bottom || !bottom.isFaceUp) return false;
-    const cost = this.getDef(bottom)?.cost;
-    if (cost === undefined) return false;
+    const def = this.getDef(bottom);
+    if (!def) return false;
+    const cost = this.getEffectiveCardCost(bottom.instanceId);
     return form === '暮' ? cost % 2 === 0 : cost % 2 === 1;
   }
 
@@ -230,15 +269,15 @@ export class ContinuousEffectEngine {
 
     // ==================== Layer 0: 8.9.1.a 卡牌基本情报 ====================
     let pp = cardDef?.basePP ?? 0;
-    let dp = cardDef?.baseDP ?? 0;
 
-    // 8.9.1.a 基本 PP 覆盖效果 (如 BP01-028「基本PP变为9999」)，在装备与 Layer 2 增减之前生效
+    // 8.9.1.a 基本 PP / 基本 DP 覆盖效果 (基本 DP 覆盖统一在 Layer 2 的 statOps 前按时间戳适用)
     const basePPOverrides = (card.modifiers ?? [])
       .filter((m) => m.setBasePP !== undefined)
       .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
     for (const m of basePPOverrides) {
       pp = m.setBasePP!;
     }
+    let baseDPValue = cardDef?.baseDP ?? 0;
 
     // 4.18.2 装备角色的 PP 会增加其全部装备牌的基本 PP 数值 (支持双持装备)
     const eqIds: string[] = [];
@@ -254,22 +293,23 @@ export class ContinuousEffectEngine {
 
     // 8.13.4.b 协战角色的基本 PP、基本 DP 增加其协战搭档对应的印刷基本数值
     // (8.13.4.b.2 只参考搭档印刷基本数值，不参考搭档自身的持续效果或状态)
+    let partnerBaseDP = 0;
     if (card.zone === 'BATTLEFIELD' && card.partnerCardId) {
       const partnerCard = this.state.cards[card.partnerCardId];
       if (partnerCard) {
         const partnerDef = this.getDef(partnerCard);
         pp += partnerDef?.basePP ?? 0;
-        dp += partnerDef?.baseDP ?? 0;
+        partnerBaseDP += partnerDef?.baseDP ?? 0;
       }
     }
 
-    const parsedInherent = parseInherentKeywords(cardDef?.rulesText);
+    const parsedInherent = card.zone === 'BATTLEFIELD' ? parseInherentKeywords(cardDef?.rulesText) : [];
     const inherentCharge = parseInherentChargeCount(parsedInherent);
     const baseKeywords = parsedInherent
       .filter((k) => !k.form || this.isFormActive(card.controllerPlayerId, k.form))
       .map((k) => k.keyword);
 
-    const traitsSet = new Set<string>(cardDef?.traits ?? []);
+    const traitsSet = expandBaseTraits(cardDef?.traits);
     const keywordsSet = new Set<string>(baseKeywords);
     const prohibitionsSet = new Set<ProhibitionFlag>();
     const treatedAsNamesSet = new Set<string>();
@@ -277,6 +317,11 @@ export class ContinuousEffectEngine {
     let canAttackPlayerOnEnterTurn = false;
     let unblockableMaxPP: number | undefined;
     let canDualEquipFengren = false;
+    let effectiveCardType = cardDef?.cardType;
+    let costDeltaTotal = 0;
+    let setCostOverride: number | undefined;
+    let canAttackReadyRolesMaxCost: number | undefined;
+    let mustBeAttackTarget = false;
     const orbColorsSet = new Set<SignalOrbColor>();
     if (cardDef?.signalOrb) {
       orbColorsSet.add(cardDef.signalOrb as SignalOrbColor);
@@ -306,9 +351,15 @@ export class ContinuousEffectEngine {
     for (const m of card.modifiers ?? []) {
       if (
         m.addTraits?.length ||
+        m.clearBaseTraits ||
         m.keywords?.length ||
         m.removeKeywords?.length ||
         m.loseAbilities ||
+        m.setCardType !== undefined ||
+        m.costDelta !== undefined ||
+        m.setCost !== undefined ||
+        m.canAttackReadyRolesMaxCost !== undefined ||
+        m.mustBeAttackTarget ||
         m.prohibitions?.length ||
         m.treatedAsOrbColors?.length ||
         m.orbValue !== undefined ||
@@ -319,11 +370,17 @@ export class ContinuousEffectEngine {
       ) {
         nonStatOps.push({
           timestamp: m.timestamp ?? 0,
-          providesTraits: !!m.addTraits?.length,
+          providesTraits: !!(m.addTraits?.length || m.clearBaseTraits),
           addTraits: m.addTraits,
+          clearBaseTraits: m.clearBaseTraits,
           keywords: m.keywords,
           removeKeywords: m.removeKeywords,
           loseAbilities: m.loseAbilities,
+          setCardType: m.setCardType,
+          costDelta: m.costDelta,
+          setCost: m.setCost,
+          canAttackReadyRolesMaxCost: m.canAttackReadyRolesMaxCost,
+          mustBeAttackTarget: m.mustBeAttackTarget,
           prohibitions: m.prohibitions,
           treatedAsOrbColors: m.treatedAsOrbColors,
           orbValue: m.orbValue,
@@ -346,10 +403,20 @@ export class ContinuousEffectEngine {
       .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
     // 角色下方叠置牌的【永】来源集合 (如 BP01-049/050/051 帕瓦在《七实·遥星之座》下方)
     const allActiveUnderneath: CardInstance[] = [];
+    // 附着装备牌的【永】来源集合 (如 BP03-033 时隧之钥-斯托克斯)
+    const allAttachedEquipment: CardInstance[] = [];
     for (const r of allFieldRoles) {
       for (const uid of r.underneathCardIds ?? []) {
         const uCard = this.state.cards[uid];
         if (uCard) allActiveUnderneath.push(uCard);
+      }
+      if (r.attachedEquipmentId && this.state.cards[r.attachedEquipmentId]) {
+        allAttachedEquipment.push(this.state.cards[r.attachedEquipmentId]!);
+      }
+      for (const extraEqId of r.extraAttachedEquipmentIds ?? []) {
+        if (this.state.cards[extraEqId]) {
+          allAttachedEquipment.push(this.state.cards[extraEqId]!);
+        }
       }
     }
 
@@ -366,7 +433,9 @@ export class ContinuousEffectEngine {
           ? allActivePartners
           : rule.sourceKind === 'UNDERNEATH'
             ? allActiveUnderneath
-            : allFieldRoles;
+            : rule.sourceKind === 'EQUIPPED'
+              ? allAttachedEquipment
+              : allFieldRoles;
       for (const source of candidateSources) {
         if (this.hasLostInherentAbilities(source.instanceId)) continue;
         if (!rule.matchSource(source, baseCtx)) continue;
@@ -382,12 +451,18 @@ export class ContinuousEffectEngine {
         if (!contrib) continue;
         nonStatOps.push({
           timestamp: source.enteredZoneTimestamp ?? 0,
-          providesTraits: rule.providesTraits,
+          providesTraits: rule.providesTraits || Boolean(contrib.clearBaseTraits || contrib.addTraits?.length),
           dependsOnTraits: rule.dependsOnTraits,
           addTraits: contrib.addTraits,
+          clearBaseTraits: contrib.clearBaseTraits,
           keywords: contrib.keywords,
           removeKeywords: contrib.removeKeywords,
           loseAbilities: contrib.loseAbilities,
+          setCardType: contrib.setCardType,
+          costDelta: contrib.costDelta,
+          setCost: contrib.setCost,
+          canAttackReadyRolesMaxCost: contrib.canAttackReadyRolesMaxCost,
+          mustBeAttackTarget: contrib.mustBeAttackTarget,
           prohibitions: contrib.prohibitions,
           treatedAsOrbColors: contrib.treatedAsOrbColors,
           orbValue: contrib.orbValue,
@@ -417,6 +492,8 @@ export class ContinuousEffectEngine {
         grantedTriggersSet.clear();
         unblockableMaxPP = undefined;
         canDualEquipFengren = false;
+        canAttackReadyRolesMaxCost = undefined;
+        mustBeAttackTarget = false;
         if (hasInherentCannotAttack) {
           prohibitionsSet.delete('CANNOT_ATTACK');
         }
@@ -427,8 +504,29 @@ export class ContinuousEffectEngine {
           if (p === 'CANNOT_GAIN_ABILITIES') cannotGainAbilities = true;
         }
       }
+      if (op.clearBaseTraits) {
+        traitsSet.clear();
+      }
       if (op.addTraits) {
         for (const t of op.addTraits) traitsSet.add(t);
+      }
+      if (op.setCardType !== undefined) {
+        effectiveCardType = op.setCardType;
+      }
+      if (op.costDelta !== undefined) {
+        costDeltaTotal += op.costDelta;
+      }
+      if (op.setCost !== undefined) {
+        setCostOverride = op.setCost;
+      }
+      if (op.canAttackReadyRolesMaxCost !== undefined && !cannotGainAbilities) {
+        canAttackReadyRolesMaxCost =
+          canAttackReadyRolesMaxCost === undefined
+            ? op.canAttackReadyRolesMaxCost
+            : Math.max(canAttackReadyRolesMaxCost, op.canAttackReadyRolesMaxCost);
+      }
+      if (op.mustBeAttackTarget) {
+        mustBeAttackTarget = true;
       }
       if (op.keywords && !cannotGainAbilities) {
         for (const kw of op.keywords) keywordsSet.add(kw);
@@ -481,6 +579,7 @@ export class ContinuousEffectEngine {
         m.setPP !== undefined ||
         m.dp !== undefined ||
         m.setDP !== undefined ||
+        m.setBaseDP !== undefined ||
         m.charge !== undefined ||
         m.setCharge !== undefined
       ) {
@@ -490,6 +589,7 @@ export class ContinuousEffectEngine {
           setPP: m.setPP,
           dp: m.dp,
           setDP: m.setDP,
+          setBaseDP: m.setBaseDP,
           charge: m.charge,
           setCharge: m.setCharge,
           appliedByPlayerId: m.appliedByPlayerId,
@@ -499,12 +599,17 @@ export class ContinuousEffectEngine {
 
     const layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
     for (const rule of layer2StaticRules) {
-      const candidateSources =
-        rule.sourceKind === 'PARTNER'
+      const candidateSources = rule.sourceZones
+        ? rule.sourceZones.includes(card.zone)
+          ? [card]
+          : []
+        : rule.sourceKind === 'PARTNER'
           ? allActivePartners
           : rule.sourceKind === 'UNDERNEATH'
             ? allActiveUnderneath
-            : allFieldRoles;
+            : rule.sourceKind === 'EQUIPPED'
+              ? allAttachedEquipment
+              : allFieldRoles;
       for (const source of candidateSources) {
         // 8.3.4 失去能力的来源卡其【永】不产生效果 (Q&A·10 BP04-001 失去永久能力时 PP 变为 0)
         const sourceLost =
@@ -527,6 +632,7 @@ export class ContinuousEffectEngine {
           setPP: contrib.setPP,
           dp: contrib.dp,
           setDP: contrib.setDP,
+          setBaseDP: contrib.setBaseDP,
           charge: contrib.charge,
           setCharge: contrib.setCharge,
           appliedByPlayerId: contrib.appliedByPlayerId ?? source.controllerPlayerId,
@@ -534,8 +640,12 @@ export class ContinuousEffectEngine {
       }
     }
 
-    // 8.9.1.e 按时间戳升序依次适用 (支持「PP 变为 X」覆盖此前增减，Q&A·6)
+    // 8.9.1.e 按时间戳升序依次适用 (支持「基本DP变为 X」先覆盖基值，「PP/DP 变为 X」覆盖此前增减)
     statOps.sort((a, b) => a.timestamp - b.timestamp);
+    for (const op of statOps) {
+      if (op.setBaseDP !== undefined) baseDPValue = op.setBaseDP;
+    }
+    let dp = baseDPValue + partnerBaseDP;
 
     const preventOppPPDelta = prohibitionsSet.has('CANNOT_MODIFY_PP_BY_OPPONENT');
     for (const op of statOps) {
@@ -569,6 +679,11 @@ export class ContinuousEffectEngine {
       canAttackPlayerOnEnterTurn,
       unblockableMaxPP,
       canDualEquipFengren,
+      cardType: effectiveCardType,
+      costDelta: costDeltaTotal !== 0 ? costDeltaTotal : undefined,
+      setCost: setCostOverride,
+      canAttackReadyRolesMaxCost,
+      mustBeAttackTarget,
     };
   }
 
@@ -581,7 +696,7 @@ export class ContinuousEffectEngine {
   }
 
   /**
-   * 8.13.4.b.1 计算卡牌当前有效费用 (协战角色在战场时费用增加其搭档的基本费用)
+   * 8.13.4.b.1 / 8.9 计算卡牌当前实时有效费用 (协战角色在战场时费用增加其搭档的基本费用，信号球区等适用 costDelta / setCost)
    */
   getEffectiveCardCost(cardInstanceId: string): number {
     const card = this.state.cards[cardInstanceId];
@@ -594,7 +709,19 @@ export class ContinuousEffectEngine {
         cost += this.getDef(partner)?.cost ?? 0;
       }
     }
-    return cost;
+    const evaluated = this.evaluateCard(cardInstanceId);
+    if (evaluated.setCost !== undefined) {
+      return Math.max(0, evaluated.setCost);
+    }
+    cost += evaluated.costDelta ?? 0;
+    return Math.max(0, cost);
+  }
+
+  /** 获取卡牌当前有效卡牌类型 (兼容 PR-041 辅助机变为角色牌) */
+  getEffectiveCardType(cardInstanceId: string): CardType | undefined {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return undefined;
+    return this.evaluateCard(cardInstanceId).cardType ?? this.getDef(card)?.cardType;
   }
 
   hasTrait(cardInstanceId: string, trait: string): boolean {
@@ -615,8 +742,9 @@ export class ContinuousEffectEngine {
     const card = this.state.cards[cardInstanceId];
     if (!card) return false;
     const def = this.getDef(card);
-    if (def?.name === name) return true;
-    return this.evaluateCard(cardInstanceId).treatedAsNames.includes(name);
+    const targetName = normalizeCardName(name);
+    if (def && normalizeCardName(def.name) === targetName) return true;
+    return this.evaluateCard(cardInstanceId).treatedAsNames.some((n) => normalizeCardName(n) === targetName);
   }
 
   /**
@@ -645,8 +773,11 @@ export class ContinuousEffectEngine {
     const card = this.state.cards[cardInstanceId];
     if (!card) return new Set();
     const cardDef = this.getDef(card);
-    const traitsSet = new Set<string>(cardDef?.traits ?? []);
-    for (const m of card.modifiers ?? []) {
+    const traitsSet = expandBaseTraits(cardDef?.traits);
+    for (const m of [...(card.modifiers ?? [])].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))) {
+      if (m.clearBaseTraits) {
+        traitsSet.clear();
+      }
       if (m.addTraits) {
         for (const t of m.addTraits) traitsSet.add(t);
       }
@@ -663,7 +794,12 @@ export class ContinuousEffectEngine {
     ];
     for (const rule of this.staticRules) {
       if (rule.layer !== 'NON_STAT' || !rule.providesTraits) continue;
-      for (const source of allFieldRoles) {
+      const candidateSources = rule.sourceZones
+        ? rule.sourceZones.includes(card.zone)
+          ? [card]
+          : []
+        : allFieldRoles;
+      for (const source of candidateSources) {
         if (this.hasLostInherentAbilities(source.instanceId)) continue;
         if (!rule.matchSource(source, baseCtx)) continue;
         const contrib = rule.evaluate(source, card, {
@@ -674,8 +810,9 @@ export class ContinuousEffectEngine {
           hasCardTrait: (id, trait) =>
             id === card.instanceId
               ? traitsSet.has(trait)
-              : Boolean(this.state.cards[id] && this.getDef(this.state.cards[id]!)?.traits.includes(trait)),
+              : Boolean(this.state.cards[id] && expandBaseTraits(this.getDef(this.state.cards[id]!)?.traits).has(trait)),
         });
+        if (contrib?.clearBaseTraits) traitsSet.clear();
         if (contrib?.addTraits) {
           for (const t of contrib.addTraits) traitsSet.add(t);
         }

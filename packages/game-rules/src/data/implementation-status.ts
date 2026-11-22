@@ -1,11 +1,19 @@
 /**
  * 卡牌效果实现精确度登记表 (docs/future-work.md §3.6)。
  *
- * - EXACT: 已按官方卡牌文本逐卡在声明式效果库中精确实现 (含 ST01~ST06 全部 83 张 + BP01 全部 88 张，共 171 张)
+ * - EXACT: 已按官方卡牌文本逐卡在声明式效果库中精确实现 (含 ST01~ST06 83 张 + BP01 88 张 + BP02 91 张 + BP03 90 张 + BP04 89 张 + PR 49 张，全量 490 张)
  * - VANILLA: 无规则文本的白板卡牌，无需效果解析
  * - APPROXIMATE: 尚处于按关键字匹配的近似实现阶段，前端应向玩家给出明确标记
  */
 export type CardImplementationStatus = 'EXACT' | 'VANILLA' | 'APPROXIMATE';
+
+function rangeCards(prefix: string, maxNum: number, extra: readonly string[] = []): string[] {
+  const list: string[] = [];
+  for (let i = 1; i <= maxNum; i++) {
+    list.push(`${prefix}-${String(i).padStart(3, '0')}`);
+  }
+  return [...list, ...extra];
+}
 
 export const EXACT_IMPLEMENTED_CARD_LIST: readonly string[] = [
   // ST01 灰鸦小队 (14 张)
@@ -187,6 +195,14 @@ export const EXACT_IMPLEMENTED_CARD_LIST: readonly string[] = [
   'BP01-066',
   'BP01-067',
   'BP01-068',
+  // BP02 重返极夜 (91 张，含冠军异画 BP02-022【冠军】)
+  ...rangeCards('BP02', 90, ['BP02-022【冠军】']),
+  // BP03 超刻溯梦 (90 张，含冠军异画 BP03-003【冠军】)
+  ...rangeCards('BP03', 89, ['BP03-003【冠军】']),
+  // BP04 终焉圣歌 (89 张)
+  ...rangeCards('BP04', 89),
+  // PR 特典推广卡 (49 张)
+  ...rangeCards('PR', 49),
 ] as const;
 
 export const EXACT_IMPLEMENTED_CARDS: ReadonlySet<string> = new Set(EXACT_IMPLEMENTED_CARD_LIST);
@@ -204,7 +220,11 @@ export function getCardImplementationStatus(
   cardNumber: string | undefined,
   rulesText?: string
 ): CardImplementationStatus {
-  const normalized = normalizeCardNumber(cardNumber);
+  const trimmed = cardNumber?.trim() ?? '';
+  if (trimmed && EXACT_IMPLEMENTED_CARDS.has(trimmed)) {
+    return 'EXACT';
+  }
+  const normalized = normalizeCardNumber(trimmed);
   if (normalized && EXACT_IMPLEMENTED_CARDS.has(normalized)) {
     return 'EXACT';
   }

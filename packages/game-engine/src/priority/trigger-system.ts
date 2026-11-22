@@ -9,8 +9,8 @@ import {
 } from '@zhanshuang/shared';
 import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from '../zone/zone-manager.js';
-import { BattlefieldManager } from '../zone/battlefield-manager.js';
-import { ContinuousEffectEngine, nextEffectTimestamp } from '../effects/continuous-effects.js';
+import { BattlefieldManager, getAttachedEquipmentIds } from '../zone/battlefield-manager.js';
+import { ContinuousEffectEngine, expandBaseTraits, nextEffectTimestamp } from '../effects/continuous-effects.js';
 
 /**
  * 8.7.4 触发瞬间卡牌快照 (可 JSON 序列化，供区域移动触发及离场后结算参照)
@@ -27,6 +27,8 @@ export interface CardTriggerSnapshot {
   effectivePP?: number;
   effectiveDP?: number;
   abilitiesLost?: boolean;
+  hasAttachedEquipment?: boolean;
+  attachedEquipmentTraits?: string[];
 }
 
 export interface TriggerEvent {
@@ -45,6 +47,8 @@ export interface TriggerEvent {
   orbColors?: string[];
   chargeKind?: 'ATTACK' | 'DAMAGE';
   damageAmount?: number;
+  attackChargedHasChargeAuto?: boolean;
+  deployedFromHostCardId?: string;
   subjectSnapshot?: CardTriggerSnapshot;
 }
 
@@ -152,6 +156,15 @@ export class TriggerManager {
     if (!card) return undefined;
     const def = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
     const evalStats = this.continuousEffects.evaluateCard(cardInstanceId);
+    const attachedEqIds = getAttachedEquipmentIds(card);
+    const eqTraitsSet = new Set<string>();
+    for (const eqId of attachedEqIds) {
+      const eqCard = this.state.cards[eqId];
+      if (!eqCard) continue;
+      const eqDef = this.cardDb.getCard(eqCard.cardNumber) || (eqCard.cardId ? this.cardDb.getCard(eqCard.cardId) : undefined);
+      for (const t of expandBaseTraits(eqDef?.traits)) eqTraitsSet.add(t);
+      for (const t of this.continuousEffects.evaluateCard(eqId).traits) eqTraitsSet.add(t);
+    }
     return {
       cardInstanceId: card.instanceId,
       cardNumber: card.cardNumber,
@@ -164,6 +177,8 @@ export class TriggerManager {
       effectivePP: card.zone === 'BATTLEFIELD' ? evalStats.pp : def?.basePP,
       effectiveDP: card.zone === 'BATTLEFIELD' ? evalStats.dp : def?.baseDP,
       abilitiesLost: evalStats.abilitiesLost,
+      ...(attachedEqIds.length > 0 ? { hasAttachedEquipment: true } : {}),
+      ...(eqTraitsSet.size > 0 ? { attachedEquipmentTraits: Array.from(eqTraitsSet) } : {}),
     };
   }
 
@@ -174,20 +189,23 @@ export class TriggerManager {
   emit(event: TriggerEvent): void {
     if (this.state.status === 'FINISHED') return;
 
-    // 统计本回合被破坏的我方火属性角色数 (供 BP04-028 渡边·尘铭瞬时能力条件判定)
+    // 统计本回合被破坏的我方角色总张数与火属性角色数 (BP04-028 渡边·尘铭、BP04-023/024/025 墓地协战)
     if (event.type === 'CARD_DESTROYED' && event.cardInstanceId && event.playerId) {
       const destroyedCard = this.state.cards[event.cardInstanceId];
       const destroyedDef = destroyedCard
         ? this.cardDb.getCard(destroyedCard.cardNumber) ||
           (destroyedCard.cardId ? this.cardDb.getCard(destroyedCard.cardId) : undefined)
         : undefined;
-      if (
-        destroyedDef?.cardType === 'ROLE' &&
-        destroyedDef.attribute === 'FIRE' &&
-        this.state.players[event.playerId]
-      ) {
-        this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn =
-          (this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn ?? 0) + 1;
+      const effectiveType = destroyedCard?.modifiers?.some((m) => m.setCardType === 'ROLE')
+        ? 'ROLE'
+        : destroyedDef?.cardType;
+      if (effectiveType === 'ROLE' && this.state.players[event.playerId]) {
+        this.state.players[event.playerId]!.destroyedFriendlyRoleCountThisTurn =
+          (this.state.players[event.playerId]!.destroyedFriendlyRoleCountThisTurn ?? 0) + 1;
+        if (destroyedDef?.attribute === 'FIRE') {
+          this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn =
+            (this.state.players[event.playerId]!.destroyedFireRoleCountThisTurn ?? 0) + 1;
+        }
       }
     }
 
@@ -375,13 +393,15 @@ export class TriggerManager {
         const card = ctx.state.cards[trigger.sourceCardInstanceId];
         const expectedZone = (trigger.triggerContext?.expectedZone as ZoneId | undefined) ?? 'BATTLEFIELD';
         if (!card || card.zone !== expectedZone) return;
+        // BP04-044 开端：成为协战搭档后不会因该效果放置到墓地
+        if (card.partnerOfCardId) return;
         const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
         if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
         ctx.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
       },
     });
 
-    // 8.7.5 时限触发：BP03-024「该回合结束时，将该牌从战场放置到牌组底」
+    // 8.7.5 时限触发：BP03-024 / PR-033「该回合 / 下个对方回合结束时，将该牌从战场放置到牌组底」
     this.registerTrigger({
       abilityId: 'DELAYED_END_OF_TURN_TO_DECK_BOTTOM',
       eventTypes: [],
@@ -389,7 +409,53 @@ export class TriggerManager {
       execute: (trigger, ctx) => {
         const card = ctx.state.cards[trigger.sourceCardInstanceId];
         if (!card || card.zone !== 'BATTLEFIELD') return;
+        const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
+        if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
         ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
+      },
+    });
+
+    // 8.7.5 时限触发：BP03-061「该回合结束时，将其竖直」
+    this.registerTrigger({
+      abilityId: 'DELAYED_END_OF_TURN_UNTAP',
+      eventTypes: [],
+      collect: () => [],
+      execute: (trigger, ctx) => {
+        const card = ctx.state.cards[trigger.sourceCardInstanceId];
+        if (!card || card.zone !== 'BATTLEFIELD') return;
+        const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
+        if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
+        ctx.zoneMgr.setCardReady(card.instanceId, true);
+      },
+    });
+
+    // 8.7.5 时限触发：PR-036「该回合结束时，抽 N 张牌」
+    this.registerTrigger({
+      abilityId: 'DELAYED_END_OF_TURN_DRAW',
+      eventTypes: [],
+      collect: () => [],
+      execute: (trigger, ctx) => {
+        const count = Number(trigger.triggerContext?.count ?? 1);
+        if (count > 0) {
+          ctx.zoneMgr.drawCards(trigger.controllerPlayerId, count);
+        }
+      },
+    });
+
+    // 8.7.5 时限触发：BP04-062「那次攻击结束时，将该牌从战场放置到我方信号球区最下方」
+    this.registerTrigger({
+      abilityId: 'DELAYED_ATTACK_END_TO_SIGNAL_ORB_BOTTOM',
+      eventTypes: [],
+      collect: () => [],
+      execute: (trigger, ctx) => {
+        const card = ctx.state.cards[trigger.sourceCardInstanceId];
+        if (!card || card.zone !== 'BATTLEFIELD') return;
+        const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
+        if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
+        ctx.zoneMgr.insertCardIntoZoneAtIndex(card.instanceId, 'SIGNAL_ORB', 0, {
+          isFaceUp: true,
+          isReady: true,
+        });
       },
     });
   }

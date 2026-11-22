@@ -43,6 +43,10 @@ export class PresetCardEffects {
     return this.interpreter.handlesActivationForCard(playerId, cardId, def);
   }
 
+  isCardInUsableZoneForActivation(playerId: string, cardId: string, def: CardVersionData): boolean {
+    return this.interpreter.isCardInUsableZoneForActivation(playerId, cardId, def);
+  }
+
   getSpec(cardNumber: string) {
     return this.interpreter.getSpec(cardNumber);
   }
@@ -61,6 +65,15 @@ export class PresetCardEffects {
 
   canIgnoreAttributeCondition(playerId: string, cardNumber: string): boolean {
     return this.interpreter.canIgnoreAttributeCondition(playerId, cardNumber);
+  }
+
+  canPlayerIgnoreAttributeForPlay(
+    playerId: string,
+    cardInstanceId: string,
+    cardDef: CardVersionData,
+    isAscension: boolean
+  ): boolean {
+    return this.interpreter.canPlayerIgnoreAttributeForPlay(playerId, cardInstanceId, cardDef, isAscension);
   }
 
   calculateFieldHandCostAdjustment(

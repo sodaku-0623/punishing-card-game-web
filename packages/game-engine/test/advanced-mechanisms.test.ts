@@ -471,6 +471,8 @@ describe('8.13 协战机制与搭档管理', () => {
     expect(state.cards[alisa.instanceId]!.partnerCardId).toBe(cecily.instanceId);
     expect(state.cards[alisa.instanceId]!.effectivePP).toBe(10500); // 6500 + 4000
     expect(state.cards[alisa.instanceId]!.effectiveDP).toBe(2); // 1 + 1
+    // BP04-046 成为协战搭档时触发可选消球能力：本测试选择不消球以保留后续 3 球供 BP04-042 墓地协战
+    resolvePendingChoices(engine, 'skip');
 
     // 等回过优先权后再墓地消 3 球协战 (BP04-034 + BP04-042 具备<工程部队>的布偶熊·觅语)
     if (state.timingWindow && state.timingWindow.priorityPlayerId !== active) {

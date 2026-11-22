@@ -39,7 +39,9 @@ export type ProhibitionFlag =
   | 'CANNOT_GAIN_ABILITIES' // 不能获得新能力 (Q&A·4 BP02-058)
   | 'CANNOT_ELIMINATE' // 信号球不能被消除 (BP02-066)
   | 'CANNOT_MODIFY_PP_BY_OPPONENT' // PP 不会因对方的效果增减 (Q&A·9 BP04-016，不阻止「PP变为X」)
-  | 'CANNOT_DISCARD_HIDDEN_COST_AT_END'; // 回合结束时暗费不因规则送墓 (BP03-079)
+  | 'CANNOT_DISCARD_HIDDEN_COST_AT_END' // 回合结束时暗费不因规则送墓 (BP03-079)
+  | 'CANNOT_BE_PLACED_UNDERNEATH' // 不会因效果放置到角色下方 (BP04-002/003/005)
+  | 'CANNOT_BE_PLACED_UNDERNEATH_BY_SELF'; // 不会因我方的效果放置到角色下方 (BP04-008)
 
 export type SignalOrbColor = 'RED' | 'BLUE' | 'YELLOW';
 
@@ -90,6 +92,8 @@ export interface CardModifier {
   /** 8.9.1.e / Q&A·6「PP 变为 X」，覆盖此前的 PP 增减 */
   setPP?: number;
   dp?: number;
+  /** 8.9.1.a 覆盖基本 DP (如 BP02-056/061/065、BP03-009/031「基本DP变为1」) */
+  setBaseDP?: number;
   /** 「DP 变为 X」 */
   setDP?: number;
   charge?: number; // 10.4【充能+X】
@@ -98,6 +102,17 @@ export interface CardModifier {
   keywords?: string[]; // 8.9.1.b 获得的词条 (如 速攻、突进、贯通、同命)
   removeKeywords?: string[]; // 8.9.1.b 失去的词条
   addTraits?: string[]; // 8.9.1.b 获得的特征 (如 <升格者>)
+  /** 8.9.1.b 失去原本的基础卡牌特征 (如 PR-035 升格) */
+  clearBaseTraits?: boolean;
+  /** 覆盖卡牌在战场的卡牌类型 (如 BP04-001 变为辅助机、PR-041 变为角色) */
+  setCardType?: CardType;
+  /** 费用增减 / 覆写 (如 BP02-024 信号球区费用+1、BP02-060 战场费用-1、BP04-073 费用变为4) */
+  costDelta?: number;
+  setCost?: number;
+  /** 允许攻击对方费用<=X 的竖直状态角色 (如 BP03-012 / BP03-022) */
+  canAttackReadyRolesMaxCost?: number;
+  /** 对方角色只能选择这张牌作为攻击目标 (如 BP03-013 露西亚·红莲/誓焰 等诱敌效果) */
+  mustBeAttackTarget?: boolean;
   loseAbilities?: boolean; // 8.3.4 失去能力 / 效果无效
   /** 1.3.3 禁止效果标记 */
   prohibitions?: ProhibitionFlag[];
@@ -144,6 +159,16 @@ export interface CardInstance {
   partnerOfCardId?: string;
   /** 8.13.4.c / BP04-038 / ST06-002：在指定回合结束前不会因规则解除协战状态 */
   cannotReleasePartnerUntilTurn?: number;
+  /** BP04-023/024/025：从墓地成为协战搭档时，解除协战改为放置到牌组底 */
+  releasePartnerToDeckBottom?: boolean;
+  /** 进入当前区域前的来源区域 (如 BP03-001/005 从处理区出场、BP02-017 从手牌出场) */
+  enteredFromZone?: ZoneId;
+  /** 本次出场是否为升变出场 (如 BP02-066 / BP03-001) */
+  wasAscendedPlay?: boolean;
+  /** 本次升变是否以浮空模式角色为升变对象 (如 BP03-001 / BP03-005) */
+  ascendedFromAirborne?: boolean;
+  /** 本次使用是否支付过暗费作为使用代价 (如 BP03-015) */
+  paidHiddenCostOnPlay?: boolean;
   turnEnteredZone: number; // 进入当前区域的回合编号 (用于出场攻击限制 7.2.1.b.1)
   /** 8.9.1.e.1 进入当前区域的单调时间戳 (永久能力持续效果适用顺序基准) */
   enteredZoneTimestamp?: number;
@@ -190,7 +215,14 @@ export type TriggerEventType =
   | 'ORBS_ELIMINATED' // 4.16.2 消除信号球时
   | 'DAMAGE_DEALT' // 4.10 玩家受到伤害时
   | 'CARD_CHARGED' // 4.12 充能翻开卡牌时
-  | 'PARTNER_GAINED'; // 8.13.3.e 获得或成为协战搭档时
+  | 'PARTNER_GAINED' // 8.13.3.e 获得或成为协战搭档时
+  | 'PARTNER_RELEASED' // 8.13.4.c 解除协战状态时
+  | 'CARD_TAPPED' // 卡牌横置时 (BP02-063)
+  | 'CARD_MOVED_DECK_TO_GY' // 从牌组放置到墓地时 (BP02-030/031/033, BP04-066/068/070)
+  | 'CARD_SENT_FIELD_TO_GY_BY_EFFECT' // 因效果或代价从战场放置到墓地时 (BP02-010/015/016, BP04-073/075)
+  | 'CARD_MOVED_GY_TO_DECK_BOTTOM' // 从墓地放置到牌组底时 (BP04-059)
+  | 'ATTACK_DEALT_PLAYER_DAMAGE' // 攻击对玩家造成伤害时 (BP04-012/013/014，不含贯通)
+  | 'CARD_EQUIPPED'; // 角色装备道具牌时 (BP04-075)
 
 export interface PendingTrigger {
   id: string;
@@ -277,6 +309,20 @@ export interface PlayerState {
   turnCardPlayedCountByName?: Record<string, number>;
   /** 本回合已使用过的装备牌次数 (供 BP01-015 首张装备-1费等) */
   turnEquipmentPlayedCount?: number;
+  /** 本回合已使用过的<艺术协会>战术牌次数 (供 BP03-073 首张<艺术协会>战术牌-1费) */
+  turnArtAssocTacticsPlayedCount?: number;
+  /** 该回合中我方已使用的卡牌张数 (含 BP03-035/041/044/PR-047 视为+1) */
+  cardsPlayedThisTurn?: number;
+  /** 该回合中我方已受到的伤害量/次数 (供 BP04-014/022/042 等判定) */
+  damageTakenThisTurn?: number;
+  /** 该回合中我方是否在《里·超刻》攻击充能中充能过【充能自】卡牌 (BP03-026) */
+  chargedAutoByLeeThisTurn?: boolean;
+  /** 该回合中因《卡列尼娜·辉晓》协战代价或能力消除信号球的次数 (BP04-038/041/043) */
+  eliminatedOrbsByKareninaCountThisTurn?: number;
+  /** 该回合中我方是否消除过【3任意信号球】(PR-046) */
+  eliminatedThreeOrbsThisTurn?: boolean;
+  /** 该回合中被破坏的我方角色总张数 (BP04-023/024/025 墓地协战条件) */
+  destroyedFriendlyRoleCountThisTurn?: number;
 }
 
 export interface CostModifier {
@@ -330,6 +376,12 @@ export interface CombatState {
   battledCardId?: string; // 7.6.1 角色战斗步骤中与攻击角色发生战斗的角色 (【同命】参照)
   /** 1.3.3 本次攻击不能造成伤害 (BP01-027/065/071, PR-034/040；亦防止【贯通】Q&A·7) */
   cannotDealDamage?: boolean;
+  /** 伤害步骤最多可造成的伤害上限 (PR-018 决意 / PR-021 心象边境 = 1) */
+  maxDamageInDamageStep?: number;
+  /** 本次攻击充能步骤是否充能了持有【充能自】的卡牌 (BP03-023) */
+  attackChargedHasChargeAuto?: boolean;
+  /** 本次攻击的伤害步骤是否实际对玩家造成了 >=1 点伤害 (BP04-012) */
+  dealtPlayerDamage?: boolean;
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 
