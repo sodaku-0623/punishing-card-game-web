@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './validator.js';
+export * from './custom-handlers.js';
 export * from './interpreter.js';
 export * from './specs/st01.js';
 export * from './specs/st02.js';
@@ -9,4 +10,8 @@ export * from './specs/st05.js';
 export * from './specs/st06.js';
 export * from './specs/bp01-part1.js';
 export * from './specs/bp01-part2.js';
+export * from './specs/bp02.js';
+export * from './specs/bp03.js';
+export * from './specs/bp04.js';
+export * from './specs/pr.js';
 export * from './specs/starter-decks.js';

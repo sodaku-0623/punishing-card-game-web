@@ -44,6 +44,40 @@ export class ZoneManager {
     this.replacementEngine = engine;
   }
 
+  /**
+   * 3.6.4 / Q&A·6 动态费用区上限：默认 10；若我方费用区已存在正面《艾拉·万华》(BP03-052) 且正面《艾拉·万华》>= 5 张，上限变为 11
+   */
+  getMaxCostZoneCapacity(playerId: string): number {
+    const costCards = this.getCardsInZone(playerId, 'COST').filter((c) => c.isFaceUp);
+    const hasBP03052 = costCards.some((c) => c.cardNumber === 'BP03-052');
+    if (!hasBP03052) return RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+    const aylaCount = costCards.filter((c) => {
+      if (this.continuousEffects?.hasCardName(c.instanceId, '艾拉·万华')) return true;
+      const def = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+      return def?.name === '艾拉·万华';
+    }).length;
+    return aylaCount >= 5 ? 11 : RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+  }
+
+  /**
+   * 统一改变卡牌竖直/横置状态；在战场由竖直转为横置时发射 CARD_TAPPED 触发事件 (BP02-063)
+   */
+  setCardReady(cardInstanceId: string, isReady: boolean): boolean {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return false;
+    const wasReady = card.isReady;
+    card.isReady = isReady;
+    if (wasReady && !isReady && card.zone === 'BATTLEFIELD') {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_TAPPED',
+        playerId: card.controllerPlayerId,
+        cardInstanceId,
+        subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
+      });
+    }
+    return true;
+  }
+
   setWanshimingChargeHandler(
     handler: (playerId: string, cardInstanceId: string, attackerCardId: string) => boolean
   ): void {
@@ -87,6 +121,8 @@ export class ZoneManager {
       appliedReplacementIds?: Set<string>;
       preserveAttachments?: boolean;
       skipLeftFieldTrigger?: boolean;
+      sentByEffectOrCost?: boolean;
+      countAsDeckToGy?: boolean;
     }
   ): boolean {
     const card = this.state.cards[cardInstanceId];
@@ -124,11 +160,11 @@ export class ZoneManager {
       effectiveToBottom = intercept.toBottom;
     }
 
-    // 3.6.4 费用区最多放置 10 张卡牌，若已满则改为正面放置到墓地
+    // 3.6.4 费用区最多放置 10 张卡牌 (BP03-052 满足条件时为 11 张)，若已满则改为正面放置到墓地
     if (
       effectiveToZone === 'COST' &&
       fromZone !== 'COST' &&
-      this.getCardsInZone(card.controllerPlayerId, 'COST').length >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY
+      this.getCardsInZone(card.controllerPlayerId, 'COST').length >= this.getMaxCostZoneCapacity(card.controllerPlayerId)
     ) {
       effectiveToZone = 'GRAVEYARD';
       effectiveFaceUp = true;
@@ -163,12 +199,19 @@ export class ZoneManager {
 
     // 3.1.4 移动到其他区域的卡牌视为新卡牌，原区域适用的效果与状态不延续
     if (fromZone !== effectiveToZone) {
+      card.enteredFromZone = fromZone;
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
       card.grantedKeywords = undefined;
       card.modifiers = undefined;
       card.endOfTurnToGraveyard = undefined;
+      card.releasePartnerToDeckBottom = undefined;
       card.isFrozen = undefined;
+      if (effectiveToZone !== 'BATTLEFIELD') {
+        card.wasAscendedPlay = undefined;
+        card.ascendedFromAirborne = undefined;
+        card.paidHiddenCostOnPlay = undefined;
+      }
       if (!(card.isAirborne && effectiveToZone === 'PROCESSING')) {
         card.isAirborne = undefined;
       }
@@ -229,12 +272,25 @@ export class ZoneManager {
     if (orphanInfo.partnerId) {
       const partner = this.state.cards[orphanInfo.partnerId];
       if (partner && partner.zone === 'BATTLEFIELD') {
-        // 8.13.4.a.1 / 8.13.4.c.4：搭档解除协战状态放置到墓地，不视为离场
-        this.moveCard(orphanInfo.partnerId, 'GRAVEYARD', {
-          isFaceUp: true,
-          isOrphanCleanup: true,
-          orphanHostCardId: cardInstanceId,
-          skipLeftFieldTrigger: true,
+        const toBottom = Boolean(partner.releasePartnerToDeckBottom);
+        partner.releasePartnerToDeckBottom = undefined;
+        // 8.13.4.a.1 / 8.13.4.c.4：搭档解除协战状态放置到墓地，不视为离场 (BP04-023/024/025 改为放置到牌组底)
+        if (toBottom) {
+          this.moveCardToBottomOfDeck(orphanInfo.partnerId);
+        } else {
+          this.moveCard(orphanInfo.partnerId, 'GRAVEYARD', {
+            isFaceUp: true,
+            isOrphanCleanup: true,
+            orphanHostCardId: cardInstanceId,
+            skipLeftFieldTrigger: true,
+          });
+        }
+        this.onTriggerEventCallback?.({
+          type: 'PARTNER_RELEASED',
+          playerId: card.controllerPlayerId,
+          cardInstanceId,
+          targetCardId: orphanInfo.partnerId,
+          subjectSnapshot: this.snapshotProvider?.(orphanInfo.partnerId),
         });
       }
     }
@@ -249,9 +305,40 @@ export class ZoneManager {
         toZone: effectiveToZone,
         subjectSnapshot: leftBattlefieldSnapshot,
       });
+      if (effectiveToZone === 'GRAVEYARD' && options?.sentByEffectOrCost) {
+        this.onTriggerEventCallback?.({
+          type: 'CARD_SENT_FIELD_TO_GY_BY_EFFECT',
+          playerId: card.controllerPlayerId,
+          cardInstanceId,
+          fromZone,
+          toZone: effectiveToZone,
+          subjectSnapshot: leftBattlefieldSnapshot,
+        });
+      }
+    }
+
+    // Q&A·4 BP02-030：从牌组 (含从牌组公开进处理区后直接进墓地) 放置到墓地时触发
+    if (
+      effectiveToZone === 'GRAVEYARD' &&
+      (fromZone === 'DECK' || (fromZone === 'PROCESSING' && options?.countAsDeckToGy))
+    ) {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_MOVED_DECK_TO_GY',
+        playerId: card.controllerPlayerId,
+        cardInstanceId,
+        fromZone: 'DECK',
+        toZone: 'GRAVEYARD',
+        subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
+      });
     }
 
     return true;
+  }
+
+  /** 返回 [0, maxExclusive) 范围内的确定性伪随机整数 (遵循状态 rngState，供盲弃对方手牌等效果复用) */
+  nextRandomInt(maxExclusive: number): number {
+    if (maxExclusive <= 1) return 0;
+    return this.rng.nextInt(0, maxExclusive - 1);
   }
 
   /** 将卡牌键放到 state.cards 最前 (供牌组顶、信号球区最下方等使用) */
@@ -401,16 +488,28 @@ export class ZoneManager {
   }
 
   /**
-   * 将卡牌移动到牌组底 (保持物理顺序，放在牌组最末位)
+   * 将卡牌移动到牌组底 (保持物理顺序，放在牌组最末位；从墓地放回牌组底时发射 CARD_MOVED_GY_TO_DECK_BOTTOM)
    */
   moveCardToBottomOfDeck(cardInstanceId: string): void {
     const card = this.state.cards[cardInstanceId];
     if (!card) return;
+    const prevZone = card.zone;
 
     this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false });
     // 将键移至对象末尾以保证在牌组底（Object.values 遍历顺序最末）
     delete this.state.cards[cardInstanceId];
     this.state.cards[cardInstanceId] = card;
+
+    if (prevZone === 'GRAVEYARD' && card.zone === 'DECK') {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_MOVED_GY_TO_DECK_BOTTOM',
+        playerId: card.controllerPlayerId,
+        cardInstanceId,
+        fromZone: 'GRAVEYARD',
+        toZone: 'DECK',
+        subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
+      });
+    }
   }
 
   /**
@@ -629,6 +728,24 @@ export class ZoneManager {
     const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
     // 10.2.1.b 处理充能时自动能力【充能自】(覆盖信号球牌及非信号球牌带条件/代价的【充能自】)
     if (cardDef && cardDef.rulesText.includes('充能自')) {
+      if (chargeKind === 'ATTACK') {
+        if (this.state.currentCombat) {
+          this.state.currentCombat.attackChargedHasChargeAuto = true;
+        }
+        if (attackerCardId) {
+          const attacker = this.state.cards[attackerCardId];
+          const attackerDef = attacker
+            ? this.cardDb.getCard(attacker.cardNumber) ||
+              (attacker.cardId ? this.cardDb.getCard(attacker.cardId) : undefined)
+            : undefined;
+          const isLee =
+            this.continuousEffects?.hasCardName(attackerCardId, '里·超刻') ||
+            attackerDef?.name === '里·超刻';
+          if (isLee && this.state.players[playerId]) {
+            this.state.players[playerId]!.chargedAutoByLeeThisTurn = true;
+          }
+        }
+      }
       this.onChargeAutoEffectCallback?.(playerId, topCard.instanceId, cardDef, chargeKind, attackerCardId);
     }
     return topCard.instanceId;
@@ -662,7 +779,7 @@ export class ZoneManager {
     if (!player) return;
     const card = cardInstanceId ? this.state.cards[cardInstanceId] : undefined;
     if (card && card.zone === 'PROCESSING') {
-      const toCost = player.totalCostCount < RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+      const toCost = player.totalCostCount < this.getMaxCostZoneCapacity(defenderPlayerId);
       if (toCost) {
         this.moveCard(card.instanceId, 'COST', { isFaceUp: false, isReady: true });
       } else {
@@ -676,6 +793,7 @@ export class ZoneManager {
       });
     }
 
+    player.damageTakenThisTurn = (player.damageTakenThisTurn ?? 0) + 1;
     const oldErosion = player.erosionCount;
     player.erosionCount += 1;
     player.erosionChangedThisTurn = true;
@@ -793,6 +911,10 @@ export class ZoneManager {
     }
 
     this.drawCards(playerId, RULE_CONSTANTS.ORB_ELIMINATION_DRAW_COUNT);
+
+    if (this.state.players[playerId]) {
+      this.state.players[playerId]!.eliminatedThreeOrbsThisTurn = true;
+    }
 
     this.events.push({
       type: 'ORBS_ELIMINATED',

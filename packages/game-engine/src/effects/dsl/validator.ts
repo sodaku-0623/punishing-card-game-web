@@ -24,7 +24,42 @@ const VALID_DURATIONS = new Set<ModifierDuration>([
   'UNTIL_LEAVE_ZONE',
 ]);
 const VALID_COMPARE_OPS = new Set<CompareOp>(['>=', '<=', '==', '>', '<']);
-const VALID_CHOOSE_ZONES = new Set(['HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'DECK', 'BATTLEFIELD']);
+const VALID_CHOOSE_ZONES = new Set([
+  'HAND',
+  'GRAVEYARD',
+  'SIGNAL_ORB',
+  'COST',
+  'DECK',
+  'BATTLEFIELD',
+  'HOST_UNDERNEATH',
+  'OPPONENT_HAND_BLIND',
+]);
+const VALID_MULTI_CHOOSE_ZONES = new Set([
+  'HAND',
+  'GRAVEYARD',
+  'SIGNAL_ORB',
+  'COST',
+  'DECK',
+  'BATTLEFIELD',
+  'HOST_UNDERNEATH',
+]);
+const VALID_USABLE_ZONES = new Set(['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'UNDERNEATH']);
+const VALID_CUSTOM_HANDLERS = new Set([
+  'BP02_048_WANSHIMING_SACRIFICE',
+  'BP03_056_COPY_GY_ENTRY',
+  'BP03_058_ASCENDING_COST_5',
+  'BP03_059_BLACKJACK_21',
+  'BP03_061_GUESS_PARITY',
+  'BP03_063_CLASH_TOP',
+  'BP03_064_SIMULTANEOUS_REVEAL_ORB',
+]);
+const VALID_DELAYED_ABILITIES = new Set([
+  'DELAYED_END_OF_TURN_TO_GRAVEYARD',
+  'DELAYED_END_OF_TURN_TO_DECK_BOTTOM',
+  'DELAYED_END_OF_TURN_UNTAP',
+  'DELAYED_END_OF_TURN_DRAW',
+  'DELAYED_ATTACK_END_TO_SIGNAL_ORB_BOTTOM',
+]);
 const VALID_MOVE_ZONES = new Set([
   'HAND',
   'GRAVEYARD',
@@ -42,16 +77,30 @@ const VALID_ORB_COLORS = new Set(['RED', 'BLUE', 'YELLOW']);
 const VALID_TRIGGER_MATCHERS = new Set([
   'EQUIPPED_ROLE_ATTACKING',
   'OTHER_FRIENDLY_ROLE_ENTERED',
+  'SELF_IN_SIGNAL_ORB_ON_FRIENDLY_ROLE_ENTERED',
+  'SELF_IN_UNDERNEATH_ON_FRIENDLY_DEPLOY_FROM_UNDERNEATH',
+  'ANY_CARD_SENT_FIELD_TO_GY_BY_EFFECT',
+  'SELF_MOVED_DECK_TO_GY',
+  'FRIENDLY_CARD_MOVED_DECK_TO_GY',
+  'FRIENDLY_CARD_MOVED_GY_TO_DECK_BOTTOM',
+  'SELF_TAPPED',
+  'SELF_DESTROYED',
   'SELF_ATTACKING',
   'SELF_ATTACKING_OR_BLOCKING',
   'SELF_ATTACK_END',
+  'SELF_DEALT_PLAYER_DAMAGE',
+  'SELF_EQUIPPED',
+  'PARTNER_HOST_ATTACKING',
   'GRANTED_ATTACK_CHARGE_CARD',
   'SELF_IN_GRAVEYARD_ON_SELF_ORBS_ELIMINATED',
+  'SELF_ORBS_ELIMINATED',
   'SELF_BLOCKED_ATTACK_END',
   'GRANTED_BLOCKED_ATTACK_END',
   'FRIENDLY_ROLE_BLOCKING',
   'SELF_TURN_END',
   'SELF_BECAME_PARTNER',
+  'SELF_GAINED_PARTNER',
+  'SELF_LEFT_FIELD',
 ]);
 const VALID_PROHIBITIONS = new Set([
   'CANNOT_ATTACK',
@@ -61,6 +110,8 @@ const VALID_PROHIBITIONS = new Set([
   'CANNOT_ELIMINATE',
   'CANNOT_MODIFY_PP_BY_OPPONENT',
   'CANNOT_DISCARD_HIDDEN_COST_AT_END',
+  'CANNOT_BE_PLACED_UNDERNEATH',
+  'CANNOT_BE_PLACED_UNDERNEATH_BY_SELF',
 ]);
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -91,6 +142,15 @@ function validateFilter(filter: CardFilter | undefined, path: string): void {
   if (filter.anyFilters !== undefined) {
     assert(Array.isArray(filter.anyFilters) && filter.anyFilters.length > 0, `${path}.anyFilters 不能为空数组`);
     filter.anyFilters.forEach((f, i) => validateFilter(f, `${path}.anyFilters[${i}]`));
+  }
+  if (filter.cardNumbers !== undefined) {
+    assert(Array.isArray(filter.cardNumbers) && filter.cardNumbers.length > 0, `${path}.cardNumbers 不能为空数组`);
+  }
+  if (filter.hasUnderneathOrEquipMatching !== undefined) {
+    validateFilter(filter.hasUnderneathOrEquipMatching, `${path}.hasUnderneathOrEquipMatching`);
+  }
+  if (filter.minUnderneathCount !== undefined) {
+    assertNonNegativeInt(filter.minUnderneathCount, `${path}.minUnderneathCount`);
   }
   if (filter.minCost !== undefined && filter.maxCost !== undefined) {
     assert(filter.minCost <= filter.maxCost, `${path} minCost (${filter.minCost}) 不能大于 maxCost (${filter.maxCost})`);
@@ -127,6 +187,23 @@ function validateNumberExpr(
     case 'UNDERNEATH_COUNT_MULT':
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
       return;
+    case 'SUM_UNDERNEATH_COUNT':
+      assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
+      validateFilter(expr.roleFilter, `${path}.roleFilter`);
+      validateFilter(expr.filter, `${path}.filter`);
+      if (expr.multiplier !== undefined) assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      return;
+    case 'ORB_ZONE_COUNT_MULT':
+      assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
+      assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      validateFilter(expr.filter, `${path}.filter`);
+      return;
+    case 'ZONE_COUNT_MULT':
+      assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
+      assert(VALID_ZONES.has(expr.zone), `${path}.zone 非法: ${String(expr.zone)}`);
+      assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      validateFilter(expr.filter, `${path}.filter`);
+      return;
     case 'VAR_COUNT_MULT':
       assert(typeof expr.varName === 'string' && expr.varName.length > 0, `${path}.varName 不能为空`);
       if (definedVars) assert(definedVars.has(expr.varName), `${path} 引用了未定义变量 "${expr.varName}"`);
@@ -135,6 +212,10 @@ function validateNumberExpr(
     case 'FLOOR_DIV':
       validateNumberExpr(expr.expr, `${path}.expr`, definedVars);
       assertPositiveInt(expr.divisor, `${path}.divisor`);
+      return;
+    case 'ADD':
+      validateNumberExpr(expr.left, `${path}.left`, definedVars);
+      validateNumberExpr(expr.right, `${path}.right`, definedVars);
       return;
     default:
       throw new Error(`卡牌声明式效果校验失败：${path} 未知的数值表达式类型 ${(expr as { kind?: unknown }).kind}`);
@@ -158,6 +239,7 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
       return;
     case 'OPEN_COST_COMPARE_OPPONENT':
+    case 'FRIENDLY_ROLE_COUNT_COMPARE_OPPONENT':
       assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法: ${String(cond.op)}`);
       return;
     case 'SIGNAL_ORB_BOTTOM_COST_PARITY':
@@ -167,6 +249,18 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法: ${String(cond.op)}`);
       assertNonNegativeInt(cond.value, `${path}.value`);
       validateFilter(cond.filter, `${path}.filter`);
+      return;
+    case 'TOTAL_UNDERNEATH_COUNT':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法: ${String(cond.op)}`);
+      assertNonNegativeInt(cond.value, `${path}.value`);
+      validateFilter(cond.roleFilter, `${path}.roleFilter`);
+      validateFilter(cond.filter, `${path}.filter`);
+      return;
+    case 'ANY_HOST_UNDERNEATH_CONTAINS':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      validateFilter(cond.roleFilter, `${path}.roleFilter`);
+      validateFilter(cond.cardFilter, `${path}.cardFilter`);
       return;
     case 'SELF_MATCHES_FILTER':
       validateFilter(cond.filter, `${path}.filter`);
@@ -182,14 +276,62 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       assertNonNegativeInt(cond.value, `${path}.value`);
       validateFilter(cond.filter, `${path}.filter`);
       return;
+    case 'ALL_ZONE_CARDS_MATCH':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      assert(VALID_ZONES.has(cond.zone), `${path}.zone 非法: ${String(cond.zone)}`);
+      validateFilter(cond.preFilter, `${path}.preFilter`);
+      validateFilter(cond.matchFilter, `${path}.matchFilter`);
+      return;
+    case 'ALL_ROLES_MATCH':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      validateFilter(cond.filter, `${path}.filter`);
+      return;
+    case 'ROLE_ATTRIBUTE_DIVERSITY':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      validateFilter(cond.filter, `${path}.filter`);
+      assertPositiveInt(cond.minDistinct, `${path}.minDistinct`);
+      return;
     case 'HAS_EMPTY_SLOT':
       assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
       return;
     case 'TURN_OWNER':
       assert(typeof cond.isSelfTurn === 'boolean', `${path}.isSelfTurn 必须是布尔值`);
       return;
+    case 'CURRENT_COMBAT_EXISTS':
+    case 'IS_ENTER_TURN':
+    case 'IS_DEPLOYED_FROM_PROCESSING_TURN':
+    case 'CARD_WAS_ASCENDED_PLAY':
+    case 'CARD_WAS_ASCENDED_FROM_AIRBORNE':
+    case 'CARD_PAID_HIDDEN_COST_ON_PLAY':
+    case 'COMBAT_CHARGED_AUTO':
+    case 'CHARGED_AUTO_BY_LEE_THIS_TURN':
+      return;
+    case 'CARD_ENTERED_FROM_ZONE':
+      assert(Array.isArray(cond.zones) && cond.zones.length > 0, `${path}.zones 不能为空`);
+      cond.zones.forEach((z) => assert(VALID_ZONES.has(z), `${path}.zones 非法元素: ${String(z)}`));
+      return;
+    case 'ELIMINATED_THREE_ORBS_THIS_TURN':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      return;
+    case 'DESTROYED_FRIENDLY_ROLES_THIS_TURN':
+    case 'ELIMINATED_ORBS_BY_KARENINA_THIS_TURN':
+      assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法`);
+      assertNonNegativeInt(cond.value, `${path}.value`);
+      return;
+    case 'DAMAGE_TAKEN_THIS_TURN':
+    case 'CARDS_PLAYED_THIS_TURN':
+    case 'ART_ASSOC_TACTICS_PLAYED_THIS_TURN':
+      assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
+      assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法`);
+      assertNonNegativeInt(cond.value, `${path}.value`);
+      return;
     case 'VAR_NON_EMPTY':
       assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
+      return;
+    case 'VAR_COUNT_COMPARE':
+      assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
+      assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法`);
+      assertNonNegativeInt(cond.value, `${path}.value`);
       return;
     case 'VAR_HAS_CARD_MATCHING':
       assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
@@ -215,6 +357,12 @@ function validateTarget(target: CardTargetRef, definedVars: ReadonlySet<string>,
     case 'TRIGGER_ATTACKER':
     case 'TRIGGER_BLOCKER':
     case 'TRIGGER_HOST':
+    case 'TRIGGER_TARGET':
+      return;
+    case 'HOST_UNDERNEATH_MATCHING':
+      assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
+      validateFilter(target.roleFilter, `${path}.roleFilter`);
+      validateFilter(target.cardFilter, `${path}.cardFilter`);
       return;
     case 'VAR':
       assert(definedVars.has(target.varName), `${path} 引用了未定义变量 "${target.varName}"`);
@@ -253,6 +401,18 @@ function validateCost(cost: AbilityCost | undefined, path: string): Set<string> 
     case 'ELIMINATE_ORB_OR_DISCARD_HAND':
     case 'TAP_SELF':
     case 'SELF_TO_DECK_BOTTOM':
+    case 'SELF_TO_GRAVEYARD':
+    case 'SELF_AIRBORNE':
+    case 'DISCARD_SELF_FROM_HAND':
+      return vars;
+    case 'DEAL_SELF_DAMAGE':
+      assertPositiveInt(cost.amount, `${path}.amount`);
+      return vars;
+    case 'COMPOSITE':
+      assert(Array.isArray(cost.costs) && cost.costs.length > 0, `${path}.costs 不能为空`);
+      cost.costs.forEach((c, idx) => {
+        for (const v of validateCost(c, `${path}.costs[${idx}]`)) vars.add(v);
+      });
       return vars;
     case 'TAP_SELF_AND_DISCARD_HAND':
       assertPositiveInt(cost.count, `${path}.count`);
@@ -294,6 +454,9 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         assert(typeof step.saveToVar === 'string' && step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
         vars.add(step.saveToVar);
         break;
+      case 'DISCARD_OPPONENT_RANDOM_HAND':
+        assertPositiveInt(step.count, `${sp}.count`);
+        break;
       case 'CONFIRM_YES_NO':
         assert(step.prompt.length > 0 && step.yesLabel.length > 0 && step.noLabel.length > 0, `${sp} 提示文案不能为空`);
         assert(step.onYes.length > 0, `${sp}.onYes 不能为空`);
@@ -320,7 +483,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         if (step.zones !== undefined) {
           assert(Array.isArray(step.zones) && step.zones.length > 0, `${sp}.zones 不能为空数组`);
           for (const z of step.zones) {
-            assert(VALID_CHOOSE_ZONES.has(z), `${sp}.zones 非法元素: ${String(z)}`);
+            assert(VALID_MULTI_CHOOSE_ZONES.has(z), `${sp}.zones 非法元素: ${String(z)}`);
           }
         }
         assert(step.prompt.length > 0, `${sp}.prompt 不能为空`);
@@ -329,6 +492,10 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         assertNonNegativeInt(min, `${sp}.min`);
         assertPositiveInt(max, `${sp}.max`);
         assert(min <= max, `${sp}.min (${min}) 不能大于 max (${max})`);
+        if (step.maxTotalCost !== undefined) assertNonNegativeInt(step.maxTotalCost, `${sp}.maxTotalCost`);
+        if (step.dynamicMin !== undefined) validateNumberExpr(step.dynamicMin, `${sp}.dynamicMin`, vars);
+        if (step.dynamicMax !== undefined) validateNumberExpr(step.dynamicMax, `${sp}.dynamicMax`, vars);
+        validateFilter(step.hostFilter, `${sp}.hostFilter`);
         validateFilter(step.filter, `${sp}.filter`);
         assert(step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
         vars.add(step.saveToVar);
@@ -397,6 +564,12 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         validateSteps(step.onPaid, innerVars, `${sp}.onPaid`);
         break;
       }
+      case 'PAY_COST_STEP': {
+        validateNumberExpr(step.amount, `${sp}.amount`, vars);
+        assert(step.onPaid.length > 0, `${sp}.onPaid 不能为空`);
+        validateSteps(step.onPaid, vars, `${sp}.onPaid`);
+        break;
+      }
       case 'TAP_FIELD_CARD_COST_STEP': {
         assert(step.onPaid.length > 0, `${sp}.onPaid 不能为空`);
         validateSteps(step.onPaid, vars, `${sp}.onPaid`);
@@ -454,6 +627,16 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         break;
       case 'PREVENT_COMBAT_DAMAGE':
         break;
+      case 'SET_COMBAT_MAX_DAMAGE':
+        assertNonNegativeInt(step.maxDamage, `${sp}.maxDamage`);
+        break;
+      case 'REDIRECT_ATTACK':
+        if (step.targetType === 'CHARACTER') {
+          validateTarget(step.target, vars, `${sp}.target`);
+        } else {
+          assert(step.targetType === 'PLAYER', `${sp}.targetType 非法`);
+        }
+        break;
       case 'AIRBORNE':
         validateTarget(step.target, vars, `${sp}.target`);
         if (step.saveAirborneToVar) vars.add(step.saveAirborneToVar);
@@ -462,16 +645,42 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         validateTarget(step.host, vars, `${sp}.host`);
         validateTarget(step.partner, vars, `${sp}.partner`);
         break;
+      case 'DETACH_AND_MOVE_PARTNER':
+        validateTarget(step.host, vars, `${sp}.host`);
+        assert(
+          step.toZone === 'HAND' ||
+            step.toZone === 'BATTLEFIELD' ||
+            step.toZone === 'GRAVEYARD' ||
+            step.toZone === 'DECK_BOTTOM',
+          `${sp}.toZone 非法`
+        );
+        break;
+      case 'COPY_STATS_FROM_VAR':
+        validateTarget(step.target, vars, `${sp}.target`);
+        assert(vars.has(step.fromVar), `${sp} 引用了未定义变量 fromVar "${step.fromVar}"`);
+        assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法`);
+        assert(step.copyBasePP === true || step.copyBaseDP === true, `${sp} 必须至少复制 basePP 或 baseDP 之一`);
+        break;
+      case 'INCREMENT_CARDS_PLAYED_THIS_TURN':
+        if (step.amount !== undefined) assertPositiveInt(step.amount, `${sp}.amount`);
+        break;
+      case 'REGISTER_REPLACEMENT':
+        validateTarget(step.target, vars, `${sp}.target`);
+        assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法`);
+        break;
       case 'MODIFY_STATS': {
         validateTarget(step.target, vars, `${sp}.target`);
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法: ${String(step.duration)}`);
         validateNumberExpr(step.pp, `${sp}.pp`, vars);
         validateNumberExpr(step.dp, `${sp}.dp`, vars);
         validateNumberExpr(step.setBasePP, `${sp}.setBasePP`, vars);
+        validateNumberExpr(step.setBaseDP, `${sp}.setBaseDP`, vars);
         validateNumberExpr(step.setPP, `${sp}.setPP`, vars);
         validateNumberExpr(step.setDP, `${sp}.setDP`, vars);
         validateNumberExpr(step.charge, `${sp}.charge`, vars);
         validateNumberExpr(step.setCharge, `${sp}.setCharge`, vars);
+        validateNumberExpr(step.costDelta, `${sp}.costDelta`, vars);
+        validateNumberExpr(step.setCost, `${sp}.setCost`, vars);
         if (step.prohibitions !== undefined) {
           assert(Array.isArray(step.prohibitions), `${sp}.prohibitions 必须是数组`);
           for (const p of step.prohibitions) {
@@ -493,17 +702,27 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         if (step.unblockableMaxPP !== undefined) {
           assertNonNegativeInt(step.unblockableMaxPP, `${sp}.unblockableMaxPP`);
         }
+        if (step.canAttackReadyRolesMaxCost !== undefined) {
+          assertNonNegativeInt(step.canAttackReadyRolesMaxCost, `${sp}.canAttackReadyRolesMaxCost`);
+        }
         const hasAnyMod =
           step.pp !== undefined ||
           step.dp !== undefined ||
           step.setBasePP !== undefined ||
+          step.setBaseDP !== undefined ||
           step.setPP !== undefined ||
           step.setDP !== undefined ||
           step.charge !== undefined ||
           step.setCharge !== undefined ||
+          step.costDelta !== undefined ||
+          step.setCost !== undefined ||
           (step.keywords && step.keywords.length > 0) ||
           (step.removeKeywords && step.removeKeywords.length > 0) ||
           (step.addTraits && step.addTraits.length > 0) ||
+          step.clearBaseTraits === true ||
+          step.setCardType !== undefined ||
+          step.canAttackReadyRolesMaxCost !== undefined ||
+          step.mustBeAttackTarget === true ||
           step.loseAbilities === true ||
           (step.prohibitions && step.prohibitions.length > 0) ||
           (step.treatedAsOrbColors && step.treatedAsOrbColors.length > 0) ||
@@ -516,7 +735,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         break;
       }
       case 'ADD_COST_MODIFIER':
-        assertPositiveInt(step.amount, `${sp}.amount`);
+        validateNumberExpr(step.amount, `${sp}.amount`, vars);
         if (step.remainingCount !== undefined) assertPositiveInt(step.remainingCount, `${sp}.remainingCount`);
         break;
       case 'CHANGE_EROSION':
@@ -525,17 +744,21 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         break;
       case 'REGISTER_DELAYED_TRIGGER':
         validateTarget(step.target, vars, `${sp}.target`);
-        assert(step.eventType === 'END_PHASE_TRIGGERS', `${sp}.eventType 非法`);
-        assert(step.abilityId === 'DELAYED_END_OF_TURN_TO_GRAVEYARD', `${sp}.abilityId 非法`);
+        assert(step.eventType === 'END_PHASE_TRIGGERS' || step.eventType === 'ATTACK_ENDED', `${sp}.eventType 非法`);
+        assert(VALID_DELAYED_ABILITIES.has(step.abilityId), `${sp}.abilityId 非法: ${String(step.abilityId)}`);
         if (step.expectedZone !== undefined) {
           assert(VALID_ZONES.has(step.expectedZone), `${sp}.expectedZone 非法: ${String(step.expectedZone)}`);
         }
         if (step.turnOffset !== undefined) assertNonNegativeInt(step.turnOffset, `${sp}.turnOffset`);
+        if (step.drawCount !== undefined) assertPositiveInt(step.drawCount, `${sp}.drawCount`);
         break;
       case 'IF':
         validateCondition(step.condition, vars, `${sp}.condition`);
         validateSteps(step.then, vars, `${sp}.then`);
         if (step.else) validateSteps(step.else, vars, `${sp}.else`);
+        break;
+      case 'CUSTOM_HANDLER':
+        assert(VALID_CUSTOM_HANDLERS.has(step.handlerId), `${sp}.handlerId 非法: ${String(step.handlerId)}`);
         break;
       default:
         throw new Error(`卡牌声明式效果校验失败：${sp} 未知的操作原语 ${(step as { op?: unknown }).op}`);
@@ -563,9 +786,14 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
     eff.scope === 'SELF' ||
       eff.scope === 'ALL_FRIENDLY_ROLES' ||
       eff.scope === 'PARTNER_HOST' ||
-      eff.scope === 'UNDERNEATH_HOST',
+      eff.scope === 'UNDERNEATH_HOST' ||
+      eff.scope === 'EQUIPPED_HOST',
     `${path}.scope 非法`
   );
+  if (eff.sourceZones !== undefined) {
+    assert(Array.isArray(eff.sourceZones) && eff.sourceZones.length > 0, `${path}.sourceZones 不能为空`);
+    eff.sourceZones.forEach((z) => assert(VALID_ZONES.has(z), `${path}.sourceZones 非法区域: ${String(z)}`));
+  }
   validateFilter(eff.selfFilter, `${path}.selfFilter`);
   validateFilter(eff.targetFilter, `${path}.targetFilter`);
   if (eff.condition) validateCondition(eff.condition, new Set(), `${path}.condition`);
@@ -573,18 +801,31 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
   validateNumberExpr(eff.setPP, `${path}.setPP`);
   validateNumberExpr(eff.dp, `${path}.dp`);
   validateNumberExpr(eff.setDP, `${path}.setDP`);
+  validateNumberExpr(eff.setBaseDP, `${path}.setBaseDP`);
   validateNumberExpr(eff.charge, `${path}.charge`);
   validateNumberExpr(eff.setCharge, `${path}.setCharge`);
+  validateNumberExpr(eff.costDelta, `${path}.costDelta`);
+  validateNumberExpr(eff.setCost, `${path}.setCost`);
   if (eff.unblockableMaxPP !== undefined) assertNonNegativeInt(eff.unblockableMaxPP, `${path}.unblockableMaxPP`);
+  if (eff.canAttackReadyRolesMaxCost !== undefined) {
+    assertNonNegativeInt(eff.canAttackReadyRolesMaxCost, `${path}.canAttackReadyRolesMaxCost`);
+  }
   const hasAnyEffect =
     eff.pp !== undefined ||
     eff.setPP !== undefined ||
     eff.dp !== undefined ||
     eff.setDP !== undefined ||
+    eff.setBaseDP !== undefined ||
     eff.charge !== undefined ||
     eff.setCharge !== undefined ||
+    eff.costDelta !== undefined ||
+    eff.setCost !== undefined ||
     (eff.keywords && eff.keywords.length > 0) ||
     (eff.addTraits && eff.addTraits.length > 0) ||
+    eff.clearBaseTraits === true ||
+    eff.setCardType !== undefined ||
+    eff.canAttackReadyRolesMaxCost !== undefined ||
+    eff.mustBeAttackTarget === true ||
     (eff.prohibitions && eff.prohibitions.length > 0) ||
     (eff.treatedAsOrbColors && eff.treatedAsOrbColors.length > 0) ||
     eff.orbValue !== undefined ||
@@ -592,6 +833,18 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
     eff.unblockableMaxPP !== undefined ||
     eff.canDualEquipFengren === true;
   assert(hasAnyEffect, `${path} 至少须指定一项静态增益`);
+}
+
+function validateActivateSpec(act: NonNullable<CardEffectSpec['activate']>, path: string): void {
+  if (act.usableZones !== undefined) {
+    assert(Array.isArray(act.usableZones) && act.usableZones.length > 0, `${path}.usableZones 不能为空`);
+    act.usableZones.forEach((z) => assert(VALID_USABLE_ZONES.has(z), `${path}.usableZones 非法值: ${String(z)}`));
+  }
+  if (act.condition) {
+    validateCondition(act.condition, new Set(), `${path}.condition`);
+  }
+  const costVars = validateCost(act.cost, `${path}.cost`);
+  validateSteps(act.steps, costVars, `${path}.steps`);
 }
 
 /**
@@ -606,12 +859,22 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
     assert(cardDef !== undefined, `卡牌编号 ${spec.cardNumber} 不存在于官方卡表`);
   }
 
-  if (spec.vanillaEntry && spec.entry) {
+  if (spec.vanillaEntry && (spec.entry || spec.entries?.length)) {
     throw new Error(`卡牌声明式效果校验失败：${spec.cardNumber} 不能同时标记 vanillaEntry=true 与配置 entry`);
   }
 
   if (spec.ignoreAttributeCondition) {
     validateCondition(spec.ignoreAttributeCondition, new Set(), `${spec.cardNumber}.ignoreAttributeCondition`);
+  }
+  if (spec.playFromZones !== undefined) {
+    assert(Array.isArray(spec.playFromZones) && spec.playFromZones.length > 0, `${spec.cardNumber}.playFromZones 不能为空`);
+  }
+  if (spec.usableZones !== undefined) {
+    assert(Array.isArray(spec.usableZones) && spec.usableZones.length > 0, `${spec.cardNumber}.usableZones 不能为空`);
+    spec.usableZones.forEach((z) => assert(VALID_USABLE_ZONES.has(z), `${spec.cardNumber}.usableZones 非法值: ${String(z)}`));
+  }
+  if (spec.maxPlaysPerTurnByName !== undefined) {
+    assertPositiveInt(spec.maxPlaysPerTurnByName, `${spec.cardNumber}.maxPlaysPerTurnByName`);
   }
   if (spec.playPrecondition) {
     assert(spec.playPrecondition.errorMessage.length > 0, `${spec.cardNumber}.playPrecondition.errorMessage 不能为空`);
@@ -624,12 +887,18 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
     const costVars = validateCost(spec.entry.cost, `${spec.cardNumber}.entry.cost`);
     validateSteps(spec.entry.steps, costVars, `${spec.cardNumber}.entry.steps`);
   }
+  if (spec.entries) {
+    spec.entries.forEach((entry, i) => {
+      const costVars = validateCost(entry.cost, `${spec.cardNumber}.entries[${i}].cost`);
+      validateSteps(entry.steps, costVars, `${spec.cardNumber}.entries[${i}].steps`);
+    });
+  }
   if (spec.activate) {
-    if (spec.activate.condition) {
-      validateCondition(spec.activate.condition, new Set(), `${spec.cardNumber}.activate.condition`);
-    }
-    const costVars = validateCost(spec.activate.cost, `${spec.cardNumber}.activate.cost`);
-    validateSteps(spec.activate.steps, costVars, `${spec.cardNumber}.activate.steps`);
+    validateActivateSpec(spec.activate, `${spec.cardNumber}.activate`);
+  }
+  if (spec.activates) {
+    assert(Array.isArray(spec.activates) && spec.activates.length > 0, `${spec.cardNumber}.activates 不能为空`);
+    spec.activates.forEach((act, i) => validateActivateSpec(act, `${spec.cardNumber}.activates[${i}]`));
   }
   if (spec.triggers) {
     spec.triggers.forEach((t, i) => validateTrigger(t, `${spec.cardNumber}.triggers[${i}]`));
@@ -645,16 +914,22 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
   }
   if (spec.equipmentGrantedActivate) {
     assert(spec.equipmentGrantedActivate.label.length > 0, `${spec.cardNumber}.equipmentGrantedActivate.label 不能为空`);
-    const act = spec.equipmentGrantedActivate.activate;
-    if (act.condition) {
-      validateCondition(act.condition, new Set(), `${spec.cardNumber}.equipmentGrantedActivate.activate.condition`);
-    }
-    const costVars = validateCost(act.cost, `${spec.cardNumber}.equipmentGrantedActivate.activate.cost`);
-    validateSteps(act.steps, costVars, `${spec.cardNumber}.equipmentGrantedActivate.activate.steps`);
+    validateActivateSpec(
+      spec.equipmentGrantedActivate.activate,
+      `${spec.cardNumber}.equipmentGrantedActivate.activate`
+    );
   }
   if (spec.playDiscardDiscount) {
     validateFilter(spec.playDiscardDiscount.filter, `${spec.cardNumber}.playDiscardDiscount.filter`);
     assertPositiveInt(spec.playDiscardDiscount.discountPerCard, `${spec.cardNumber}.playDiscardDiscount.discountPerCard`);
+  }
+  if (spec.playSacrificeDiscount) {
+    assert(spec.playSacrificeDiscount.zones.length > 0, `${spec.cardNumber}.playSacrificeDiscount.zones 不能为空`);
+    validateFilter(spec.playSacrificeDiscount.filter, `${spec.cardNumber}.playSacrificeDiscount.filter`);
+    assert(
+      spec.playSacrificeDiscount.setCost !== undefined || spec.playSacrificeDiscount.discount !== undefined,
+      `${spec.cardNumber}.playSacrificeDiscount 必须指定 setCost 或 discount`
+    );
   }
   if (spec.handCostDiscount) {
     if ('condition' in spec.handCostDiscount) {

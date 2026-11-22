@@ -257,11 +257,29 @@ describe('PGR UI Design System Components', () => {
     expect(exactBp01Html).toContain('BP01-001');
     expect(exactBp01Html).not.toContain('近似效果');
 
-    const approxHtml = renderToString(
+    const exactBp02Html = renderToString(
       <CardDetailPanel
         card={{
           cardNumber: 'BP02-001',
-          name: '未迁移补充包卡',
+          name: '伊什梅尔·幻日',
+          cardType: 'ROLE',
+          attribute: 'VOID',
+          cost: 7,
+          basePP: 5000,
+          baseDP: 1,
+          traits: ['伊什梅尔', '幻日'],
+          rulesText: '【出】：…',
+        }}
+      />
+    );
+    expect(exactBp02Html).toContain('BP02-001');
+    expect(exactBp02Html).not.toContain('近似效果');
+
+    const approxHtml = renderToString(
+      <CardDetailPanel
+        card={{
+          cardNumber: 'BP99-001',
+          name: '未登记补充包测试卡',
           cardType: 'ROLE',
           attribute: 'FIRE',
           cost: 4,
@@ -272,7 +290,7 @@ describe('PGR UI Design System Components', () => {
         }}
       />
     );
-    expect(approxHtml).toContain('BP02-001');
+    expect(approxHtml).toContain('BP99-001');
     expect(approxHtml).toContain('近似效果');
   });
 

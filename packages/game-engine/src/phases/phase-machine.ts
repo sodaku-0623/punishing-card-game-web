@@ -140,8 +140,8 @@ export class PhaseMachine {
         return false;
       }
 
-      // 费用区中明费和暗费的数量合计上限为10张。若费用区已存在10张卡牌，需要放置到费用区的卡牌改为放置到墓地。
-      if (player.totalCostCount >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY) {
+      // 费用区中明费和暗费的数量合计上限默认为10张 (BP03-052在场满足条件时为11张)。若费用区已达上限，需要放置到费用区的卡牌改为放置到墓地。
+      if (player.totalCostCount >= this.zoneMgr.getMaxCostZoneCapacity(playerId)) {
         this.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
       } else {
         // 放置到费用区成为明费 (正面竖直)
@@ -226,6 +226,13 @@ export class PhaseMachine {
       p.erosionChangedThisTurn = false;
       p.turnCardPlayedCountByName = undefined;
       p.turnEquipmentPlayedCount = 0;
+      p.turnArtAssocTacticsPlayedCount = 0;
+      p.cardsPlayedThisTurn = 0;
+      p.damageTakenThisTurn = 0;
+      p.chargedAutoByLeeThisTurn = false;
+      p.eliminatedOrbsByKareninaCountThisTurn = 0;
+      p.eliminatedThreeOrbsThisTurn = false;
+      p.destroyedFriendlyRoleCountThisTurn = 0;
     }
 
     // 3.6.3.b.1 将回合玩家的暗费以正面表示放置到墓地 (时点约定见规则整理 12.5；1.3.3 禁止送墓的暗费保留)

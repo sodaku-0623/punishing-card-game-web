@@ -60,7 +60,9 @@ export interface ReplacementRuleContext {
   getZoneCards: (playerId: string, zone: ZoneId) => CardInstance[];
   hasLostAbilities: (cardInstanceId: string) => boolean;
   hasCardName: (cardInstanceId: string, name: string) => boolean;
-  sendCardToGraveyard?: (cardInstanceId: string) => void;
+  hasTrait?: (cardInstanceId: string, trait: string) => boolean;
+  sendCardToGraveyard?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
+  getMaxCostZoneCapacity?: (playerId: string) => number;
 }
 
 /**
@@ -105,20 +107,30 @@ export interface InterceptMoveResult {
  */
 export class ReplacementEngine {
   private rules: ReplacementRule[] = [];
-  private sendCardToGraveyardCallback?: (cardInstanceId: string) => void;
+  private sendCardToGraveyardCallback?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
+  private maxCostCapProvider?: (playerId: string) => number;
 
   constructor(
     private state: GameState,
     private cardDb: ICardDatabase,
     private getZoneCards: (playerId: string, zone: ZoneId) => CardInstance[],
     private hasLostAbilities: (cardInstanceId: string) => boolean,
-    private hasCardName: (cardInstanceId: string, name: string) => boolean
+    private hasCardName: (cardInstanceId: string, name: string) => boolean,
+    private hasTraitProvider?: (cardInstanceId: string, trait: string) => boolean
   ) {
     this.registerBuiltinReplacements();
   }
 
-  setSendCardToGraveyardHandler(handler: (cardInstanceId: string) => void): void {
+  setSendCardToGraveyardHandler(handler: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void): void {
     this.sendCardToGraveyardCallback = handler;
+  }
+
+  setTraitProvider(handler: (cardInstanceId: string, trait: string) => boolean): void {
+    this.hasTraitProvider = handler;
+  }
+
+  setMaxCostCapacityProvider(provider: (playerId: string) => number): void {
+    this.maxCostCapProvider = provider;
   }
 
   /** 注册卡牌级或扩展置换规则 */
@@ -390,7 +402,7 @@ export class ReplacementEngine {
   }
 
   /**
-   * 3.6.4 / Q&A·5：置换效果要求放置到费用区，但费用区已达上限 (10张) 时，改为正面放置到墓地
+   * 3.6.4 / Q&A·5 / Q&A·6：置换效果要求放置到费用区，但费用区已达上限 (默认10张，BP03-052满足条件时11张) 时，改为正面放置到墓地
    */
   private applyCostZoneCapRule(
     playerId: string,
@@ -398,7 +410,8 @@ export class ReplacementEngine {
   ): { zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean } {
     if (target.zone === 'COST') {
       const costCount = this.getZoneCards(playerId, 'COST').length;
-      if (costCount >= RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY) {
+      const cap = this.maxCostCapProvider?.(playerId) ?? RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+      if (costCount >= cap) {
         return { zone: 'GRAVEYARD', isFaceUp: true, isReady: true, toBottom: false };
       }
     }
@@ -412,7 +425,9 @@ export class ReplacementEngine {
       getZoneCards: this.getZoneCards,
       hasLostAbilities: this.hasLostAbilities,
       hasCardName: this.hasCardName,
+      hasTrait: this.hasTraitProvider,
       sendCardToGraveyard: this.sendCardToGraveyardCallback,
+      getMaxCostZoneCapacity: this.maxCostCapProvider,
     };
   }
 
@@ -490,6 +505,71 @@ export class ReplacementEngine {
           isReady: true,
           toBottom: true,
         };
+      },
+    });
+
+    // Q&A·2 BP02-013 丽芙·极昼：我方的1张费用为6及以下的火属性角色因战斗被破坏时，可将战场该牌置墓，改为不破坏 (阻止贯通并触发效果送墓)
+    this.registerRule({
+      id: 'builtin:BP02-013_BATTLE_SAVE',
+      eventTypes: ['DESTROY_ROLE'],
+      apply: (event, ctx) => {
+        if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
+        const dying = ctx.state.cards[event.cardInstanceId];
+        if (!dying || dying.zone !== 'BATTLEFIELD') return undefined;
+        const dyingDef =
+          ctx.cardDb.getCard(dying.cardNumber) || (dying.cardId ? ctx.cardDb.getCard(dying.cardId) : undefined);
+        if (!dyingDef || dyingDef.cardType !== 'ROLE' || dyingDef.attribute !== 'FIRE' || dyingDef.cost > 6) {
+          return undefined;
+        }
+        const fieldCards = ctx.getZoneCards(event.controllerPlayerId, 'BATTLEFIELD').filter((c) => {
+          if (c.cardNumber !== 'BP02-013' || ctx.hasLostAbilities(c.instanceId)) return false;
+          // 必须是顶层战场角色 (排除下方牌/装备)
+          const slots = ctx.state.battlefields[event.controllerPlayerId] ?? [];
+          return slots.some((s) => s.roleCardId === c.instanceId);
+        });
+        // Q&A·5：BP02-013 自身因战斗被破坏时不能将自身送墓代替，必须牺牲我方场上另一张《丽芙·极昼》
+        const saver = fieldCards.find((c) => c.instanceId !== event.cardInstanceId);
+        if (!saver) return undefined;
+        if (ctx.sendCardToGraveyard) {
+          ctx.sendCardToGraveyard(saver.instanceId, true);
+        } else {
+          saver.zone = 'GRAVEYARD';
+          saver.slotIndex = undefined;
+          saver.isFaceUp = true;
+        }
+        return { kind: 'PREVENT' };
+      },
+    });
+
+    // BP02-049 曲·启明：【自】【回合1】该牌因战斗被破坏时，可以将我方手牌1张<万世铭>放置到墓地。若如此做，改为不破坏。
+    this.registerRule({
+      id: 'builtin:BP02-049_BATTLE_SAVE',
+      eventTypes: ['DESTROY_ROLE'],
+      apply: (event, ctx) => {
+        if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
+        const card = ctx.state.cards[event.cardInstanceId];
+        if (!card || card.cardNumber !== 'BP02-049' || card.zone !== 'BATTLEFIELD') return undefined;
+        if (ctx.hasLostAbilities(card.instanceId)) return undefined;
+        const player = ctx.state.players[card.controllerPlayerId];
+        if (!player) return undefined;
+        const usageKey = `${card.instanceId}:BP02-049_BATTLE_SAVE`;
+        if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) return undefined;
+
+        const handWanshiming = ctx.getZoneCards(card.controllerPlayerId, 'HAND').find((h) => {
+          if (ctx.hasTrait) return ctx.hasTrait(h.instanceId, '万世铭');
+          const hDef = ctx.cardDb.getCard(h.cardNumber) || (h.cardId ? ctx.cardDb.getCard(h.cardId) : undefined);
+          return Boolean(hDef?.traits?.includes('万世铭'));
+        });
+        if (!handWanshiming) return undefined;
+
+        player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
+        if (ctx.sendCardToGraveyard) {
+          ctx.sendCardToGraveyard(handWanshiming.instanceId, true);
+        } else {
+          handWanshiming.zone = 'GRAVEYARD';
+          handWanshiming.isFaceUp = true;
+        }
+        return { kind: 'PREVENT' };
       },
     });
   }

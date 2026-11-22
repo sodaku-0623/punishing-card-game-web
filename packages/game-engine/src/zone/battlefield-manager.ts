@@ -80,11 +80,17 @@ export class BattlefieldManager {
   }
 
   /**
-   * 是否为该玩家战场卡位上的角色 (不含升变垫在下方的牌、装备中的装备牌)
+   * 是否为该玩家战场卡位上的角色 (不含升变垫在下方的牌、装备中的装备牌及变为辅助机的角色；兼容 PR-041 卡牌类型变为角色牌的辅助机)
    */
   isSlotRole(playerId: string, cardInstanceId: string | undefined): boolean {
     if (!cardInstanceId) return false;
-    return this.getSlots(playerId).some((s) => s.roleCardId === cardInstanceId);
+    return this.getSlots(playerId).some(
+      (s) =>
+        (s.roleCardId === cardInstanceId &&
+          !this.state.cards[cardInstanceId]?.modifiers?.some((m) => m.setCardType === CardType.ASSIST)) ||
+        (s.assistCardId === cardInstanceId &&
+          Boolean(this.state.cards[cardInstanceId]?.modifiers?.some((m) => m.setCardType === CardType.ROLE)))
+    );
   }
 
   /**
@@ -123,7 +129,17 @@ export class BattlefieldManager {
   /**
    * 8.6.2.e.1 放置角色牌出场
    */
-  playRoleCard(playerId: string, cardInstanceId: string, slotIndex: number): boolean {
+  playRoleCard(
+    playerId: string,
+    cardInstanceId: string,
+    slotIndex: number,
+    options?: {
+      enterTapped?: boolean;
+      enterAbilitiesLost?: boolean;
+      deployedFromHostCardId?: string;
+      sourceCardNumber?: string;
+    }
+  ): boolean {
     const slot = this.getSlots(playerId)[slotIndex];
     if (!slot || slot.roleCardId || slot.standaloneEquipmentId || slot.assistCardId) {
       return false; // 卡位已被占用
@@ -134,8 +150,16 @@ export class BattlefieldManager {
     this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
-      isReady: true,
+      isReady: !options?.enterTapped,
     });
+    const movedCard = this.state.cards[cardInstanceId];
+    if (movedCard && options?.enterAbilitiesLost) {
+      addCardModifier(this.state, movedCard, {
+        loseAbilities: true,
+        untilTurn: undefined,
+        source: options.sourceCardNumber ?? movedCard.cardNumber,
+      });
+    }
 
     this.events.push({
       type: 'CARD_PLAYED',
@@ -151,6 +175,7 @@ export class BattlefieldManager {
       fromZone,
       toZone: 'BATTLEFIELD',
       isAscension: false,
+      deployedFromHostCardId: options?.deployedFromHostCardId,
       subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
     });
     return true;
@@ -193,6 +218,7 @@ export class BattlefieldManager {
     const ascensionCard = this.state.cards[ascensionCardId];
     if (!ascensionCard) return false;
 
+    const wasTargetAirborne = targetCard.zone === 'PROCESSING' && targetCard.isAirborne === true;
     let slotIndex: number | undefined;
     if (targetCard.zone === 'BATTLEFIELD') {
       if (!this.isSlotRole(playerId, targetRoleCardId) || targetCard.slotIndex === undefined) {
@@ -211,14 +237,13 @@ export class BattlefieldManager {
       if (!chosenSlot || chosenSlot.roleCardId || chosenSlot.standaloneEquipmentId || chosenSlot.assistCardId) {
         return false;
       }
-    } else if (targetCard.zone === 'PROCESSING' && targetCard.isAirborne) {
+    } else if (wasTargetAirborne) {
       slotIndex = options?.targetSlotIndex ?? this.findFirstEmptySlot(playerId);
       if (slotIndex === undefined) return false;
       const chosenSlot = this.getSlots(playerId)[slotIndex];
       if (!chosenSlot || chosenSlot.roleCardId || chosenSlot.standaloneEquipmentId || chosenSlot.assistCardId) {
         return false;
       }
-      targetCard.isAirborne = undefined;
     } else {
       return false;
     }
@@ -240,6 +265,7 @@ export class BattlefieldManager {
     targetCard.slotIndex = undefined;
     targetCard.isFaceUp = true;
     targetCard.isReady = true;
+    targetCard.isAirborne = undefined;
 
     // 8.11.3.f.1 升变对象及其下方原本的卡牌将保留在升变出场的卡牌下方
     const stackedCardIds = [...targetCard.underneathCardIds, targetRoleCardId];
@@ -323,6 +349,8 @@ export class BattlefieldManager {
 
     // 被升变的原卡不再单独计为顶层角色
     targetCard.underneathCardIds = [];
+    ascensionCard.wasAscendedPlay = true;
+    ascensionCard.ascendedFromAirborne = wasTargetAirborne || undefined;
 
     this.events.push({
       type: 'CARD_PLAYED',
@@ -404,6 +432,13 @@ export class BattlefieldManager {
       type: 'CARD_EQUIPPED',
       equipmentCardId,
       roleCardId,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_EQUIPPED',
+      playerId,
+      cardInstanceId: equipmentCardId,
+      targetCardId: roleCardId,
+      subjectSnapshot: this.snapshotProvider?.(equipmentCardId),
     });
 
     return true;
@@ -626,7 +661,12 @@ export class BattlefieldManager {
   /**
    * 8.13.3.d 使指定卡牌成为战场上协战角色的协战搭档
    */
-  attachPartner(playerId: string, hostRoleCardId: string, partnerCardId: string): boolean {
+  attachPartner(
+    playerId: string,
+    hostRoleCardId: string,
+    partnerCardId: string,
+    options?: { releaseToDeckBottom?: boolean }
+  ): boolean {
     const host = this.state.cards[hostRoleCardId];
     const partner = this.state.cards[partnerCardId];
     if (!host || !partner || hostRoleCardId === partnerCardId) return false;
@@ -692,6 +732,7 @@ export class BattlefieldManager {
     partner.underneathCardIds = [];
     setAttachedEquipmentIds(partner, []);
     partner.partnerOfCardId = hostRoleCardId;
+    partner.releasePartnerToDeckBottom = options?.releaseToDeckBottom || undefined;
     host.partnerCardId = partnerCardId;
 
     if (prevZone === 'COST') {
@@ -724,20 +765,38 @@ export class BattlefieldManager {
     const partner = this.state.cards[partnerId];
     if (
       !force &&
-      partner?.cannotReleasePartnerUntilTurn !== undefined &&
-      partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber
+      partner &&
+      ((partner.cannotReleasePartnerUntilTurn !== undefined &&
+        partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber) ||
+        (partner.cardNumber === 'BP04-038' &&
+          partner.turnEnteredZone === this.state.turnNumber &&
+          !this.continuousEffects?.hasLostInherentAbilities(partnerId) &&
+          (this.state.players[host.controllerPlayerId]?.eliminatedOrbsByKareninaCountThisTurn ?? 0) > 0))
     ) {
       return false;
     }
 
+    const toDeckBottom = Boolean(partner?.releasePartnerToDeckBottom);
     host.partnerCardId = undefined;
     if (partner) {
       partner.partnerOfCardId = undefined;
       partner.cannotReleasePartnerUntilTurn = undefined;
+      partner.releasePartnerToDeckBottom = undefined;
       if (partner.zone === 'BATTLEFIELD') {
-        this.zoneMgr.moveCard(partnerId, 'GRAVEYARD', {
-          isFaceUp: true,
-          skipLeftFieldTrigger: true,
+        if (toDeckBottom) {
+          this.zoneMgr.moveCardToBottomOfDeck(partnerId);
+        } else {
+          this.zoneMgr.moveCard(partnerId, 'GRAVEYARD', {
+            isFaceUp: true,
+            skipLeftFieldTrigger: true,
+          });
+        }
+        this.onTriggerEventCallback?.({
+          type: 'PARTNER_RELEASED',
+          playerId: host.controllerPlayerId,
+          cardInstanceId: hostRoleCardId,
+          targetCardId: partnerId,
+          subjectSnapshot: this.snapshotProvider?.(partnerId),
         });
       }
     }

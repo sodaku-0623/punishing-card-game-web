@@ -408,7 +408,8 @@ describe('BP01 第一批：七实·遥星之座 & 帕瓦叠置体系 (BP01-040 ~
       nanami40.underneathCardIds.push(u.instanceId);
     }
     const eval4 = engine.continuousEffects.evaluateCard(nanami40.instanceId);
-    expect(eval4.pp).toBe(9000);
+    // BP01-040 基本 PP 8000 + BP01-049(+1000) + BP01-040 自身「下方>=2张时我方回合<机械教会>/<火花>角色PP+1000」= 10000
+    expect(eval4.pp).toBe(10000);
     expect(eval4.charge).toBe(2); // 1 + 1 (BP01-050)
     expect(eval4.dp).toBe(2); // 1 + 1 (BP01-051)
     expect(eval4.unblockableMaxPP).toBe(5000);

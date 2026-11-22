@@ -665,7 +665,7 @@ describe('预组效果的通用约束', () => {
     expect(state.currentPendingChoice).toBeUndefined();
   });
 
-  it('BP04-032 炽能球不是信号球牌，使用时不会直接放置到信号球区', () => {
+  it('BP04-032 炽能球不是信号球牌（无充能自），使用时按战术效果出场<遗忘者>后放置到信号球区最上方', () => {
     const engine = new GameEngine(
       'game-bp04-032',
       { playerId: 'p1', deckCardNumbers: [...DECK, 'BP04-032'] },
@@ -675,8 +675,10 @@ describe('预组效果的通用约束', () => {
     );
     const state = engine.getState();
     const card = Object.values(state.cards).find((c) => c.cardNumber === 'BP04-032')!;
+    expect(cardDb.getCard('BP04-032')!.signalOrb).toBeUndefined();
+    expect(engine.effectEngine.handleChargeAutoEffect('p1', card.instanceId, cardDb.getCard('BP04-032')!)).toBe(false);
     const res = engine.effectEngine.handlePlayTactics('p1', card.instanceId, cardDb.getCard('BP04-032')!);
     expect(res.success).toBe(true);
-    expect(at(engine, card).zone).not.toBe('SIGNAL_ORB');
+    expect(at(engine, card).zone).toBe('SIGNAL_ORB');
   });
 });

@@ -14,6 +14,8 @@ const PROHIBITION_LABELS: Record<ProhibitionFlag, string> = {
   CANNOT_ELIMINATE: '不能被消除',
   CANNOT_MODIFY_PP_BY_OPPONENT: 'PP不受对手效果增减',
   CANNOT_DISCARD_HIDDEN_COST_AT_END: '回合末不送墓',
+  CANNOT_BE_PLACED_UNDERNEATH: '不因效果置于下方',
+  CANNOT_BE_PLACED_UNDERNEATH_BY_SELF: '不因己方效果置于下方',
 };
 
 const ORB_COLOR_LABELS: Record<SignalOrbColor, string> = {
