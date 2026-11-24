@@ -649,13 +649,13 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // BP02-012 丽芙·极昼 (7费)
+  // BP02-012 丽芙·极昼 (7费；含作为搭档在战场的《丽芙·极昼》亦可选作牺牲对象 Q&A·8)
   {
     cardNumber: 'BP02-012',
     name: '丽芙·极昼',
     playSacrificeDiscount: {
       zones: ['BATTLEFIELD'],
-      filter: { cardType: CardType.ROLE, exactName: '丽芙·极昼' },
+      filter: { exactName: '丽芙·极昼' },
       setCost: 4,
       prompt: '【丽芙·极昼】使用该牌时，可选择将我方战场 1 张《丽芙·极昼》放置到墓地，使该牌费用变为 4：',
     },
@@ -1872,8 +1872,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // BP02-041 含英·檀心 (6费 【永】：【速攻】)
-  // 受限点：engine.ts playSacrificeDiscount 目前在 BATTLEFIELD 仅扫描 s.roleCardId，可正确选中场上的 BP02-040 且不选下方牌(Q&A·5)，但暂未扫入装备中/独立的 BP02-047。
+  // BP02-041 含英·檀心 (6费 【永】：【速攻】；可牺牲战场上的角色/装备/独立《飞叶点翠》，不选下方牌 Q&A·5)
   {
     cardNumber: 'BP02-041',
     name: '含英·檀心',

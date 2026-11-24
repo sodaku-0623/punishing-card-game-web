@@ -8,6 +8,7 @@ import {
   ZoneId,
 } from '@zhanshuang/shared';
 import { ICardDatabase } from '../database/card-registry.js';
+import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager, getAttachedEquipmentIds } from '../zone/battlefield-manager.js';
 import {
@@ -127,6 +128,7 @@ export class TriggerManager {
     private enqueueChoice: (choice: PendingChoice) => void
   ) {
     this.registerBuiltinDelayedHandlers();
+    this.registerBuiltinRuleTriggers();
   }
 
   /** 注册一个自动能力触发定义 */
@@ -514,6 +516,63 @@ export class TriggerManager {
             });
           }
         }
+      },
+    });
+  }
+
+  /**
+   * 注册规则级内置自动能力 (如 10.7.1 【贯通】)
+   */
+  private registerBuiltinRuleTriggers(): void {
+    // 10.7.1 【贯通】：攻击角色在角色战斗步骤中战斗破坏对方操控的被攻击角色时，给予对方玩家 1 点伤害
+    // (作为自动能力进入检查时机结算；多个【贯通】仅触发 1 次 10.7.1.a.1；战斗破坏被置换时不触发 Q&A·2)
+    this.registerTrigger({
+      abilityId: 'BUILTIN_PIERCING_DAMAGE',
+      eventTypes: ['CARD_DESTROYED'],
+      collect: ({ state, event, cardDb, continuousEffects }) => {
+        if (event.destroyReason !== 'BATTLE') return [];
+        const combat = state.currentCombat;
+        if (!combat || !combat.attackerCardId) return [];
+        const expectedDefenderId = combat.blockerCardId ?? combat.targetCardId;
+        if (!expectedDefenderId || event.cardInstanceId !== expectedDefenderId) return [];
+
+        const attacker = state.cards[combat.attackerCardId];
+        if (!attacker || !event.playerId || event.playerId === attacker.controllerPlayerId) return [];
+        if (combat.cannotDealDamage || continuousEffects.hasProhibition(attacker.instanceId, 'CANNOT_DEAL_DAMAGE')) {
+          return [];
+        }
+        if (!continuousEffects.hasKeyword(attacker.instanceId, '贯通')) return [];
+
+        const attackerDef = cardDb.getCard(attacker.cardNumber);
+        return [
+          {
+            sourceCardInstanceId: attacker.instanceId,
+            sourceCardNumber: attacker.cardNumber,
+            controllerPlayerId: attacker.controllerPlayerId,
+            label: `【${attackerDef?.name ?? attacker.cardNumber}】【贯通】战斗破坏角色给予对方 ${RULE_CONSTANTS.PIERCING_DAMAGE_VALUE} 点伤害`,
+            triggerContext: {
+              attackerCardId: attacker.instanceId,
+              defenderPlayerId: event.playerId,
+            },
+          },
+        ];
+      },
+      execute: (trigger, ctx) => {
+        const attackerCardId = (trigger.triggerContext.attackerCardId as string | undefined) ?? trigger.sourceCardInstanceId;
+        const defenderPlayerId = trigger.triggerContext.defenderPlayerId as string | undefined;
+        if (!defenderPlayerId) return;
+        const combat = ctx.state.currentCombat;
+        if (
+          combat?.cannotDealDamage ||
+          ctx.continuousEffects.hasProhibition(attackerCardId, 'CANNOT_DEAL_DAMAGE')
+        ) {
+          return;
+        }
+        ctx.zoneMgr.applyDamageToPlayer(
+          defenderPlayerId,
+          RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+          attackerCardId
+        );
       },
     });
   }

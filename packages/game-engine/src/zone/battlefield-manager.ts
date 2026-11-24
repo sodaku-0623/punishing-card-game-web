@@ -326,6 +326,7 @@ export class BattlefieldManager {
     options?: {
       targetSlotIndex?: number;
       extraStackRoleCardId?: string;
+      additionalTargetRoleCardIds?: string[];
       suppressEntryTrigger?: boolean;
     }
   ): boolean {
@@ -415,6 +416,70 @@ export class BattlefieldManager {
     // 被升变的原卡不再单独计为顶层角色
     targetCard.underneathCardIds = [];
     ascensionCard.underneathCardIds = stackedCardIds;
+
+    // BP04-001 等多对象升变：将其余被选中的己方战场角色及它们的下方牌一并重叠至升变卡下方
+    if (options?.additionalTargetRoleCardIds?.length) {
+      const seen = new Set<string>([targetRoleCardId, ascensionCardId]);
+      for (const extraId of options.additionalTargetRoleCardIds) {
+        if (!extraId || seen.has(extraId)) continue;
+        seen.add(extraId);
+        const extraCard = this.state.cards[extraId];
+        if (!extraCard || extraCard.controllerPlayerId !== playerId || !this.isSlotRole(playerId, extraId)) {
+          continue;
+        }
+        if (extraCard.partnerCardId) {
+          this.releasePartner(extraId, true);
+        }
+        for (const s of this.getSlots(playerId)) {
+          if (s.roleCardId === extraId) {
+            s.roleCardId = undefined;
+          }
+        }
+        const extraEqIds = getAttachedEquipmentIds(extraCard);
+        if (extraEqIds.length > 0) {
+          setAttachedEquipmentIds(extraCard, []);
+          const currentHostEqIds = getAttachedEquipmentIds(ascensionCard);
+          if (currentHostEqIds.length === 0) {
+            const firstEqId = extraEqIds[0]!;
+            this.zoneMgr.syncAttachedCardZone(firstEqId, 'BATTLEFIELD', { slotIndex });
+            setAttachedEquipmentIds(ascensionCard, [firstEqId]);
+            for (const remEqId of extraEqIds.slice(1)) {
+              this.zoneMgr.moveCard(remEqId, 'GRAVEYARD', {
+                isFaceUp: true,
+                isOrphanCleanup: true,
+                orphanHostCardId: extraId,
+              });
+            }
+          } else {
+            for (const eqId of extraEqIds) {
+              this.zoneMgr.moveCard(eqId, 'GRAVEYARD', {
+                isFaceUp: true,
+                isOrphanCleanup: true,
+                orphanHostCardId: extraId,
+              });
+            }
+          }
+        }
+        const extraUnderIds = [...extraCard.underneathCardIds];
+        extraCard.underneathCardIds = [];
+        for (const uid of extraUnderIds) {
+          this.zoneMgr.syncAttachedCardZone(uid, 'BATTLEFIELD', {
+            slotIndex: undefined,
+            isFaceUp: true,
+            isReady: true,
+            clearTransientState: true,
+          });
+          ascensionCard.underneathCardIds.push(uid);
+        }
+        this.zoneMgr.syncAttachedCardZone(extraId, 'BATTLEFIELD', {
+          slotIndex: undefined,
+          isFaceUp: true,
+          isReady: true,
+          clearTransientState: true,
+        });
+        ascensionCard.underneathCardIds.push(extraId);
+      }
+    }
 
     // BP01-040 额外升变代价：将我方战场 1 张《帕瓦》放置到该牌下方
     if (options?.extraStackRoleCardId && options.extraStackRoleCardId !== targetRoleCardId) {
@@ -884,6 +949,32 @@ export class BattlefieldManager {
   }
 
   /**
+   * Q&A·8 / Q&A·9 检查当前协战搭档是否处于「不会解除协战状态」保护中
+   */
+  isPartnerProtectedFromRelease(hostRoleCardId: string): boolean {
+    const host = this.state.cards[hostRoleCardId];
+    if (!host || !host.partnerCardId) return false;
+    const partnerId = host.partnerCardId;
+    const partner = this.state.cards[partnerId];
+    if (!partner) return false;
+    if (
+      partner.cannotReleasePartnerUntilTurn !== undefined &&
+      partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber
+    ) {
+      return true;
+    }
+    if (
+      partner.cardNumber === 'BP04-038' &&
+      partner.turnEnteredZone === this.state.turnNumber &&
+      !this.continuousEffects?.hasLostInherentAbilities(partnerId) &&
+      (this.state.players[host.controllerPlayerId]?.eliminatedOrbsByKareninaCountThisTurn ?? 0) > 0
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 8.13.3.d 使指定卡牌成为战场上协战角色的协战搭档
    */
   attachPartner(
@@ -900,7 +991,13 @@ export class BattlefieldManager {
     }
     if (partner.partnerOfCardId) return false;
 
-    const fromDeck = partner.zone === 'DECK';
+    // Q&A·8 / Q&A·9：若当前搭档「不会解除协战状态」，则获得新搭档的行动改为不执行
+    if (host.partnerCardId && host.partnerCardId !== partnerCardId && this.isPartnerProtectedFromRelease(hostRoleCardId)) {
+      return false;
+    }
+
+    const prevZone = partner.zone;
+    const fromDeck = prevZone === 'DECK';
 
     const moved = this.zoneMgr.moveCard(partnerCardId, 'BATTLEFIELD', {
       slotIndex: host.slotIndex,
@@ -913,14 +1010,24 @@ export class BattlefieldManager {
       return false;
     }
 
-    // 8.13.2.a.2 / 8.13.4.c.3 已有搭档时先将原搭档解除协战置入墓地
+    // 8.13.2.a.2 / 8.13.4.c.3 已有搭档时解除原搭档并置入墓地
     if (host.partnerCardId && host.partnerCardId !== partnerCardId) {
-      this.releasePartner(hostRoleCardId, true);
+      this.releasePartner(hostRoleCardId, false);
     }
 
     partner.partnerOfCardId = hostRoleCardId;
     partner.releasePartnerToDeckBottom = options?.releaseToDeckBottom || undefined;
     host.partnerCardId = partnerCardId;
+
+    // ST06-002 坠落与新生 塞西莉【协战永】：从手牌成为《坠落与新生 亚里莎·回音》协战搭档的回合中，不会解除协战状态
+    if (
+      prevZone === 'HAND' &&
+      partner.cardNumber === 'ST06-002' &&
+      !this.continuousEffects?.hasLostInherentAbilities(partner.instanceId) &&
+      this.continuousEffects?.hasCardName(hostRoleCardId, '坠落与新生 亚里莎·回音')
+    ) {
+      partner.cannotReleasePartnerUntilTurn = this.state.turnNumber;
+    }
 
     if (fromDeck) {
       // 8.13.3.b.3 从牌组选择搭档后洗切牌组
@@ -938,16 +1045,7 @@ export class BattlefieldManager {
     if (!host || !host.partnerCardId) return false;
     const partnerId = host.partnerCardId;
     const partner = this.state.cards[partnerId];
-    if (
-      !force &&
-      partner &&
-      ((partner.cannotReleasePartnerUntilTurn !== undefined &&
-        partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber) ||
-        (partner.cardNumber === 'BP04-038' &&
-          partner.turnEnteredZone === this.state.turnNumber &&
-          !this.continuousEffects?.hasLostInherentAbilities(partnerId) &&
-          (this.state.players[host.controllerPlayerId]?.eliminatedOrbsByKareninaCountThisTurn ?? 0) > 0))
-    ) {
+    if (!force && this.isPartnerProtectedFromRelease(hostRoleCardId)) {
       return false;
     }
 

@@ -92,8 +92,14 @@ export class PresetCardEffects {
     this.interpreter.enter(playerId, roleId, def);
   }
 
-  activate(playerId: string, cardId: string, def: CardVersionData, abilityIndex?: number): Result {
-    return this.interpreter.activate(playerId, cardId, def, abilityIndex);
+  activate(
+    playerId: string,
+    cardId: string,
+    def: CardVersionData,
+    abilityIndex?: number,
+    costCardInstanceIds?: string[]
+  ): Result {
+    return this.interpreter.activate(playerId, cardId, def, abilityIndex, costCardInstanceIds);
   }
 
   resolveChoice(action: ChoiceAction, choice: PendingChoice): Result {

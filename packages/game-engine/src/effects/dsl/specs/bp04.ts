@@ -3799,8 +3799,7 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // BP04-060 血税 (2费 战术)
-  // 受限点：公开置墓未设置 countAsDeckToGy；playSacrificeDiscount 战场扫描未含 slot.assistCardId。
+  // BP04-060 血税 (2费 战术；受限点：公开置墓未设置 countAsDeckToGy)
   {
     cardNumber: 'BP04-060',
     name: '血税',
@@ -4330,8 +4329,7 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
 
   // ==================== 9. 丽芙·极昼 & 赫斯提亚体系 (BP04-071 ~ BP04-075) ====================
 
-  // BP04-071 丽芙·极昼 (4费)
-  // 受限点：battlefield-manager.ts airborneRole 与 interpreter.ts SELF_AIRBORNE 当前限制卡牌须在战场，尚不支持手牌【浮空】。
+  // BP04-071 丽芙·极昼 (4费：手牌【起】【2费】直接【浮空】)
   {
     cardNumber: 'BP04-071',
     name: '丽芙·极昼',

@@ -625,7 +625,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：battlefield-manager.ts airborneRole 目前仅允许战场角色位 (isSlotRole) 浮空，尚不支持从 HAND 直接【浮空】至处理区。
+  // BP03-002 露西亚·誓焰 (7费：手牌【起】【5费】直接【浮空】)
   {
     cardNumber: 'BP03-002',
     name: '露西亚·誓焰',

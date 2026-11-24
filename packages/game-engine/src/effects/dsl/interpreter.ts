@@ -5,6 +5,7 @@ import {
   ElementAttribute,
   GameAction,
   PendingChoice,
+  PendingDslContinuation,
   ZoneId,
 } from '@zhanshuang/shared';
 import type { CardEffectContext, CardEffectEngine } from '../card-effects.js';
@@ -66,6 +67,7 @@ type PendingDslAction =
   | { kind: 'WANSHIMING_REVEAL_TO_COST'; revealVar: string }
   | {
       kind: 'CHOOSE_ACTIVATED_ABILITY';
+      costCardInstanceIds?: string[];
       entries: Array<{
         id: string;
         cardNumber: string;
@@ -406,9 +408,28 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
-   * 执行声明式【起】起动能力 (支持角色自身单/多【起】、非战场区域限制、以及装备赋予的【起】)
+   * 8.5.3 从挂起的充能/伤害序列恢复尚未执行完的 DSL 后续步骤帧
    */
-  activate(playerId: string, cardId: string, def: CardVersionData, abilityIndex?: number): Result {
+  resumeContinuation(frame: PendingDslContinuation): void {
+    this.runSteps(
+      frame.cardNumber,
+      frame.sourceCardInstanceId,
+      frame.playerId,
+      { ...frame.vars },
+      [...(frame.remainingSteps as EffectStep[])]
+    );
+  }
+
+  /**
+   * 执行声明式【起】起动能力 (支持角色自身单/多【起】、非战场区域限制、装备赋予的【起】及玩家自选费用)
+   */
+  activate(
+    playerId: string,
+    cardId: string,
+    def: CardVersionData,
+    abilityIndex?: number,
+    costCardInstanceIds?: string[]
+  ): Result {
     const spec = this.registry.get(def.cardNumber);
     const grantedList = this.getEquipmentGrantedActivates(playerId, cardId);
     const activeZones = this.getCurrentActivationZoneSet(playerId, cardId);
@@ -486,7 +507,8 @@ export class DeclarativeEffectInterpreter {
         entry.activate.steps,
         isOnce,
         {},
-        entry.usageKey
+        entry.usageKey,
+        costCardInstanceIds
       );
     };
 
@@ -531,6 +553,7 @@ export class DeclarativeEffectInterpreter {
         remainingSteps: [],
         pendingAction: {
           kind: 'CHOOSE_ACTIVATED_ABILITY',
+          ...(costCardInstanceIds?.length ? { costCardInstanceIds } : {}),
           entries: usable.map((e) => ({
             id: e.id,
             cardNumber: e.cardNumber,
@@ -1916,7 +1939,8 @@ export class DeclarativeEffectInterpreter {
           picked.steps,
           picked.oncePerTurn,
           vars,
-          picked.usageKey
+          picked.usageKey,
+          pending.costCardInstanceIds
         );
       }
 
@@ -1938,7 +1962,8 @@ export class DeclarativeEffectInterpreter {
     steps: EffectStep[],
     markUsed: boolean,
     initialVars: Record<string, string[]> = {},
-    markUsedKey?: string
+    markUsedKey?: string,
+    costCardInstanceIds?: string[]
   ): Result {
     const vars = { ...initialVars };
     const effectiveUsageKey = markUsedKey ?? sourceId;
@@ -2067,7 +2092,7 @@ export class DeclarativeEffectInterpreter {
       }
 
       case 'PAY_COST': {
-        if (!this.ctx.payCost(playerId, cost.amount)) {
+        if (!this.ctx.payCost(playerId, cost.amount, costCardInstanceIds)) {
           return { success: false, error: `费用不足，需要支付 ${cost.amount} 费` };
         }
         if (markUsed) this.markUsed(playerId, effectiveUsageKey);
@@ -2111,11 +2136,25 @@ export class DeclarativeEffectInterpreter {
       }
 
       case 'DEAL_SELF_DAMAGE': {
-        this.ctx.zoneMgr.applyDamageToPlayer(playerId, cost.amount, sourceId);
+        this.ctx.zoneMgr.applyDamageToPlayer(playerId, cost.amount, sourceId, {
+          deferCheckTiming: steps.length > 0,
+        });
         if (markUsed) this.markUsed(playerId, effectiveUsageKey);
-        if (this.ctx.state.status !== 'FINISHED') {
-          this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        if (this.ctx.state.status === 'FINISHED') {
+          return { success: true };
         }
+        if ((this.ctx.state.currentPendingChoice || this.ctx.zoneMgr.hasPendingCharges()) && steps.length > 0) {
+          this.ctx.state.pendingDslContinuations ??= [];
+          this.ctx.state.pendingDslContinuations.push({
+            cardNumber,
+            sourceCardInstanceId: sourceId,
+            playerId,
+            vars: { ...vars },
+            remainingSteps: [...steps],
+          });
+          return { success: true };
+        }
+        this.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
         return { success: true };
       }
 
@@ -2170,7 +2209,17 @@ export class DeclarativeEffectInterpreter {
           ) {
             interactive.push(sub);
           } else {
-            const res = this.executeWithCost(cardNumber, sourceId, playerId, sub, [], false, vars);
+            const res = this.executeWithCost(
+              cardNumber,
+              sourceId,
+              playerId,
+              sub,
+              [],
+              false,
+              vars,
+              undefined,
+              costCardInstanceIds
+            );
             if (!res.success) return res;
           }
         }
@@ -3170,7 +3219,23 @@ export class DeclarativeEffectInterpreter {
 
         case 'DEAL_DAMAGE': {
           const targetPlayer = this.resolveSide(playerId, step.side);
-          this.ctx.zoneMgr.applyDamageToPlayer(targetPlayer, step.amount, sourceId || undefined);
+          this.ctx.zoneMgr.applyDamageToPlayer(targetPlayer, step.amount, sourceId || undefined, {
+            deferCheckTiming: queue.length > 0,
+          });
+          if (this.ctx.state.status === 'FINISHED') {
+            return;
+          }
+          if ((this.ctx.state.currentPendingChoice || this.ctx.zoneMgr.hasPendingCharges()) && queue.length > 0) {
+            this.ctx.state.pendingDslContinuations ??= [];
+            this.ctx.state.pendingDslContinuations.push({
+              cardNumber,
+              sourceCardInstanceId: sourceId,
+              playerId,
+              vars: { ...vars },
+              remainingSteps: [...queue],
+            });
+            return;
+          }
           break;
         }
 
