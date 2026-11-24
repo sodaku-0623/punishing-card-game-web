@@ -3047,6 +3047,9 @@ export class CardEffectEngine {
     if (!window) {
       return { usable: false, error: '当前不在使用【瞬时】的时机 (10.8)', costToPay: 0 };
     }
+    if (window.priorityPlayerId !== playerId) {
+      return { usable: false, error: '当前不持有【瞬时】使用优先权，须等待对方先选择 (7.3.1.b / 10.8)', costToPay: 0 };
+    }
     const player = this.ctx.state.players[playerId];
     if (!player) {
       return { usable: false, error: '玩家不存在', costToPay: 0 };

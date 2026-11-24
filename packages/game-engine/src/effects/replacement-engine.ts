@@ -2,6 +2,7 @@ import {
   ActiveReplacementEffect,
   CardInstance,
   GameState,
+  PendingChoice,
   ReplacementEventType,
   ZoneId,
 } from '@zhanshuang/shared';
@@ -63,6 +64,7 @@ export interface ReplacementRuleContext {
   hasTrait?: (cardInstanceId: string, trait: string) => boolean;
   sendCardToGraveyard?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
   getMaxCostZoneCapacity?: (playerId: string) => number;
+  enqueueChoice?: (choice: PendingChoice) => void;
 }
 
 /**
@@ -109,6 +111,7 @@ export class ReplacementEngine {
   private rules: ReplacementRule[] = [];
   private sendCardToGraveyardCallback?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
   private maxCostCapProvider?: (playerId: string) => number;
+  private choiceEnqueuer?: (choice: PendingChoice) => void;
 
   constructor(
     private state: GameState,
@@ -131,6 +134,10 @@ export class ReplacementEngine {
 
   setMaxCostCapacityProvider(provider: (playerId: string) => number): void {
     this.maxCostCapProvider = provider;
+  }
+
+  setChoiceEnqueuer(enqueuer: (choice: PendingChoice) => void): void {
+    this.choiceEnqueuer = enqueuer;
   }
 
   /** 注册卡牌级或扩展置换规则 */
@@ -428,6 +435,7 @@ export class ReplacementEngine {
       hasTrait: this.hasTraitProvider,
       sendCardToGraveyard: this.sendCardToGraveyardCallback,
       getMaxCostZoneCapacity: this.maxCostCapProvider,
+      enqueueChoice: this.choiceEnqueuer,
     };
   }
 
@@ -464,7 +472,48 @@ export class ReplacementEngine {
         const largeId = eqIds.find((id) => id !== smallId && getTraits(id).includes('大太刀'));
         if (!smallId || !largeId) return undefined;
 
-        // 卸下并送入墓地
+        // 文本为「可以将其放置到墓地。若如此做，改为不离场」：交由操控玩家自主选择是否发动置换
+        if (ctx.enqueueChoice) {
+          const seq = nextEffectTimestamp(ctx.state);
+          const originalEvent =
+            event.type === 'DESTROY_ROLE'
+              ? {
+                  type: 'DESTROY_ROLE' as const,
+                  reason: event.reason,
+                  attackerCardId: event.attackerCardId,
+                  combatCannotDealDamage: Boolean(ctx.state.currentCombat?.cannotDealDamage),
+                }
+              : {
+                  type: 'MOVE_CARD' as const,
+                  toZone: event.toZone,
+                  isFaceUp: event.isFaceUp,
+                  isReady: event.isReady,
+                  toBottom: event.toBottom,
+                };
+          ctx.enqueueChoice({
+            id: `choice-bp01-017-leave-${ctx.state.turnNumber}-${seq}`,
+            playerId: card.controllerPlayerId,
+            choiceType: 'SELECT_OPTION',
+            prompt: '【露西亚·深红囚影】即将离场：是否将装备的<小太刀>和<大太刀>放置到墓地，改为不离场？',
+            options: [
+              { id: 'replace', label: '送墓双刀，改为不离场 (8.10 置换)' },
+              { id: 'leave', label: '不发动置换，让该牌离场' },
+            ],
+            effectType: 'BP01_017_OPTIONAL_LEAVE_REPLACEMENT',
+            sourceCardInstanceId: card.instanceId,
+            minSelections: 1,
+            maxSelections: 1,
+            metadata: {
+              cardInstanceId: card.instanceId,
+              smallId,
+              largeId,
+              originalEvent,
+            },
+          });
+          return { kind: 'PREVENT' };
+        }
+
+        // 无决策回调时（独立引擎单元测试回退）直接执行置换
         const remain = eqIds.filter((id) => id !== smallId && id !== largeId);
         card.attachedEquipmentId = remain[0];
         card.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;

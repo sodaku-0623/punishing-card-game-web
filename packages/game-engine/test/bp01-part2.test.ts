@@ -212,6 +212,18 @@ describe('BP01 第二批：露西亚·深红囚影 / 封刃太刀体系 (BP01-01
     expect(atkRes.success, atkRes.error).toBe(true);
     passInstantWindows(engine);
 
+    // BP01-017 可选离场置换弹窗：选择送墓双刀留场
+    const replChoice = engine.getState().currentPendingChoice;
+    expect(replChoice?.effectType).toBe('BP01_017_OPTIONAL_LEAVE_REPLACEMENT');
+    expect(replChoice?.playerId).toBe('p2');
+    const pickRes = engine.dispatchAction({
+      type: 'SELECT_CHOICE_OPTION',
+      playerId: 'p2',
+      pendingChoiceId: replChoice!.id,
+      selectedIds: ['replace'],
+    });
+    expect(pickRes.success, pickRes.error).toBe(true);
+
     // BP01-017 留场、双刀入墓、无【贯通】伤害
     expect(state.cards[alpha17.instanceId]!.zone).toBe('BATTLEFIELD');
     expect(getAttachedEquipmentIds(state.cards[alpha17.instanceId]!)).toEqual([]);

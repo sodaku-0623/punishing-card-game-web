@@ -103,6 +103,7 @@ export interface StaticContribution {
   setDP?: number;
   setBaseDP?: number;
   charge?: number;
+  chargeIsAbility?: boolean;
   setCharge?: number;
   keywords?: string[];
   removeKeywords?: string[];
@@ -119,6 +120,7 @@ export interface StaticContribution {
   orbValue?: number;
   treatedAsNames?: string[];
   grantedTriggerIds?: string[];
+  grantKey?: string;
   canAttackPlayerOnEnterTurn?: boolean;
   unblockableMaxPP?: number;
   /** 允许同时装备 2 张<封刃太刀>装备 (BP01-014 / BP01-016 / BP01-017) */
@@ -138,6 +140,7 @@ export interface EvaluatedCardStats {
   treatedAsOrbColors: SignalOrbColor[];
   orbValue: number;
   grantedTriggerIds: string[];
+  grantedTriggerEntries?: Array<{ triggerId: string; grantKey: string }>;
   canAttackPlayerOnEnterTurn: boolean;
   unblockableMaxPP?: number;
   canDualEquipFengren?: boolean;
@@ -174,6 +177,7 @@ interface TimestampedNonStat {
   orbValue?: number;
   treatedAsNames?: string[];
   grantedTriggerIds?: string[];
+  grantKey?: string;
   canAttackPlayerOnEnterTurn?: boolean;
   unblockableMaxPP?: number;
   canDualEquipFengren?: boolean;
@@ -187,6 +191,7 @@ interface TimestampedStat {
   setDP?: number;
   setBaseDP?: number;
   charge?: number;
+  chargeIsAbility?: boolean;
   setCharge?: number;
   appliedByPlayerId?: string;
 }
@@ -261,6 +266,7 @@ export class ContinuousEffectEngine {
         treatedAsOrbColors: [],
         orbValue: 0,
         grantedTriggerIds: [],
+        grantedTriggerEntries: [],
         canAttackPlayerOnEnterTurn: false,
       };
     }
@@ -314,6 +320,7 @@ export class ContinuousEffectEngine {
     const prohibitionsSet = new Set<ProhibitionFlag>();
     const treatedAsNamesSet = new Set<string>();
     const grantedTriggersSet = new Set<string>();
+    const grantedTriggerEntries: Array<{ triggerId: string; grantKey: string }> = [];
     let canAttackPlayerOnEnterTurn = false;
     let unblockableMaxPP: number | undefined;
     let canDualEquipFengren = false;
@@ -386,6 +393,7 @@ export class ContinuousEffectEngine {
           orbValue: m.orbValue,
           treatedAsNames: m.treatedAsNames,
           grantedTriggerIds: m.grantedTriggerIds,
+          grantKey: m.id ?? `mod:${m.timestamp ?? 0}`,
           canAttackPlayerOnEnterTurn: m.canAttackPlayerOnEnterTurn,
           unblockableMaxPP: m.unblockableMaxPP,
         });
@@ -468,6 +476,7 @@ export class ContinuousEffectEngine {
           orbValue: contrib.orbValue,
           treatedAsNames: contrib.treatedAsNames,
           grantedTriggerIds: contrib.grantedTriggerIds,
+          grantKey: `${rule.id}:${source.instanceId}`,
           canAttackPlayerOnEnterTurn: contrib.canAttackPlayerOnEnterTurn,
           unblockableMaxPP: contrib.unblockableMaxPP,
           canDualEquipFengren: contrib.canDualEquipFengren,
@@ -490,6 +499,7 @@ export class ContinuousEffectEngine {
         // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字/赋予触发，并解除自身固有「不能攻击」
         keywordsSet.clear();
         grantedTriggersSet.clear();
+        grantedTriggerEntries.length = 0;
         unblockableMaxPP = undefined;
         canDualEquipFengren = false;
         canAttackReadyRolesMaxCost = undefined;
@@ -532,7 +542,11 @@ export class ContinuousEffectEngine {
         for (const kw of op.keywords) keywordsSet.add(kw);
       }
       if (op.grantedTriggerIds && !cannotGainAbilities) {
-        for (const tid of op.grantedTriggerIds) grantedTriggersSet.add(tid);
+        const gKey = op.grantKey ?? String(op.timestamp);
+        for (const tid of op.grantedTriggerIds) {
+          grantedTriggersSet.add(tid);
+          grantedTriggerEntries.push({ triggerId: tid, grantKey: gKey });
+        }
       }
       if (op.canAttackPlayerOnEnterTurn) {
         canAttackPlayerOnEnterTurn = true;
@@ -634,6 +648,7 @@ export class ContinuousEffectEngine {
           setDP: contrib.setDP,
           setBaseDP: contrib.setBaseDP,
           charge: contrib.charge,
+          chargeIsAbility: contrib.chargeIsAbility,
           setCharge: contrib.setCharge,
           appliedByPlayerId: contrib.appliedByPlayerId ?? source.controllerPlayerId,
         });
@@ -661,7 +676,12 @@ export class ContinuousEffectEngine {
       if (op.setDP !== undefined) dp = op.setDP;
       if (op.dp !== undefined) dp += op.dp;
       if (op.setCharge !== undefined) charge = op.setCharge;
-      if (op.charge !== undefined) charge += op.charge;
+      if (op.charge !== undefined) {
+        // Q&A·1 (BP01-025/BP01-050)：以「获得【充能+X】能力」形式赋予的充能，在宿主失去能力或禁止获能时一并失去
+        if (!op.chargeIsAbility || (!abilitiesLost && !cannotGainAbilities)) {
+          charge += op.charge;
+        }
+      }
     }
 
     return {
@@ -676,6 +696,7 @@ export class ContinuousEffectEngine {
       treatedAsOrbColors: Array.from(orbColorsSet),
       orbValue,
       grantedTriggerIds: Array.from(grantedTriggersSet),
+      grantedTriggerEntries,
       canAttackPlayerOnEnterTurn,
       unblockableMaxPP,
       canDualEquipFengren,
@@ -693,6 +714,15 @@ export class ContinuousEffectEngine {
 
   hasGrantedTrigger(cardInstanceId: string, triggerId: string): boolean {
     return this.evaluateCard(cardInstanceId).grantedTriggerIds.includes(triggerId);
+  }
+
+  /**
+   * Q&A·7：返回当前卡牌上某一被赋予自动能力的全部独立实例键（两张《荣光护盾》产生两条独立键）
+   */
+  getGrantedTriggerKeys(cardInstanceId: string, triggerId: string): string[] {
+    return (this.evaluateCard(cardInstanceId).grantedTriggerEntries ?? [])
+      .filter((e) => e.triggerId === triggerId)
+      .map((e) => e.grantKey);
   }
 
   /**

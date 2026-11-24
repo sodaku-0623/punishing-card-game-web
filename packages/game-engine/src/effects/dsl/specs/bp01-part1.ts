@@ -47,15 +47,8 @@ const BP01_040_GAME1_DAMAGE_STEPS: EffectStep[] = [
 ];
 
 function makePawaStackActivate(orbCount: 1 | 2): NonNullable<CardEffectSpec['activate']> {
+  // Q&A·2 (BP01-052)：战场没有《七实·遥星之座》时仍可发动其【起】支付消球代价（执行不可能的部分不执行）
   return {
-    condition: {
-      kind: 'ALL',
-      conditions: [
-        { kind: 'SELF_MATCHES_FILTER', filter: { isReady: true } },
-        { kind: 'HAS_ROLE', side: 'SELF', filter: { exactName: '七实·遥星之座' } },
-      ],
-    },
-    conditionError: '需要该牌处于竖直状态且我方战场存在《七实·遥星之座》',
     cost: {
       kind: 'ELIMINATE_ORBS',
       filter: 'ANY',
@@ -76,10 +69,22 @@ function makePawaStackActivate(orbCount: 1 | 2): NonNullable<CardEffectSpec['act
         choiceEffectType: 'PRESET_PAWA_HOST',
       },
       {
-        op: 'MOVE_CARDS',
-        target: { kind: 'SELF' },
-        toZone: 'UNDERNEATH',
-        underneathHost: { kind: 'VAR', varName: 'host' },
+        op: 'IF',
+        condition: {
+          kind: 'ALL',
+          conditions: [
+            { kind: 'VAR_NON_EMPTY', varName: 'host' },
+            { kind: 'SELF_MATCHES_FILTER', filter: { isReady: true, inZone: 'BATTLEFIELD' } },
+          ],
+        },
+        then: [
+          {
+            op: 'MOVE_CARDS',
+            target: { kind: 'SELF' },
+            toZone: 'UNDERNEATH',
+            underneathHost: { kind: 'VAR', varName: 'host' },
+          },
+        ],
       },
     ],
   };
@@ -256,38 +261,39 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
         choiceEffectType: 'PRESET_BP01_007_TARGET',
       },
       { op: 'MODIFY_STATS', target: { kind: 'VAR', varName: 'target' }, pp: 1500, duration: 'END_OF_TURN' },
+      // Q&A·7：前后两段之间没有「若如此做」，没有<灰鸦小队>可选时仍可追加丢弃任意数量手牌
+      {
+        op: 'CHOOSE_ZONE_CARDS',
+        side: 'SELF',
+        zone: 'HAND',
+        prompt: '【刹那冰华】可以追加丢弃任意数量手牌，每丢弃1张所选角色再 PP+1000 (不选则不丢弃)',
+        min: 0,
+        max: 50,
+        saveToVar: 'discards',
+        choiceEffectType: 'PRESET_BP01_007_DISCARD',
+      },
+      {
+        op: 'MOVE_CARDS',
+        target: { kind: 'VAR', varName: 'discards' },
+        toZone: 'GRAVEYARD',
+        isFaceUp: true,
+        saveMovedToVar: 'actuallyDiscarded',
+      },
       {
         op: 'IF',
-        condition: { kind: 'VAR_NON_EMPTY', varName: 'target' },
+        condition: {
+          kind: 'ALL',
+          conditions: [
+            { kind: 'VAR_NON_EMPTY', varName: 'target' },
+            { kind: 'VAR_NON_EMPTY', varName: 'actuallyDiscarded' },
+          ],
+        },
         then: [
           {
-            op: 'CHOOSE_ZONE_CARDS',
-            side: 'SELF',
-            zone: 'HAND',
-            prompt: '【刹那冰华】可以追加丢弃任意数量手牌，每丢弃1张所选角色再 PP+1000 (不选则不丢弃)',
-            min: 0,
-            max: 50,
-            saveToVar: 'discards',
-            choiceEffectType: 'PRESET_BP01_007_DISCARD',
-          },
-          {
-            op: 'MOVE_CARDS',
-            target: { kind: 'VAR', varName: 'discards' },
-            toZone: 'GRAVEYARD',
-            isFaceUp: true,
-            saveMovedToVar: 'actuallyDiscarded',
-          },
-          {
-            op: 'IF',
-            condition: { kind: 'VAR_NON_EMPTY', varName: 'actuallyDiscarded' },
-            then: [
-              {
-                op: 'MODIFY_STATS',
-                target: { kind: 'VAR', varName: 'target' },
-                pp: { kind: 'VAR_COUNT_MULT', varName: 'actuallyDiscarded', multiplier: 1000 },
-                duration: 'END_OF_TURN',
-              },
-            ],
+            op: 'MODIFY_STATS',
+            target: { kind: 'VAR', varName: 'target' },
+            pp: { kind: 'VAR_COUNT_MULT', varName: 'actuallyDiscarded', multiplier: 1000 },
+            duration: 'END_OF_TURN',
           },
         ],
       },
@@ -759,6 +765,7 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
         scope: 'UNDERNEATH_HOST',
         targetFilter: { exactName: '七实·遥星之座' },
         charge: 1,
+        chargeIsAbility: true,
       },
     ],
   },

@@ -184,8 +184,9 @@ export function startCustomHandler(
 
   switch (handlerId) {
     case 'BP02_048_WANSHIMING_SACRIFICE': {
+      // 3.6.3.b.2：费用区背面暗费为非公开信息，不得被按特征检索或牺牲
       const candidates = [
-        ...rt.zone(playerId, 'COST'),
+        ...rt.zone(playerId, 'COST').filter((c) => c.isFaceUp),
         ...rt.zone(playerId, 'HAND'),
       ].filter((c) => rt.hasTrait(c, '万世铭'));
       if (candidates.length === 0) return false;
@@ -580,15 +581,20 @@ function finishBp03059Outcome(rt: CustomHandlerRuntime, frame: CustomHandlerFram
     }
   }
 
-  // 洗切因该方法从牌组公开的牌 (若等待选目标，仍在处理区的将在 debuff 完成后洗切，或此时立即放回)
-  if (!paused && deckRev.length > 0) {
-    for (const id of deckRev) {
+  // 将因该方法公开的所有牌（含手牌公开与牌组顶公开）加入牌组并洗切
+  const allRev = [...(vars.bp03_059_hand_rev ?? []), ...deckRev];
+  if (!paused && allRev.length > 0) {
+    let movedAny = false;
+    for (const id of allRev) {
       const c = rt.ctx.state.cards[id];
-      if (c && c.zone === 'PROCESSING') {
+      if (c && (c.zone === 'PROCESSING' || c.zone === 'HAND')) {
         rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
+        movedAny = true;
       }
     }
-    rt.ctx.zoneMgr.shuffleDeck(playerId);
+    if (movedAny) {
+      rt.ctx.zoneMgr.shuffleDeck(playerId);
+    }
   }
   return paused;
 }
@@ -830,9 +836,18 @@ export function resolveCustomChoice(
 
     case 'BP03_059_BLACKJACK_21': {
       if (stage === 'PICK_HAND_LILITH') {
-        vars.bp03_059_hand_rev = [...selected];
+        // 将手牌公开的<莉莉丝>实际移入公开处理区，供双方可见并在结算末洗回牌组
+        const handRevealed: string[] = [];
+        for (const id of selected) {
+          const c = rt.ctx.state.cards[id];
+          if (c && c.zone === 'HAND') {
+            rt.ctx.zoneMgr.moveCard(id, 'PROCESSING', { isFaceUp: true });
+            handRevealed.push(id);
+          }
+        }
+        vars.bp03_059_hand_rev = handRevealed;
         if (
-          promptNextLilithCostDeclaration(rt, selected, vars, { cardNumber, sourceCardInstanceId: sourceId, playerId, handlerId, remainingSteps }, 'AFTER_HAND_COSTS')
+          promptNextLilithCostDeclaration(rt, handRevealed, vars, { cardNumber, sourceCardInstanceId: sourceId, playerId, handlerId, remainingSteps }, 'AFTER_HAND_COSTS')
         ) {
           return { success: true };
         }
@@ -847,7 +862,7 @@ export function resolveCustomChoice(
           if (!paused) rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
           return { success: true };
         }
-        if (rt.zone(playerId, 'DECK').length > 0) {
+        if (rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId) && rt.zone(playerId, 'DECK').length > 0) {
           const top = rt.zone(playerId, 'DECK')[0]!;
           rt.ctx.zoneMgr.moveCard(top.instanceId, 'PROCESSING', { isFaceUp: true });
           vars.bp03_059_deck_rev = [...(vars.bp03_059_deck_rev ?? []), top.instanceId];
@@ -881,13 +896,19 @@ export function resolveCustomChoice(
             appliedByPlayerId: playerId,
           });
         }
-        const deckRev = vars.bp03_059_deck_rev ?? [];
-        if (deckRev.length > 0) {
-          for (const id of deckRev) {
+        const allRev = [...(vars.bp03_059_hand_rev ?? []), ...(vars.bp03_059_deck_rev ?? [])];
+        if (allRev.length > 0) {
+          let movedAny = false;
+          for (const id of allRev) {
             const c = rt.ctx.state.cards[id];
-            if (c && c.zone === 'PROCESSING') rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
+            if (c && (c.zone === 'PROCESSING' || c.zone === 'HAND')) {
+              rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
+              movedAny = true;
+            }
           }
-          rt.ctx.zoneMgr.shuffleDeck(playerId);
+          if (movedAny) {
+            rt.ctx.zoneMgr.shuffleDeck(playerId);
+          }
         }
         rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
         return { success: true };
