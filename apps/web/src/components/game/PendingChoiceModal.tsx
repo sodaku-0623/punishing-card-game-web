@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { PendingChoice } from '@zhanshuang/shared';
 import {
   Zap,
@@ -250,6 +250,11 @@ function RevealedCardItem({
 export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoiceModalProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
+  // 连续触发多个 PendingChoice 时兜底清空残留选项（同时调用方应传 key={choice.id}）
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [choice.id]);
+
   const isMulti = choice.maxSelections > 1;
 
   const isCardGalleryMode =
@@ -271,12 +276,19 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
     return p?.eligible !== false;
   });
   const hasEligibleCards = eligibleOptions.length > 0;
+  // 规则 8.6.3：合法目标数量不足 minSelections 时，尽可能选择全部可用目标即可确认
+  const minRequired = Math.min(choice.minSelections, eligibleOptions.length);
+  const maxAllowed = Math.min(choice.maxSelections, eligibleOptions.length);
 
   const handleToggle = (id: string) => {
+    const opt = choice.options.find((o) => o.id === id);
+    const payload = opt?.payload as CardPayload | undefined;
+    if (payload?.eligible === false) return;
+
     if (isMulti) {
       if (selectedIds.includes(id)) {
         setSelectedIds(selectedIds.filter((item) => item !== id));
-      } else if (selectedIds.length < choice.maxSelections) {
+      } else if (selectedIds.length < maxAllowed) {
         setSelectedIds([...selectedIds, id]);
       }
     } else {
@@ -289,9 +301,8 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
   };
 
   const isValid =
-    (selectedIds.length >= choice.minSelections &&
-      selectedIds.length <= choice.maxSelections) ||
-    (!hasEligibleCards && selectedIds.length === 0);
+    selectedIds.length >= minRequired &&
+    selectedIds.length <= choice.maxSelections;
 
   const selectedCardsNames = selectedIds
     .map((id, idx) => {
@@ -398,7 +409,12 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                 <span className="font-num tabular-nums">
                   {hasEligibleCards ? (
                     <span className="text-teal-400 font-bold">
-                      {selectedIds.length} / {choice.maxSelections} 已选
+                      {selectedIds.length} / {maxAllowed} 已选
+                      {minRequired < choice.minSelections && (
+                        <span className="ml-1 text-gold-300 font-sans font-normal">
+                          (可用目标不足，选满 {minRequired} 张即可)
+                        </span>
+                      )}
                     </span>
                   ) : (
                     <span className="text-gold-300 font-semibold font-sans">未检出符合条件的目标</span>
@@ -406,7 +422,7 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                 </span>
               </div>
 
-              <div className="flex flex-row items-center justify-center gap-3 w-full flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-2 py-1">
+              <div className="flex flex-row items-center justify-start gap-3 w-full flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-2 py-1">
                 {choice.options.map((opt) => {
                   const selectedIdx = selectedIds.indexOf(opt.id);
                   const isSelected = selectedIdx >= 0;
@@ -435,15 +451,19 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                 const selectedIdx = selectedIds.indexOf(opt.id);
                 const isSelected = selectedIdx >= 0;
                 const payload = opt.payload as CardPayload | undefined;
+                const isOptEligible = payload?.eligible !== false;
                 return (
                   <button
                     key={opt.id}
                     type="button"
+                    disabled={!isOptEligible}
                     onClick={() => handleToggle(opt.id)}
-                    className={`w-full p-2.5 border text-left transition-colors duration-fast flex items-center justify-between gap-3 text-caption cursor-pointer ${
-                      isSelected
-                        ? 'border-teal-400 bg-teal-400/15 text-fg'
-                        : 'border-line bg-ink-950 text-fg-secondary hover:border-teal-400/50 hover:bg-ink-850'
+                    className={`w-full p-2.5 border text-left transition-colors duration-fast flex items-center justify-between gap-3 text-caption ${
+                      !isOptEligible
+                        ? 'border-line bg-ink-950/60 text-fg-disabled opacity-50 cursor-not-allowed'
+                        : isSelected
+                        ? 'border-teal-400 bg-teal-400/15 text-fg cursor-pointer'
+                        : 'border-line bg-ink-950 text-fg-secondary hover:border-teal-400/50 hover:bg-ink-850 cursor-pointer'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
@@ -511,7 +531,7 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
               <Button
                 variant="primary"
                 size="sm"
-                disabled={!isValid && hasEligibleCards}
+                disabled={!isValid}
                 onClick={() => onConfirm(selectedIds)}
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
@@ -528,7 +548,7 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                     ? '已阅确认'
                     : isCardGalleryMode
                     ? hasEligibleCards
-                      ? `确认选择 (${selectedIds.length}/${choice.maxSelections})`
+                      ? `确认选择 (${selectedIds.length}/${maxAllowed})`
                       : '确认继续'
                     : '确认执行'}
                 </span>

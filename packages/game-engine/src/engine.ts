@@ -1802,6 +1802,7 @@ export class GameEngine {
           delete card.effectiveProhibitions;
         }
         delete card.effectiveOrbColors;
+        delete card.effectiveOrbValue;
       } else if (card.zone === 'SIGNAL_ORB' && card.isFaceUp) {
         delete card.effectivePP;
         delete card.effectiveDP;
@@ -1812,6 +1813,11 @@ export class GameEngine {
           card.effectiveOrbColors = orbInfo.colors;
         } else {
           delete card.effectiveOrbColors;
+        }
+        if (orbInfo.isOrb && orbInfo.orbValue > 0) {
+          card.effectiveOrbValue = orbInfo.orbValue;
+        } else {
+          delete card.effectiveOrbValue;
         }
         if (orbInfo.cannotEliminate) {
           card.effectiveProhibitions = ['CANNOT_ELIMINATE'];
@@ -1824,6 +1830,7 @@ export class GameEngine {
         if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
         if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
         if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
+        if (card.effectiveOrbValue !== undefined) delete card.effectiveOrbValue;
         if (
           card.zone === 'COST' &&
           this.continuousEffects.hasProhibition(card.instanceId, 'CANNOT_DISCARD_HIDDEN_COST_AT_END')

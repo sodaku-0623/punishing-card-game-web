@@ -23,11 +23,19 @@ import { KeyboardShortcutsModal } from '@/components/game/KeyboardShortcutsModal
 import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { MulliganModal } from '@/components/game/MulliganModal';
 import { GraveyardModal } from '@/components/game/GraveyardModal';
+import { AssistModal } from '@/components/game/AssistModal';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { RuleGuideModal } from '@/components/game/RuleGuideModal';
 import { Button, HudBrackets } from '@/components/ui';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
+import { resolveOrbDisplayInfo, validateOrbElimination } from '@/lib/signal-orbs';
+import {
+  isBattlefieldSlotEmpty,
+  getUsableNonTacticsInstants,
+  canRolePerformAssist,
+  getAssistPartnerCandidates,
+} from '@/lib/battle-actions';
 import { sfx } from '@/lib/audio';
 import {
   CardInstance,
@@ -54,6 +62,7 @@ import {
   PanelRightOpen,
   ArrowUpRight,
   BookOpen,
+  Cpu,
 } from 'lucide-react';
 
 export default function GameTabletopPage() {
@@ -101,8 +110,10 @@ export default function GameTabletopPage() {
   const [graveyardTitle, setGraveyardTitle] = useState('我方墓地');
   // 对手掉线或失去连接状态
   const [isOpponentDisconnected, setIsOpponentDisconnected] = useState(false);
-  // 当前战场选中的角色卡 (点击后展开【起】发动或攻击按钮)
+  // 当前战场选中的角色/独立装备卡 (点击后展开操作按钮或目标高亮)
   const [selectedBattlefieldCardId, setSelectedBattlefieldCardId] = useState<string | null>(null);
+  // 8.13 协战弹窗宿主角色 ID
+  const [assistHostCardId, setAssistHostCardId] = useState<string | null>(null);
   // 右键上下文菜单状态
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -320,9 +331,23 @@ export default function GameTabletopPage() {
     [gameState, resolvedMyUserId]
   );
 
+  // 当前优先权瞬时窗口内可用的 10.8 非战术【瞬时】卡牌 (明费 / 露娜下方 / 手牌)
+  const usableNonTacticsInstants = useMemo(
+    () => (gameState ? getUsableNonTacticsInstants(gameState, resolvedMyUserId) : []),
+    [gameState, resolvedMyUserId]
+  );
+  const usableInstantCardIds = useMemo(
+    () => new Set(usableNonTacticsInstants.map((item) => item.card.instanceId)),
+    [usableNonTacticsInstants]
+  );
+
   // 是否正在拉取攻击指示箭头 (我方准备就绪的角色被选中且处于主要阶段)
   const isAttackTargeting = useMemo(() => {
     if (!selectedBattlefieldCardId || !gameState || !isMyTurn || gameState.phase !== 'MAIN_PHASE') {
+      return false;
+    }
+    const myFieldSlots = gameState.battlefields?.[resolvedMyUserId] || [];
+    if (!myFieldSlots.some((s) => s.roleCardId === selectedBattlefieldCardId)) {
       return false;
     }
     const card = gameState.publicCards?.[selectedBattlefieldCardId];
@@ -451,6 +476,7 @@ export default function GameTabletopPage() {
         setInspectedCard(null);
         clearOrbSelection();
         setContextMenu(null);
+        setAssistHostCardId(null);
         setIsShortcutsModalOpen(false);
         setIsRuleGuideModalOpen(false);
         setIsDetailModalOpen(false);
@@ -484,18 +510,25 @@ export default function GameTabletopPage() {
         const curOrbs = Object.values(gameState.publicCards).filter(
           (c) => c.controllerPlayerId === resolvedMyUserId && c.zone === 'SIGNAL_ORB'
         );
-        if (curOrbs[orbIdx]) {
-          toggleOrbSelection(curOrbs[orbIdx].instanceId);
+        const targetOrb = curOrbs[orbIdx];
+        if (targetOrb && resolveOrbDisplayInfo(targetOrb, orbIdx).isEliminatable) {
+          toggleOrbSelection(targetOrb.instanceId);
           sfx.playClick();
         }
-      } else if ((e.key === 'x' || e.key === 'X') && selectedOrbIds.length === 3) {
-        sfx.playOrbTriple();
-        sendAction({
-          type: 'ELIMINATE_3_ORBS',
-          playerId: resolvedMyUserId,
-          orbCardInstanceIds: [selectedOrbIds[0], selectedOrbIds[1], selectedOrbIds[2]],
-        });
-        clearOrbSelection();
+      } else if ((e.key === 'x' || e.key === 'X') && selectedOrbIds.length > 0 && gameState?.publicCards) {
+        const curOrbs = Object.values(gameState.publicCards).filter(
+          (c) => c.controllerPlayerId === resolvedMyUserId && c.zone === 'SIGNAL_ORB'
+        );
+        const check = validateOrbElimination(curOrbs, selectedOrbIds);
+        if (check.valid) {
+          sfx.playOrbTriple();
+          sendAction({
+            type: 'ELIMINATE_3_ORBS',
+            playerId: resolvedMyUserId,
+            orbCardInstanceIds: check.sortedIds,
+          });
+          clearOrbSelection();
+        }
       }
     };
 
@@ -705,7 +738,7 @@ export default function GameTabletopPage() {
     setSelectedBattlefieldCardId(null);
   };
 
-  // 点击角色卡逻辑
+  // 点击角色/辅助机/独立装备卡逻辑
   const handleRoleClick = (cardId: string) => {
     if (!gameState) return;
     const card = gameState.publicCards[cardId];
@@ -715,11 +748,22 @@ export default function GameTabletopPage() {
     sfx.playClick();
 
     if (card.controllerPlayerId === resolvedMyUserId) {
+      // 若当前已选中我方战场单独占位装备，再点击我方角色卡 -> 触发 EQUIP_ITEM (6.4.1.b.4)
+      const isSelectedStandaloneEquip = Boolean(
+        selectedBattlefieldCardId &&
+          mySlots.some((s) => s.standaloneEquipmentId === selectedBattlefieldCardId)
+      );
+      const isClickedFriendlyRole = mySlots.some((s) => s.roleCardId === cardId);
+      if (isSelectedStandaloneEquip && isClickedFriendlyRole && selectedBattlefieldCardId) {
+        handleEquipItem(selectedBattlefieldCardId, cardId);
+        return;
+      }
+
       if (selectedHandCardId) {
         const handCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
         const def = handCard ? findCardByNumberOrId(handCard.cardNumber || handCard.cardId) : null;
 
-        if (def?.cardType === CardType.EQUIPMENT) {
+        if (isClickedFriendlyRole && def?.cardType === CardType.EQUIPMENT) {
           sfx.playCardPlay();
           sendAction({
             type: 'PLAY_CARD',
@@ -730,7 +774,7 @@ export default function GameTabletopPage() {
           });
           setSelectedHandCard(null);
           setSelectedBattlefieldCardId(null);
-        } else if (def?.rulesText?.includes('升变')) {
+        } else if (isClickedFriendlyRole && def?.rulesText?.includes('升变')) {
           sfx.playCardPlay();
           sendAction({
             type: 'PLAY_CARD',
@@ -741,15 +785,32 @@ export default function GameTabletopPage() {
           });
           setSelectedHandCard(null);
           setSelectedBattlefieldCardId(null);
+        } else if (
+          def?.cardType === CardType.ASSIST &&
+          mySlots.some((s) => s.assistCardId === cardId) &&
+          card.slotIndex !== undefined
+        ) {
+          // 8.6.2.e.3 使用新辅助机替换原有辅助机卡位
+          sfx.playCardPlay();
+          sendAction({
+            type: 'PLAY_CARD',
+            playerId: resolvedMyUserId,
+            cardInstanceId: selectedHandCardId,
+            targetSlotIndex: card.slotIndex,
+          });
+          setSelectedHandCard(null);
+          setSelectedBattlefieldCardId(null);
         } else {
           setSelectedHandCard(null);
           setSelectedBattlefieldCardId((prev) => (prev === cardId ? null : cardId));
         }
+      } else {
+        setSelectedBattlefieldCardId((prev) => (prev === cardId ? null : cardId));
       }
     } else {
       // 点击对手角色卡：宣告攻击
       if (isMyTurn && gameState.phase === 'MAIN_PHASE') {
-        if (selectedBattlefieldCardId) {
+        if (selectedBattlefieldCardId && mySlots.some((s) => s.roleCardId === selectedBattlefieldCardId)) {
           const attacker = gameState.publicCards[selectedBattlefieldCardId];
           if (attacker && attacker.controllerPlayerId === resolvedMyUserId && attacker.isReady) {
             triggerAttackAnimation(selectedBattlefieldCardId, cardId, 'CHARACTER', 'UP');
@@ -814,6 +875,64 @@ export default function GameTabletopPage() {
     setSelectedHandCard(null);
   };
 
+  // 部署辅助机卡 (2.2.2.c.2 / 8.6.2.e.3)
+  const handlePlayAssist = (cardInstanceId: string) => {
+    const emptySlot = mySlots.find(isBattlefieldSlotEmpty);
+    const replaceSlot = mySlots.find((s) => !s.roleCardId && !s.standaloneEquipmentId);
+    const target = emptySlot ?? replaceSlot;
+    if (!target) return;
+    sfx.playCardPlay();
+    sendAction({
+      type: 'PLAY_CARD',
+      playerId: resolvedMyUserId,
+      cardInstanceId,
+      targetSlotIndex: target.slotIndex,
+    });
+    setSelectedHandCard(null);
+  };
+
+  // 6.4.1.b.4 将战场单独占位装备装备给己方角色
+  const handleEquipItem = (equipmentCardId: string, targetRoleCardId: string) => {
+    sfx.playCardPlay();
+    sendAction({
+      type: 'EQUIP_ITEM',
+      playerId: resolvedMyUserId,
+      equipmentCardId,
+      targetRoleCardId,
+    });
+    setSelectedBattlefieldCardId(null);
+  };
+
+  // 8.13.3 自由时点执行协战
+  const handlePerformAssist = (
+    hostRoleCardId: string,
+    partnerCardId: string,
+    orbCardInstanceIds?: string[]
+  ) => {
+    sfx.playCardPlay();
+    sendAction({
+      type: 'PERFORM_ASSIST',
+      playerId: resolvedMyUserId,
+      hostRoleCardId,
+      partnerCardId,
+      orbCardInstanceIds,
+    });
+    setAssistHostCardId(null);
+    setSelectedBattlefieldCardId(null);
+  };
+
+  // 10.8 发动非战术【瞬时】能力
+  const handleUseInstant = (cardInstanceId: string) => {
+    sfx.playCardPlay();
+    sendAction({
+      type: 'USE_INSTANT',
+      playerId: resolvedMyUserId,
+      cardInstanceId,
+    });
+    setSelectedHandCard(null);
+    setSelectedBattlefieldCardId(null);
+  };
+
   // 防守方宣告阻挡 (7.3.1.c)
   const handleBlockClick = (blockerCardId: string) => {
     sfx.playClick();
@@ -830,13 +949,20 @@ export default function GameTabletopPage() {
     const def = findCardByNumberOrId(card.cardNumber || card.cardId);
     if (!def) return;
 
+    if (usableInstantCardIds.has(card.instanceId)) {
+      handleUseInstant(card.instanceId);
+      return;
+    }
+
     if (def.cardType === CardType.TACTICS) {
       handlePlayTactics(card.instanceId);
     } else if (def.cardType === CardType.EQUIPMENT) {
       handlePlayEquipment(card.instanceId);
+    } else if (def.cardType === CardType.ASSIST) {
+      handlePlayAssist(card.instanceId);
     } else if (def.cardType === CardType.ROLE) {
-      // 寻找第一个可用空卡位
-      const emptySlot = mySlots.find((s) => !s.roleCardId);
+      // 寻找第一个完全空闲的卡位
+      const emptySlot = mySlots.find(isBattlefieldSlotEmpty);
       if (emptySlot !== undefined) {
         sfx.playCardPlay();
         sendAction({
@@ -852,13 +978,15 @@ export default function GameTabletopPage() {
 
   // 双击战场角色快速宣告攻击
   const handleBattlefieldRoleDoubleClick = (cardId: string) => {
+    if (!mySlots.some((s) => s.roleCardId === cardId)) return;
     const card = gameState.publicCards[cardId];
     if (
       card &&
       card.controllerPlayerId === resolvedMyUserId &&
       card.isReady &&
       isMyTurn &&
-      gameState.phase === 'MAIN_PHASE'
+      gameState.phase === 'MAIN_PHASE' &&
+      !gameState.currentCombat
     ) {
       handleAttackClick(cardId);
     }
@@ -996,7 +1124,7 @@ export default function GameTabletopPage() {
       {lastError && (
         <div
           role="alert"
-          className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-crimson-500 text-fg text-caption font-medium flex items-center gap-2 shadow-overlay border border-fg/20 clip-corner-sm animate-in fade-in slide-in-from-top-2 duration-fast"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-toast px-4 py-2 bg-crimson-500 text-fg text-caption font-medium flex items-center gap-2 shadow-overlay border border-fg/20 clip-corner-sm animate-in fade-in slide-in-from-top-2 duration-fast"
         >
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{lastError}</span>
@@ -1208,6 +1336,7 @@ export default function GameTabletopPage() {
             attackAnim={attackAnim}
             myGraveyardCards={myGraveyardCards}
             opponentGraveyardCards={opponentGraveyardCards}
+            usableNonTacticsInstants={usableNonTacticsInstants}
             onRoleClick={handleRoleClick}
             onRoleDoubleClick={handleBattlefieldRoleDoubleClick}
             onRoleContextMenu={handleOpenContextMenu}
@@ -1217,9 +1346,13 @@ export default function GameTabletopPage() {
             onActivateAbility={handleActivateAbility}
             onAttackClick={handleAttackClick}
             onBlockClick={handleBlockClick}
+            onEquipStartClick={(equipId) => setSelectedBattlefieldCardId(equipId)}
+            onPerformAssistClick={(hostId) => setAssistHostCardId(hostId)}
+            onUseInstant={handleUseInstant}
             onPassTiming={handlePassTiming}
             onDropCardToSlot={handleDropCardToSlot}
             onDropAttackTarget={handleDropAttackTarget}
+            onDropEquipToRole={(targetRoleId, equipId) => handleEquipItem(equipId, targetRoleId)}
             onInspectCard={(card) => {
               setInspectedCard(card);
               sfx.playClick();
@@ -1249,6 +1382,7 @@ export default function GameTabletopPage() {
                     playerId: resolvedMyUserId,
                     orbCardInstanceIds: orbIds,
                   });
+                  clearOrbSelection();
                 }}
               />
             </div>
@@ -1304,6 +1438,28 @@ export default function GameTabletopPage() {
                   >
                     <Shield className="w-3 h-3" />
                     <span>使用装备卡</span>
+                  </button>
+                )}
+
+                {selectedHandCardDef?.cardType === CardType.ASSIST && (
+                  <button
+                    type="button"
+                    onClick={() => handlePlayAssist(selectedHandCard.instanceId)}
+                    className="px-2.5 py-0.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Cpu className="w-3 h-3" />
+                    <span>部署辅助机</span>
+                  </button>
+                )}
+
+                {usableInstantCardIds.has(selectedHandCard.instanceId) && (
+                  <button
+                    type="button"
+                    onClick={() => handleUseInstant(selectedHandCard.instanceId)}
+                    className="pgr-sweep px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Zap className="w-3 h-3 fill-current" />
+                    <span>发动非战术【瞬时】</span>
                   </button>
                 )}
 
@@ -1630,106 +1786,140 @@ export default function GameTabletopPage() {
       {/* ================= 浮层与交互弹窗组件 ================= */}
 
       {/* 1. 右键动态操作上下文菜单 (CardContextMenu) */}
-      {contextMenu && (
-        <CardContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          card={contextMenu.card}
-          isMyTurn={isMyTurn}
-          phase={gameState.phase}
-          myAvailableCost={myPlayerState.availableOpenCostCount + myPlayerState.hiddenCostCount}
-          canUseInstant={!!timing?.hasInstantPriority}
-          effectiveCost={contextMenu.card.zone === 'HAND' ? getCardEffectiveCost(contextMenu.card) : undefined}
-          isFriendlyRole={
-            contextMenu.card.controllerPlayerId === resolvedMyUserId &&
-            contextMenu.card.zone === 'BATTLEFIELD'
-          }
-          isOpponentRole={
-            contextMenu.card.controllerPlayerId === opponentUserId &&
-            contextMenu.card.zone === 'BATTLEFIELD'
-          }
-          isHandCard={
-            contextMenu.card.controllerPlayerId === resolvedMyUserId &&
-            contextMenu.card.zone === 'HAND'
-          }
-          canActivateAbility={
-            isMyTurn &&
-            gameState.phase === 'MAIN_PHASE' &&
-            contextMenu.card.controllerPlayerId === resolvedMyUserId &&
-            contextMenu.card.zone === 'BATTLEFIELD'
-          }
-          canAttack={
-            isMyTurn &&
-            gameState.phase === 'MAIN_PHASE' &&
-            contextMenu.card.controllerPlayerId === resolvedMyUserId &&
-            contextMenu.card.zone === 'BATTLEFIELD' &&
-            !!contextMenu.card.isReady &&
-            !hasCardProhibition(contextMenu.card, 'CANNOT_ATTACK') &&
-            (contextMenu.card.turnEnteredZone < gameState.turnNumber ||
-              canRoleAttackOnEnterTurn(
-                contextMenu.card,
-                findCardByNumberOrId(contextMenu.card.cardNumber || contextMenu.card.cardId)
-              ))
-          }
-          canBlock={
-            !!timing?.canDeclareBlock &&
-            contextMenu.card.controllerPlayerId === resolvedMyUserId &&
-            contextMenu.card.zone === 'BATTLEFIELD' &&
-            !!contextMenu.card.isReady &&
-            !hasCardProhibition(contextMenu.card, 'CANNOT_BLOCK')
-          }
-          hasEmptySlot={mySlots.some((s) => !s.roleCardId)}
-          hasSelectedAttacker={!!selectedBattlefieldCardId}
-          onPlayCard={(card) => {
-            const def = findCardByNumberOrId(card.cardNumber || card.cardId);
-            if (def?.cardType === CardType.TACTICS) {
-              handlePlayTactics(card.instanceId);
-            } else if (def?.cardType === CardType.EQUIPMENT) {
-              handlePlayEquipment(card.instanceId);
-            } else {
-              const emptySlot = mySlots.find((s) => !s.roleCardId);
-              if (emptySlot !== undefined) {
-                handleDropCardToSlot(emptySlot.slotIndex, card.instanceId);
+      {contextMenu && (() => {
+        const ctxCard = contextMenu.card;
+        const ctxDef = findCardByNumberOrId(ctxCard.cardNumber || ctxCard.cardId);
+        const isFriendlyFieldRole = mySlots.some((s) => s.roleCardId === ctxCard.instanceId);
+        const isFriendlyFieldAssist = mySlots.some((s) => s.assistCardId === ctxCard.instanceId);
+        const isFriendlyStandaloneEquip = mySlots.some((s) => s.standaloneEquipmentId === ctxCard.instanceId);
+        const ctxUnderneathInstants = isFriendlyFieldRole && ctxCard.underneathCardIds?.length
+          ? usableNonTacticsInstants.filter((inst) => ctxCard.underneathCardIds.includes(inst.card.instanceId))
+          : [];
+        const ctxHasAbility = Boolean(
+          ctxDef?.rulesText?.includes('【起】') || ctxDef?.rulesText?.includes('起动')
+        );
+        return (
+          <CardContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            card={ctxCard}
+            isMyTurn={isMyTurn}
+            phase={gameState.phase}
+            myAvailableCost={myPlayerState.availableOpenCostCount + myPlayerState.hiddenCostCount}
+            canUseInstant={!!timing?.hasInstantPriority}
+            effectiveCost={ctxCard.zone === 'HAND' ? getCardEffectiveCost(ctxCard) : undefined}
+            isFriendlyRole={
+              ctxCard.controllerPlayerId === resolvedMyUserId &&
+              ctxCard.zone === 'BATTLEFIELD'
+            }
+            isOpponentRole={
+              ctxCard.controllerPlayerId === opponentUserId &&
+              ctxCard.zone === 'BATTLEFIELD' &&
+              opponentSlots.some((s) => s.roleCardId === ctxCard.instanceId)
+            }
+            isStandaloneEquipment={isFriendlyStandaloneEquip}
+            isHandCard={
+              ctxCard.controllerPlayerId === resolvedMyUserId &&
+              ctxCard.zone === 'HAND'
+            }
+            canActivateAbility={
+              isMyTurn &&
+              gameState.phase === 'MAIN_PHASE' &&
+              !gameState.currentCombat &&
+              (isFriendlyFieldRole || isFriendlyFieldAssist) &&
+              ctxHasAbility
+            }
+            canAttack={
+              isMyTurn &&
+              gameState.phase === 'MAIN_PHASE' &&
+              !gameState.currentCombat &&
+              isFriendlyFieldRole &&
+              !!ctxCard.isReady &&
+              !hasCardProhibition(ctxCard, 'CANNOT_ATTACK') &&
+              (ctxCard.turnEnteredZone < gameState.turnNumber ||
+                canRoleAttackOnEnterTurn(ctxCard, ctxDef))
+            }
+            canBlock={
+              !!timing?.canDeclareBlock &&
+              isFriendlyFieldRole &&
+              !!ctxCard.isReady &&
+              !hasCardProhibition(ctxCard, 'CANNOT_BLOCK')
+            }
+            canPerformAssist={
+              isFriendlyFieldRole && canRolePerformAssist(gameState, resolvedMyUserId, ctxCard)
+            }
+            canEquipStandalone={
+              isMyTurn &&
+              gameState.phase === 'MAIN_PHASE' &&
+              !gameState.currentCombat &&
+              isFriendlyStandaloneEquip &&
+              mySlots.some((s) => Boolean(s.roleCardId))
+            }
+            canUseHandInstant={
+              ctxCard.zone === 'HAND' && usableInstantCardIds.has(ctxCard.instanceId)
+            }
+            underneathInstants={ctxUnderneathInstants}
+            hasEmptySlot={mySlots.some(isBattlefieldSlotEmpty)}
+            hasAssistSlot={mySlots.some((s) => !s.roleCardId && !s.standaloneEquipmentId)}
+            hasSelectedAttacker={Boolean(
+              selectedBattlefieldCardId && mySlots.some((s) => s.roleCardId === selectedBattlefieldCardId)
+            )}
+            onPlayCard={(card) => {
+              const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+              if (def?.cardType === CardType.TACTICS) {
+                handlePlayTactics(card.instanceId);
+              } else if (def?.cardType === CardType.EQUIPMENT) {
+                handlePlayEquipment(card.instanceId);
+              } else if (def?.cardType === CardType.ASSIST) {
+                handlePlayAssist(card.instanceId);
+              } else {
+                const emptySlot = mySlots.find(isBattlefieldSlotEmpty);
+                if (emptySlot !== undefined) {
+                  handleDropCardToSlot(emptySlot.slotIndex, card.instanceId);
+                }
               }
-            }
-          }}
-          onAscendCard={(card) => {
-            const def = findCardByNumberOrId(card.cardNumber || card.cardId);
-            const targetRole = mySlots
-              .map((s) => (s.roleCardId ? gameState?.publicCards[s.roleCardId] : null))
-              .filter(Boolean)
-              .find((r) => {
-                const rDef = r ? findCardByNumberOrId(r.cardNumber || r.cardId) : null;
-                return (
-                  (def?.name.includes('露西亚') && rDef?.name.includes('露西亚')) ||
-                  (rDef?.cost ?? 0) <= 5
-                );
+            }}
+            onAscendCard={(card) => {
+              const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+              const targetRole = mySlots
+                .map((s) => (s.roleCardId ? gameState?.publicCards[s.roleCardId] : null))
+                .filter(Boolean)
+                .find((r) => {
+                  const rDef = r ? findCardByNumberOrId(r.cardNumber || r.cardId) : null;
+                  return (
+                    (def?.name.includes('露西亚') && rDef?.name.includes('露西亚')) ||
+                    (rDef?.cost ?? 0) <= 5
+                  );
+                });
+              sfx.playCardPlay();
+              sendAction({
+                type: 'PLAY_CARD',
+                playerId: resolvedMyUserId,
+                cardInstanceId: card.instanceId,
+                isAscension: true,
+                targetAscensionCardId: targetRole?.instanceId,
               });
-            sfx.playCardPlay();
-            sendAction({
-              type: 'PLAY_CARD',
-              playerId: resolvedMyUserId,
-              cardInstanceId: card.instanceId,
-              isAscension: true,
-              targetAscensionCardId: targetRole?.instanceId,
-            });
-          }}
-          onActivateAbility={(card) => handleActivateAbility(card.instanceId)}
-          onAttackPlayer={(card) => handleAttackClick(card.instanceId)}
-          onAttackRole={(card) => {
-            if (selectedBattlefieldCardId) {
-              handleDropAttackTarget(card.instanceId, selectedBattlefieldCardId);
-            }
-          }}
-          onBlock={(card) => handleBlockClick(card.instanceId)}
-          onChargeCost={(card) => handleChargeCostFromHand(card.instanceId)}
-          onInspectCard={(card) => {
-            setInspectedCard(card);
-            setIsDetailModalOpen(true);
-          }}
-          onClose={() => setContextMenu(null)}
-        />
-      )}
+            }}
+            onActivateAbility={(card) => handleActivateAbility(card.instanceId)}
+            onAttackPlayer={(card) => handleAttackClick(card.instanceId)}
+            onAttackRole={(card) => {
+              if (selectedBattlefieldCardId) {
+                handleDropAttackTarget(card.instanceId, selectedBattlefieldCardId);
+              }
+            }}
+            onBlock={(card) => handleBlockClick(card.instanceId)}
+            onPerformAssist={(card) => setAssistHostCardId(card.instanceId)}
+            onStartEquipStandalone={(card) => setSelectedBattlefieldCardId(card.instanceId)}
+            onUseInstant={handleUseInstant}
+            onChargeCost={(card) => handleChargeCostFromHand(card.instanceId)}
+            onInspectCard={(card) => {
+              setInspectedCard(card);
+              setIsDetailModalOpen(true);
+            }}
+            onClose={() => setContextMenu(null)}
+          />
+        );
+      })()}
 
       {/* 0. YGOPro 风格全屏阶段切换横幅 (BATTLE PHASE / MAIN PHASE 飞入动画等) */}
       <PhaseBannerView
@@ -1764,6 +1954,7 @@ export default function GameTabletopPage() {
       {/* 2. 效果处理决策窗口 */}
       {activePendingChoice && activePendingChoice.playerId === resolvedMyUserId && (
         <PendingChoiceModal
+          key={activePendingChoice.id}
           choice={activePendingChoice}
           onConfirm={handleChoiceConfirm}
           onCancel={handleChoiceCancel}
@@ -1841,10 +2032,27 @@ export default function GameTabletopPage() {
             : myPlayerState.hiddenCostCount
         }
         isOpponent={costModalState.isOpponent}
+        usableInstantCardIds={costModalState.isOpponent ? undefined : usableInstantCardIds}
+        onUseInstant={costModalState.isOpponent ? undefined : handleUseInstant}
         onInspectCard={(c) => {
           setInspectedCard(c);
         }}
       />
+
+      {/* 6.5 自由时点协战搭档选择弹窗 (8.13) */}
+      {(() => {
+        const assistHost = assistHostCardId ? gameState.publicCards?.[assistHostCardId] ?? null : null;
+        return (
+          <AssistModal
+            isOpen={Boolean(assistHost)}
+            hostRole={assistHost}
+            candidates={assistHost ? getAssistPartnerCandidates(gameState, resolvedMyUserId, assistHost) : []}
+            myOrbs={myOrbs}
+            onConfirm={handlePerformAssist}
+            onClose={() => setAssistHostCardId(null)}
+          />
+        );
+      })()}
 
       {/* 7. 胜负公布结算弹窗 */}
       {gameOverResult && (

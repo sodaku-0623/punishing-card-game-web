@@ -186,6 +186,7 @@ export interface CardInstance {
   effectiveTraits?: string[]; // 服务端计算的当前有效特征列表 (含基本特征与持续效果赋予特征)
   effectiveProhibitions?: ProhibitionFlag[]; // 服务端计算的当前生效禁止效果标记 (1.3.3)
   effectiveOrbColors?: SignalOrbColor[]; // 服务端计算的当前有效信号球颜色 (含「视为」效果)
+  effectiveOrbValue?: number; // 服务端计算的当前有效信号球等效数量 (Q&A·1 如《万世铭》视为3球)
   imageUrl?: string; // 卡面插画链接
 }
 
