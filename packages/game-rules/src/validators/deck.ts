@@ -35,6 +35,18 @@ export function extractCoreCardNumber(cardNumber: string): string {
  * 牌组合法性严格检验 (5.1 牌组的准备)
  */
 export function validateDeck(deckCards: DeckCardInput[]): DeckValidationResult {
+  if (!Array.isArray(deckCards)) {
+    return {
+      isValid: false,
+      errors: ['牌组列表格式非法：必须为数组'],
+      totalCards: 0,
+      redOrbCount: 0,
+      blueOrbCount: 0,
+      yellowOrbCount: 0,
+      cardCopies: {},
+    };
+  }
+
   const errors: string[] = [];
   let totalCards = 0;
   let redOrbCount = 0;
@@ -43,8 +55,19 @@ export function validateDeck(deckCards: DeckCardInput[]): DeckValidationResult {
   const cardCopies: Record<string, number> = {};
 
   for (const card of deckCards) {
-    if (!Number.isInteger(card.count) || card.count <= 0) {
-      errors.push(`卡牌 ${card.name} (${card.cardNumber}) 数量非法: ${card.count}`);
+    if (!card || typeof card !== 'object' || Array.isArray(card)) {
+      errors.push('牌组包含非法的卡牌条目');
+      continue;
+    }
+
+    const displayName = typeof card.name === 'string' && card.name.trim() ? card.name : '(未知)';
+    if (typeof card.cardNumber !== 'string' || !card.cardNumber.trim()) {
+      errors.push(`卡牌 ${displayName} 缺少有效的卡牌编号`);
+      continue;
+    }
+
+    if (typeof card.count !== 'number' || !Number.isInteger(card.count) || card.count <= 0) {
+      errors.push(`卡牌 ${displayName} (${card.cardNumber}) 数量非法: ${card.count}`);
       continue;
     }
 
@@ -61,7 +84,8 @@ export function validateDeck(deckCards: DeckCardInput[]): DeckValidationResult {
 
     // 统计同编号卡牌 (5.1.2.b)
     const coreNumber = extractCoreCardNumber(card.cardNumber);
-    cardCopies[coreNumber] = (cardCopies[coreNumber] ?? 0) + card.count;
+    const prevCopies = Object.prototype.hasOwnProperty.call(cardCopies, coreNumber) ? cardCopies[coreNumber]! : 0;
+    cardCopies[coreNumber] = prevCopies + card.count;
   }
 
   // 1. 检查总张数是否刚好 50 张 (5.1.2.a)

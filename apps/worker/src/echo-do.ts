@@ -3,38 +3,32 @@ import { Env, PingMessage, PongMessage, WelcomeMessage } from './types.js';
 
 /**
  * 连通性探测 Durable Object (EchoDO)：
- * 1. 采用 SQLite 作为存储后端（完全符合 Cloudflare Workers Free 免费套餐规则）；
+ * 1. 仅使用内存计数器统计连接与 Ping 次数，避免每次心跳写入 SQLite 消耗免费行写额度；
  * 2. 采用 WebSocket Hibernation API，在空闲无消息阶段自动休眠省去 CPU 时长计算；
  * 3. 接收客户端高频 Ping 测速请求，精确返回时间戳与序号，支持往返延迟与抖动测算。
  */
 export class EchoDO extends DurableObject {
+  private totalPings = 0;
+  private totalConnections = 0;
+  private lastPingTime = 0;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-
-    // 初始化嵌入式 SQLite 数据表（兼容 Cloudflare Workers Free 免费计划）
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS echo_stats (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        total_pings INTEGER DEFAULT 0,
-        total_connections INTEGER DEFAULT 0,
-        last_ping_time INTEGER DEFAULT 0
-      );
-      INSERT OR IGNORE INTO echo_stats (id, total_pings, total_connections, last_ping_time)
-      VALUES (1, 0, 0, 0);
-    `);
   }
 
   async fetch(request: Request): Promise<Response> {
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-      // 普通 HTTP 查询当前 Durable Object 实例内 SQLite 统计
-      const cursor = this.ctx.storage.sql.exec('SELECT * FROM echo_stats WHERE id = 1');
-      const rows = [...cursor];
-      const stats = rows[0] || { id: 1, total_pings: 0, total_connections: 0, last_ping_time: 0 };
+      // 普通 HTTP 查询当前 Durable Object 实例内内存统计
       return Response.json({
+        status: 'ok',
         ok: true,
         type: 'EchoDO',
-        stats,
+        stats: {
+          total_pings: this.totalPings,
+          total_connections: this.totalConnections,
+          last_ping_time: this.lastPingTime,
+        },
         activeWebSockets: this.ctx.getWebSockets().length,
       });
     }
@@ -46,12 +40,8 @@ export class EchoDO extends DurableObject {
     // 使用 WebSocket Hibernation API 接入连接，休眠保持连接无需长期消耗 CPU 算力
     this.ctx.acceptWebSocket(server, ['echo-client']);
 
-    // 更新持久化 SQLite 连接统计
-    this.ctx.storage.sql.exec(`
-      UPDATE echo_stats
-      SET total_connections = total_connections + 1
-      WHERE id = 1
-    `);
+    // 更新内存连接统计
+    this.totalConnections += 1;
 
     // 初次连接就绪通知
     const welcome: WelcomeMessage = {
@@ -88,12 +78,9 @@ export class EchoDO extends DurableObject {
           };
           ws.send(JSON.stringify(pong));
 
-          // 记录 ping 统计到 SQLite
-          this.ctx.storage.sql.exec(`
-            UPDATE echo_stats
-            SET total_pings = total_pings + 1, last_ping_time = ?
-            WHERE id = 1
-          `, now);
+          // 更新内存 ping 统计
+          this.totalPings += 1;
+          this.lastPingTime = now;
           return;
         }
       }

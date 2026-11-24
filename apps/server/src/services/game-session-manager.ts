@@ -11,7 +11,8 @@ import {
   parseAscensionConfig,
   parseAssistConfig,
 } from '@zhanshuang/game-engine';
-import { IGameRepository, IDeckRepository, ICardRepository } from '@zhanshuang/database';
+import { IGameRepository, IDeckRepository, ICardRepository, DeckEntity } from '@zhanshuang/database';
+import { OFFICIAL_STARTER_DECKS, findOfficialStarterDeck } from '@zhanshuang/game-rules';
 import { MetricsService } from './metrics-service.js';
 
 export interface GameSession {
@@ -73,6 +74,25 @@ export class GameSessionManager {
     });
   }
 
+  private async resolveSessionDeck(deckId: string): Promise<DeckEntity | null> {
+    const starter = findOfficialStarterDeck(deckId);
+    if (starter) {
+      const starterDeck = await this.deckRepo.findById(starter.id);
+      if (starterDeck) return starterDeck;
+    }
+    if (deckId) {
+      const existing = await this.deckRepo.findById(deckId);
+      if (existing) return existing;
+    }
+    const defaultStarter = OFFICIAL_STARTER_DECKS[0];
+    if (defaultStarter) {
+      const fallback = await this.deckRepo.findById(defaultStarter.id);
+      if (fallback) return fallback;
+    }
+    const sysDecks = await this.deckRepo.findByUserId('system');
+    return sysDecks[0] ?? null;
+  }
+
   /**
    * 启动对局会话并保存至数据库 (5.2 开局)
    */
@@ -87,20 +107,11 @@ export class GameSessionManager {
   ): Promise<GameSession> {
     const gameId = `game-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-    // 读取双方卡组并展开 50 张卡号序列
-    const [deck1, deck2] = await Promise.all([
-      this.deckRepo.findById(player1DeckId),
-      this.deckRepo.findById(player2DeckId),
+    // 读取双方卡组并展开 50 张卡号序列 (预组别名统一经 findOfficialStarterDeck 解析)
+    const [d1, d2] = await Promise.all([
+      this.resolveSessionDeck(player1DeckId),
+      this.resolveSessionDeck(player2DeckId),
     ]);
-
-    let d1: any = deck1;
-    let d2: any = deck2;
-    if (!d1) {
-      d1 = (await this.deckRepo.findById('deck-1791110685763')) || (await this.deckRepo.findById('default-starter-deck')) || (await this.deckRepo.findById('deck-st01')) || ((await this.deckRepo.findByUserId('system'))[0] ?? null);
-    }
-    if (!d2) {
-      d2 = (await this.deckRepo.findById('deck-1791110685763')) || (await this.deckRepo.findById('default-starter-deck')) || (await this.deckRepo.findById('deck-st01')) || ((await this.deckRepo.findByUserId('system'))[0] ?? null);
-    }
 
     if (!d1 || !d2) {
       throw new Error('找不到玩家卡组');
@@ -222,17 +233,11 @@ export class GameSessionManager {
       };
     }
 
-    // 记录 Action 流水 (异步持久化)
-    session.actionSequence++;
-    const currentSeq = session.actionSequence;
-    this.gameRepo.recordAction(gameId, currentSeq, action.playerId, action.type, action).catch(() => {});
-
     // 引擎执行权威校验与结算
     const engineStart = Date.now();
     const result = session.engine.dispatchAction(action);
     const engineDuration = Date.now() - engineStart;
     MetricsService.getInstance().recordEngineResolution(engineDuration);
-    session.stateVersion = (session.stateVersion || 0) + 1;
 
     if (!result.success) {
       return {
@@ -244,6 +249,12 @@ export class GameSessionManager {
         events: [],
       };
     }
+
+    // 仅在引擎成功结算后，才递增序号、状态版本号并持久化回放记录
+    session.actionSequence++;
+    const currentSeq = session.actionSequence;
+    this.gameRepo.recordAction(gameId, currentSeq, action.playerId, action.type, action).catch(() => {});
+    session.stateVersion = (session.stateVersion || 0) + 1;
 
     // 持久化产出的事件
     for (const evt of result.events) {

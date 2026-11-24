@@ -384,4 +384,147 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     }
     expect((await a.next('game:error', (e) => e.code === 'RATE_LIMIT_EXCEEDED')).code).toBe('RATE_LIMIT_EXCEEDED');
   });
+
+  it('RoomDO 安全隔离：非 Upgrade 返回 426、旁听者收不到广播、非房主禁开局、对局中禁改卡组与准备', async () => {
+    // 非 WebSocket Upgrade 请求直接返回 426 Upgrade Required，不泄露房间状态
+    const nonUpgrade = await fetch(`${http}/ws/rooms/750001`);
+    expect(nonUpgrade.status).toBe(426);
+    const nonUpgradeBody = (await nonUpgrade.json()) as { success: boolean; error: string };
+    expect(nonUpgradeBody.success).toBe(false);
+
+    const ga = await issueGuest('房主A');
+    const gb = await issueGuest('访客B');
+    const a = await connect(`/ws/rooms/750001?token=${encodeURIComponent(ga.token)}&nickname=房主A`);
+    const b = await connect(`/ws/rooms/750001?token=${encodeURIComponent(gb.token)}&nickname=访客B`);
+    const eavesdropper = await connect('/ws/rooms/750001');
+
+    a.send('room:join', { roomId: '750001', title: '安全隔离测试房', password: 'secret-room-pass' });
+    await a.next('room:state_updated');
+    b.send('room:join', { roomId: '750001', password: 'secret-room-pass' });
+    await b.next('room:state_updated', (r) => r.players.length === 2);
+
+    const deck = OFFICIAL_STARTER_DECKS[0]!;
+    for (const c of [a, b]) {
+      c.send('room:ready', { roomId: '750001', isReady: true, deckId: deck.id, customDeck: deck });
+    }
+    await a.next('room:state_updated', (r) => r.status === 'READY');
+
+    // 非房主不允许发起 room:start
+    const mbErr = b.mark();
+    b.send('room:start', { roomId: '750001' });
+    expect((await b.next('game:error', () => true, 5000, mbErr)).code).toBe('ACTION_NOT_ALLOWED');
+
+    // 房主开局
+    const [ma, mb] = [a.mark(), b.mark()];
+    a.send('room:start', { roomId: '750001' });
+    await a.next('room:state_updated', (r) => r.status === 'PLAYING', 5000, ma);
+    await a.next('game:bundle', () => true, 5000, ma);
+    await b.next('game:bundle', () => true, 5000, mb);
+
+    // 未加入房间的旁听连接既收不到 room:state_updated 也收不到 game:bundle
+    await new Promise((r) => setTimeout(r, 80));
+    expect(
+      eavesdropper.messages.some((m) => m.event === 'room:state_updated' || m.event === 'game:bundle')
+    ).toBe(false);
+
+    // 对局进行中发送 room:select_deck / room:ready 一律返回 ACTION_NOT_ALLOWED
+    const maSelect = a.mark();
+    a.send('room:select_deck', { roomId: '750001', deckId: deck.id });
+    expect((await a.next('game:error', () => true, 5000, maSelect)).code).toBe('ACTION_NOT_ALLOWED');
+
+    const maReady = a.mark();
+    a.send('room:ready', { roomId: '750001', isReady: false, deckId: deck.id });
+    expect((await a.next('game:error', () => true, 5000, maReady)).code).toBe('ACTION_NOT_ALLOWED');
+  });
+
+  it('D1 自定义卡组鉴权：本人已同步卡组无需 customDeck 即可加载，他人不可借 ID 盗用', async () => {
+    const bobLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'bob', password: 'bob-pass' }),
+    });
+    const eveLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'eve', password: 'eve-pass' }),
+    });
+    expect(bobLogin.status).toBe(200);
+    expect(eveLogin.status).toBe(200);
+
+    const bob = await connect(`/ws/rooms/750002?token=${encodeURIComponent(bobLogin.body.token)}`);
+    const eve = await connect(`/ws/rooms/750002?token=${encodeURIComponent(eveLogin.body.token)}`);
+    bob.send('room:join', { roomId: '750002' });
+    await bob.next('room:state_updated');
+    eve.send('room:join', { roomId: '750002' });
+    await eve.next('room:state_updated', (r) => r.players.length === 2);
+
+    // 鲍勃之前已在 D1 保存 bob-deck，不传 customDeck 也能通过 resolveDeckWithD1 准备
+    const mBob = bob.mark();
+    bob.send('room:ready', { roomId: '750002', isReady: true, deckId: 'bob-deck' });
+    const roomAfterBob = await bob.next('room:state_updated', (r) =>
+      r.players.some((p: any) => p.userId === bobLogin.body.user.id && p.isReady && p.deckId === 'bob-deck'),
+      5000,
+      mBob
+    );
+    expect(roomAfterBob.players.find((p: any) => p.userId === bobLogin.body.user.id).isReady).toBe(true);
+
+    // 伊芙尝试借用 bob-deck ID 准备应被拒绝
+    const mEve = eve.mark();
+    eve.send('room:ready', { roomId: '750002', isReady: true, deckId: 'bob-deck' });
+    expect((await eve.next('game:error', () => true, 5000, mEve)).code).toBe('INVALID_DECK');
+  });
+
+  it('HTTP 接口输入校验与 /api/admin/cards 筛选分页', async () => {
+    // login 传 null 或超 128 位密码返回 400
+    const nullLogin = await api('/api/auth/login', { method: 'POST', body: 'null' });
+    expect(nullLogin.status).toBe(400);
+    expect(nullLogin.body.success).toBe(false);
+
+    const longPassLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'alice', password: 'x'.repeat(129) }),
+    });
+    expect(longPassLogin.status).toBe(400);
+    expect(longPassLogin.body.success).toBe(false);
+
+    // /api/admin/cards 支持 query / cardType / attribute / cost / isActive=false / take 筛选分页
+    const admin = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'admin', password: ADMIN_PASSWORD }),
+    });
+    expect(admin.status).toBe(200);
+    const token = admin.body.token as string;
+
+    const paged = await api('/api/admin/cards?take=5&skip=2', { token });
+    expect(paged.status).toBe(200);
+    expect(paged.body.data.length).toBe(5);
+    expect(paged.body.total).toBe(490);
+
+    const filtered = await api('/api/admin/cards?cardType=ROLE&attribute=FIRE&cost=3&take=10', { token });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.total).toBeGreaterThan(0);
+    expect(filtered.body.data.length).toBeLessThanOrEqual(10);
+    expect(
+      filtered.body.data.every((c: any) => c.cardType === 'ROLE' && c.attribute === 'FIRE' && c.cost === 3)
+    ).toBe(true);
+
+    const byQuery = await api(`/api/admin/cards?query=${encodeURIComponent('露西亚')}&take=20`, { token });
+    expect(byQuery.status).toBe(200);
+    expect(byQuery.body.total).toBeGreaterThan(0);
+    expect(
+      byQuery.body.data.every(
+        (c: any) =>
+          c.name.includes('露西亚') ||
+          c.cardNumber.includes('露西亚') ||
+          (c.rulesText || '').includes('露西亚')
+      )
+    ).toBe(true);
+
+    const inactive = await api('/api/admin/cards?isActive=false', { token });
+    expect(inactive.status).toBe(200);
+    expect(inactive.body.data).toEqual([]);
+    expect(inactive.body.total).toBe(0);
+
+    const invalidCost = await api('/api/admin/cards?cost=abc&take=5', { token });
+    expect(invalidCost.status).toBe(200);
+    expect(invalidCost.body.data.length).toBe(5);
+  });
 });
