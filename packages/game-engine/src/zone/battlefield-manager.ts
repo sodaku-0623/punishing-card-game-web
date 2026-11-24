@@ -12,6 +12,7 @@ import {
   ContinuousEffectEngine,
   addCardModifier,
   EvaluatedCardStats,
+  getModifierEffectiveCardType,
 } from '../effects/continuous-effects.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
@@ -68,7 +69,7 @@ export class BattlefieldManager {
   constructor(
     private state: GameState,
     private zoneMgr: ZoneManager,
-    private cardDb: ICardDatabase,
+    readonly cardDb: ICardDatabase,
     private events: GameEvent[]
   ) {}
 
@@ -84,13 +85,57 @@ export class BattlefieldManager {
    */
   isSlotRole(playerId: string, cardInstanceId: string | undefined): boolean {
     if (!cardInstanceId) return false;
-    return this.getSlots(playerId).some(
-      (s) =>
-        (s.roleCardId === cardInstanceId &&
-          !this.state.cards[cardInstanceId]?.modifiers?.some((m) => m.setCardType === CardType.ASSIST)) ||
-        (s.assistCardId === cardInstanceId &&
-          Boolean(this.state.cards[cardInstanceId]?.modifiers?.some((m) => m.setCardType === CardType.ROLE)))
+    return this.getSlots(playerId).some((s) => {
+      if (s.roleCardId === cardInstanceId) {
+        const rc = this.state.cards[cardInstanceId];
+        const def = rc ? this.cardDb.getCard(rc.cardNumber) || (rc.cardId ? this.cardDb.getCard(rc.cardId) : undefined) : undefined;
+        return getModifierEffectiveCardType(rc, def) === CardType.ROLE;
+      }
+      if (s.assistCardId === cardInstanceId) {
+        const ac = this.state.cards[cardInstanceId];
+        const def = ac ? this.cardDb.getCard(ac.cardNumber) || (ac.cardId ? this.cardDb.getCard(ac.cardId) : undefined) : undefined;
+        return getModifierEffectiveCardType(ac, def) === CardType.ROLE;
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Q&A·9 BP04-052《血契者》：检查让指定卡牌进入战场是否违反「我方战场只能存在1张《血契者》」并应在进场前阻止
+   */
+  wouldViolateUniqueBloodPact(playerId: string, cardInstanceId: string, enterAbilitiesLost?: boolean): boolean {
+    const incoming = this.state.cards[cardInstanceId];
+    if (!incoming) return false;
+    const incomingDef =
+      this.cardDb.getCard(incoming.cardNumber) ||
+      (incoming.cardId ? this.cardDb.getCard(incoming.cardId) : undefined);
+    const isIncomingBloodPact =
+      this.continuousEffects?.hasCardName(cardInstanceId, '血契者') ||
+      incomingDef?.name === '血契者' ||
+      incoming.cardNumber === 'BP04-052';
+    if (!isIncomingBloodPact) return false;
+
+    const existingBloodPacts = this.getSlots(playerId)
+      .map((s) => {
+        const id = s.roleCardId ?? s.assistCardId;
+        return id ? this.state.cards[id] : undefined;
+      })
+      .filter((c): c is CardInstance => {
+        if (!c || c.instanceId === cardInstanceId) return false;
+        const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+        return Boolean(
+          this.continuousEffects?.hasCardName(c.instanceId, '血契者') ||
+            d?.name === '血契者' ||
+            c.cardNumber === 'BP04-052'
+        );
+      });
+    if (existingBloodPacts.length === 0) return false;
+
+    const anyExistingActive = existingBloodPacts.some(
+      (c) => !this.continuousEffects?.hasLostInherentAbilities(c.instanceId)
     );
+    const incomingActive = incoming.cardNumber === 'BP04-052' && !enterAbilitiesLost;
+    return anyExistingActive || incomingActive;
   }
 
   /**
@@ -144,6 +189,9 @@ export class BattlefieldManager {
     const slot = this.getSlots(playerId)[slotIndex];
     if (!slot || slot.roleCardId || slot.standaloneEquipmentId || slot.assistCardId) {
       return false; // 卡位已被占用
+    }
+    if (this.wouldViolateUniqueBloodPact(playerId, cardInstanceId, options?.enterAbilitiesLost)) {
+      return false; // Q&A·9 BP04-052 已有《血契者》时不能再出场新的
     }
 
     const srcCard = this.state.cards[cardInstanceId];

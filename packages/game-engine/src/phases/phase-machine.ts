@@ -264,14 +264,12 @@ export class PhaseMachine {
   }
 
   /**
-   * 6.5.1.d 执行结束阶段清理步骤；若检查时机产生待决决策或对局结束则立即挂起返回 false。
+   * 6.5.1.d 第一步：解除双方协战状态 (8.13.4.c.1)，并转入 CLEANUP_EXPIRE 以便先走检查时机与 SBA 9.4 (Q&A·10)，
+   * 随后再令回合期限效果消失并清理暗费。若检查时机产生待决决策或对局结束则立即挂起返回 false。
    */
   runEndPhaseCleanup(): boolean {
     if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return false;
-    const activePlayerId = this.state.activePlayerId;
 
-    // 6.5.1.d 进入检查时机，记录禁止回合结束送墓的暗费 (如 BP03-079)，之后「回合结束前」「该回合中」为期限的效果同时消失
-    // untilTurn 为 undefined 的区域内持续效果 (如升变赋予的【速攻】) 不随回合结束消失，离场时才消失 (3.1.4)
     if (
       !this.checkTimingMgr.resolveCheckTiming() ||
       (this.state.status as string) === 'FINISHED' ||
@@ -279,6 +277,27 @@ export class PhaseMachine {
     ) {
       return false;
     }
+
+    // 8.13.4.c.1 / Q&A·10：先在 6.5.1.d 解除双方所有协战角色的搭档状态，再经历一次检查时机后再清理期限效果
+    this.onEndPhaseReleasePartnersCallback?.();
+    this.state.endPhaseStep = 'CLEANUP_EXPIRE';
+    return true;
+  }
+
+  /**
+   * 6.5.1.d 第二步：完成解协战后的检查时机后，令「回合结束前/该回合中」效果同时消失、重置计数并送墓未受保护暗费
+   */
+  runEndPhaseExpireAndHiddenCost(): boolean {
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return false;
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      (this.state.status as string) === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
+
+    const activePlayerId = this.state.activePlayerId;
 
     const protectedHiddenCostIds = new Set<string>();
     for (const c of this.zoneMgr.getCardsInZone(activePlayerId, 'COST')) {
@@ -301,8 +320,6 @@ export class PhaseMachine {
       }
     }
     this.replacementEngine?.cleanupExpired(this.state.turnNumber);
-    // 8.13.4.c.1 6.5.1.d 结束阶段清理时解除双方所有协战角色的搭档状态并置入墓地，并清理本回合计数器
-    this.onEndPhaseReleasePartnersCallback?.();
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};
       p.costModifiers = [];
@@ -368,6 +385,7 @@ export class PhaseMachine {
    */
   finishEndPhase(): void {
     if (!this.runEndPhaseCleanup()) return;
+    if (!this.runEndPhaseExpireAndHiddenCost()) return;
     this.handoffToNextTurn();
   }
 }

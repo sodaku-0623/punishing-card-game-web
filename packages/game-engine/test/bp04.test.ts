@@ -240,8 +240,7 @@ describe('BP04《终焉圣歌》声明式效果库校验与端到端规则测试
       moveToHand(engine, handCard.instanceId);
 
       // 我方回合结束：将手牌放下方并选择模式 1（其余角色置入下方并变为辅助机）
-      // 注：共享层 sba-engine.ts:100 对 slot.roleCardId 检查 PP_ZERO 且 static:BP04-001 仅扫角色卡导致变辅助机后 PP 归 0 送墓（见受限点汇报），
-      // 此处同时验证 模式 1 将 ally 离场叠入及保护 BP04-008。
+      // 变为辅助机期间仍保持 BP04-001 【永】的下方 PP/DP 加成，不会被 SBA 9.4 误判 PP 归 0 破坏 (Q&A·10)
       mustDispatch(engine, { type: 'PASS_ACTION_TIMING', playerId: 'p1' });
       resolveChoicesWith(engine, (choice) => {
         if (choice.effectType === 'DSL_BP04_001_HAND') return [handCard.instanceId];
@@ -251,6 +250,10 @@ describe('BP04《终焉圣歌》声明式效果库校验与端到端规则测试
 
       expect(engine.getState().battlefields.p1![1]!.roleCardId).toBeUndefined();
       expect(engine.getState().battlefields.p1![2]!.roleCardId).toBe(luna008.instanceId);
+      expect(engine.getState().cards[luna001.instanceId]!.zone).toBe('BATTLEFIELD');
+      expect(engine.continuousEffects.getEffectiveCardType(luna001.instanceId)).toBe('ASSIST');
+      const assistStats = engine.continuousEffects.evaluateCard(luna001.instanceId);
+      expect(assistStats.pp).toBe(db.getCard('BP04-001')!.basePP! + engine.getState().cards[luna001.instanceId]!.underneathCardIds.length * 1000);
 
       // 验证 BP04-001 模式 2（手牌叠入下方并消除 3 球竖直）
       const engine2 = createEngine(
@@ -873,13 +876,15 @@ describe('BP04《终焉圣歌》声明式效果库校验与端到端规则测试
       const first052 = placeRole(engine, 'p1', 'BP04-052', 0);
       const second052 = findCards(engine, 'BP04-052', 'p1').find((c) => c.instanceId !== first052.instanceId)!;
       moveToHand(engine, second052.instanceId);
-      mustDispatch(engine, {
+      // Q&A·9：已有《血契者》时不能再出场新的，PLAY_CARD 在支付费用前即被阻止
+      const secondPlayRes = engine.dispatchAction({
         type: 'PLAY_CARD',
         playerId: 'p1',
         cardInstanceId: second052.instanceId,
         targetSlotIndex: 1,
       });
-      // SBA 自动只留 1 张《血契者》在战场
+      expect(secondPlayRes.success).toBe(false);
+      expect(engine.getState().cards[second052.instanceId]!.zone).toBe('HAND');
       const active052Count = engine
         .getState()
         .battlefields.p1!.filter(

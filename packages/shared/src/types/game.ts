@@ -92,12 +92,18 @@ export interface CardModifier {
   setBasePP?: number;
   /** 8.9.1.e / Q&A·6「PP 变为 X」，覆盖此前的 PP 增减 */
   setPP?: number;
+  /** 施加 setPP 瞬间已附着的装备与协战搭档 ID，用于精确核算后续卸装/解协战扣减 (4.18.2 / 8.13.4.b / Q&A·6 / Q&A·10) */
+  baselineRuleCardIds?: string[];
   dp?: number;
   /** 8.9.1.a 覆盖基本 DP (如 BP02-056/061/065、BP03-009/031「基本DP变为1」) */
   setBaseDP?: number;
   /** 「DP 变为 X」 */
   setDP?: number;
+  /** 施加 setDP 瞬间已绑定的协战搭档 ID（空字符串表示当时无搭档） */
+  baselinePartnerCardId?: string;
   charge?: number; // 10.4【充能+X】
+  /** 标记该充能增值为「获得【充能+X】能力」形式，受 8.3.4 失能与时间戳顺序影响 (Q&A·1 / Q&A·3) */
+  chargeIsAbility?: boolean;
   /** 10.3 效果赋予的「充能X」 */
   setCharge?: number;
   keywords?: string[]; // 8.9.1.b 获得的词条 (如 速攻、突进、贯通、同命)
@@ -364,7 +370,13 @@ export interface TimingWindow {
 }
 
 /** 6.5.1 结束阶段的当前步骤 */
-export type EndPhaseStep = 'INSTANTS' | 'TRIGGERS' | 'DISCARD' | 'CLEANUP' | 'CLEANUP_POST';
+export type EndPhaseStep =
+  | 'INSTANTS'
+  | 'TRIGGERS'
+  | 'DISCARD'
+  | 'CLEANUP'
+  | 'CLEANUP_EXPIRE'
+  | 'CLEANUP_POST';
 
 /** 6.2.1 竖直阶段的当前子步骤 (供可挂起流程恢复) */
 export type StandPhaseStep = 'START_TRIGGERS' | 'POST_UNTAP';
@@ -417,6 +429,7 @@ export interface GameState {
   delayedTriggers?: DelayedTrigger[]; // 8.7.5 时限触发池
   activeReplacements?: ActiveReplacementEffect[]; // 8.10 状态内置换效果池 (可随快照恢复)
   effectTimestampSeq?: number; // 8.9.1.e 持续效果时间戳序号 (随快照保存)
+  choiceIdSeq?: number; // 确定性决策 ID 序号 (随快照保存，消除 Date.now/Math.random)
   currentPendingChoice?: PendingChoice; // 待决玩家决策
   pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)
   timingWindow?: TimingWindow; // 轮流使用瞬时的时机 (7.3.1.b / 6.5.1.a)
