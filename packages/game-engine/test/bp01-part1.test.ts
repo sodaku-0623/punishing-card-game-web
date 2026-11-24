@@ -67,7 +67,7 @@ function placeRole(
   const card = findCards(engine, playerId, cardNumber)[options?.instanceIndex ?? 0];
   if (!card) throw new Error(`未找到玩家 ${playerId} 的卡牌 ${cardNumber}`);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   if (options?.enteredEarlier !== false) card.turnEnteredZone = 0;
   if (options?.isReady !== undefined) card.isReady = options.isReady;
   return card;

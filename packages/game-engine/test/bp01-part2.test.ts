@@ -185,7 +185,7 @@ describe('BP01 第二批：露西亚·深红囚影 / 封刃太刀体系 (BP01-01
     const state = engine.getState();
 
     const attacker = findCards(engine, 'p1', 'ST01-001')[0]!;
-    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[attacker.instanceId]!.turnEnteredZone = 0;
     // 给攻击者足够高 PP 与【贯通】
     state.cards[attacker.instanceId]!.modifiers = [
@@ -195,10 +195,10 @@ describe('BP01 第二批：露西亚·深红囚影 / 封刃太刀体系 (BP01-01
     const alpha17 = findCards(engine, 'p2', 'BP01-017')[0]!;
     const small = findCards(engine, 'p2', 'BP01-020')[0]!;
     const big = findCards(engine, 'p2', 'BP01-021')[0]!;
-    engine.fieldMgr.playRoleCard('p2', alpha17.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p2', alpha17.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[alpha17.instanceId]!.isReady = false;
-    expect(engine.fieldMgr.equipToRole('p2', small.instanceId, alpha17.instanceId)).toBe(true);
-    expect(engine.fieldMgr.equipToRole('p2', big.instanceId, alpha17.instanceId)).toBe(true);
+    expect(engine.fieldMgr.equipToRole('p2', small.instanceId, alpha17.instanceId, { suppressEntryTrigger: true })).toBe(true);
+    expect(engine.fieldMgr.equipToRole('p2', big.instanceId, alpha17.instanceId, { suppressEntryTrigger: true })).toBe(true);
     expect(engine.fieldMgr.calculateRoleEffectivePP(alpha17.instanceId)).toBe(8500);
 
     const p2ErosionBefore = state.players['p2']!.erosionCount;
@@ -375,8 +375,8 @@ describe('BP01 第二批：露西亚·深红囚影 / 封刃太刀体系 (BP01-01
     const p1Rain = findCards(engine2, 'p1', 'BP01-027')[0]!;
     engine2.zoneMgr.moveCard(p1Eq2!.instanceId, 'COST', { isFaceUp: true, isReady: true });
     fillCostZone(engine2, 'p1', 5);
-    engine2.fieldMgr.playRoleCard('p1', p1Role.instanceId, 0);
-    engine2.fieldMgr.equipToRole('p1', p1Eq1!.instanceId, p1Role.instanceId);
+    engine2.fieldMgr.playRoleCard('p1', p1Role.instanceId, 0, { suppressEntryTrigger: true });
+    engine2.fieldMgr.equipToRole('p1', p1Eq1!.instanceId, p1Role.instanceId, { suppressEntryTrigger: true });
     engine2.zoneMgr.moveCard(p1Rain.instanceId, 'HAND', { isFaceUp: true });
 
     endTurn(engine2);
@@ -384,7 +384,7 @@ describe('BP01 第二批：露西亚·深红囚影 / 封刃太刀体系 (BP01-01
       engine2.dispatchAction({ type: 'CHARGE_COST_FROM_HAND', playerId: 'p2', cardInstanceId: undefined });
     }
     const p2Attacker = findCards(engine2, 'p2', 'ST02-001')[0]!;
-    engine2.fieldMgr.playRoleCard('p2', p2Attacker.instanceId, 0);
+    engine2.fieldMgr.playRoleCard('p2', p2Attacker.instanceId, 0, { suppressEntryTrigger: true });
     st2.cards[p2Attacker.instanceId]!.turnEnteredZone = 0;
 
     const p1ErosionBefore = st2.players['p1']!.erosionCount;

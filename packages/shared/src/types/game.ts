@@ -64,10 +64,11 @@ export interface ActiveReplacementEffect {
   /** 限定来源区域 / 目标区域 (用于 MOVE_CARD 置换) */
   fromZone?: ZoneId;
   toZone?: ZoneId;
-  /** 置换结果：PREVENT = 改为不执行/不离场/不破坏；REDIRECT_ZONE = 改为放置到指定区域 */
+  /** 置换结果：PREVENT = 改为不执行/不离场/不破坏；REDIRECT_ZONE = 改为放置到指定区域；MODIFY_DAMAGE = 修改伤害数值 */
   action:
     | { kind: 'PREVENT' }
-    | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean };
+    | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean }
+    | { kind: 'MODIFY_DAMAGE'; delta?: number; setAmount?: number; maxAmount?: number };
   /** 8.7.5 / 8.10 仅生效一次后自动移除 */
   once?: boolean;
   /** 有效截止回合 (undefined 表示持续到卡牌离场或本局结束) */
@@ -363,7 +364,13 @@ export interface TimingWindow {
 }
 
 /** 6.5.1 结束阶段的当前步骤 */
-export type EndPhaseStep = 'INSTANTS' | 'TRIGGERS' | 'DISCARD' | 'CLEANUP';
+export type EndPhaseStep = 'INSTANTS' | 'TRIGGERS' | 'DISCARD' | 'CLEANUP' | 'CLEANUP_POST';
+
+/** 6.2.1 竖直阶段的当前子步骤 (供可挂起流程恢复) */
+export type StandPhaseStep = 'START_TRIGGERS' | 'POST_UNTAP';
+
+/** 6.3.1 抽牌填充阶段的当前子步骤 (供可挂起流程恢复) */
+export type DrawChargePhaseStep = 'DRAW' | 'AWAIT_CHARGE' | 'AFTER_CHARGE';
 
 export interface CombatState {
   step?: CombatStep;
@@ -385,6 +392,8 @@ export interface CombatState {
   attackChargedHasChargeAuto?: boolean;
   /** 本次攻击的伤害步骤是否实际对玩家造成了 >=1 点伤害 (BP04-012) */
   dealtPlayerDamage?: boolean;
+  /** 7.5.1.d / 7.6.1.f 攻击结束时触发是否已发射 (供 endCombat 挂起恢复) */
+  attackEndTriggersEmitted?: boolean;
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 
@@ -411,6 +420,8 @@ export interface GameState {
   currentPendingChoice?: PendingChoice; // 待决玩家决策
   pendingChoiceQueue?: PendingChoice[]; // 排队等待的后续决策 (当前决策处理完毕后依次进行)
   timingWindow?: TimingWindow; // 轮流使用瞬时的时机 (7.3.1.b / 6.5.1.a)
+  standPhaseStep?: StandPhaseStep;
+  drawChargePhaseStep?: DrawChargePhaseStep;
   endPhaseStep?: EndPhaseStep;
   
   winnerId?: string;

@@ -289,7 +289,7 @@ describe('Stage 2A (§3.1.1) 隐藏信息全链路脱敏与 PEEK_TOP 私密查�
     );
     const stB = engB.getState();
     const nanami15 = findCards(engB, 'p1', 'BP03-015')[0]!;
-    engB.fieldMgr.playRoleCard('p1', nanami15.instanceId, 0);
+    engB.fieldMgr.playRoleCard('p1', nanami15.instanceId, 0, { suppressEntryTrigger: true });
     stB.cards[nanami15.instanceId]!.turnEnteredZone = 0;
     const deckTopTwo = engB.zoneMgr.getCardsInZone('p1', 'DECK').slice(0, 2).map((c) => c.instanceId);
 
@@ -339,6 +339,14 @@ describe('Stage 2A (§3.1.1) 隐藏信息全链路脱敏与 PEEK_TOP 私密查�
       playerId: 'p1',
       cardInstanceId: lilith61.instanceId,
       targetSlotIndex: 0,
+    });
+    expect(stC.currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    const peekMillOpt = stC.currentPendingChoice!.options.find((o) => o.label.includes('查看')) ?? stC.currentPendingChoice!.options[0]!;
+    engC.dispatchAction({
+      type: 'SELECT_CHOICE_OPTION',
+      playerId: 'p1',
+      pendingChoiceId: stC.currentPendingChoice!.id,
+      selectedIds: [peekMillOpt.id],
     });
     expect(stC.currentPendingChoice?.effectType).toBe('DSL_BP03-061_PEEK_MILL');
     expect(stC.cards[millWatcher.instanceId]!.zone).toBe('DECK');

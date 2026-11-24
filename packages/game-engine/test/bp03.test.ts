@@ -70,7 +70,7 @@ function placeRole(
 ) {
   const card = findCard(engine, playerId, cardNumber, options?.instanceIndex ?? 0);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  const ok = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  const ok = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   expect(ok).toBe(true);
   if (options?.enteredEarlier !== false) card.turnEnteredZone = 0;
   if (options?.isReady !== undefined) card.isReady = options.isReady;
@@ -423,6 +423,11 @@ describe('BP03 露西亚·誓焰 浮空体系', () => {
     // 结束对方回合回到 p1 回合：BP03-005 回场自身先处理【出】可选浮空 (跳过)，随后触发 Q&A·6 【自】
     passInstantWindows(engine);
     expect(cardState(engine, bp03005.instanceId).zone).toBe('BATTLEFIELD');
+    expect(engine.getState().currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    const entryOrderOpt = engine.getState().currentPendingChoice!.options.find(
+      (o) => (o.payload as { abilityId?: string } | undefined)?.abilityId === 'dsl:CARD_ENTRY'
+    )!;
+    pickChoice(engine, 'p1', [entryOrderOpt.id]);
     expect(engine.getState().currentPendingChoice?.effectType).toBe('DSL_BP03-005_AIRBORNE');
     pickChoice(engine, 'p1', []);
     expect(engine.getState().currentPendingChoice?.effectType).toBe('DSL_BP03-005_ORB_COST');
@@ -1666,6 +1671,8 @@ describe('BP03 核心卡牌机制扩展测试', () => {
     engine.zoneMgr.moveCard(bp03063.instanceId, 'HAND', { isFaceUp: true });
     const handBefore = engine.zoneMgr.getCardsInZone('p1', 'HAND').length - 1;
     expect(engine.dispatchAction({ type: 'PLAY_CARD', playerId: 'p1', cardInstanceId: bp03063.instanceId }).success).toBe(true);
+    expect(engine.getState().currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    pickChoice(engine, 'p1', [engine.getState().currentPendingChoice!.options[0]!.id]);
     // 第 1 个【出】查看顶1张(BP03-066)选择不送墓放回牌组顶；第 2 个【出】拼点声明 BP03-066 为 7 (> 2) -> p1 抽 1 张
     expect(engine.getState().currentPendingChoice?.effectType).toBe('DSL_BP03-063_PEEK_MILL');
     pickChoice(engine, 'p1', []);

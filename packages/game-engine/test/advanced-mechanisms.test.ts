@@ -69,7 +69,7 @@ function placeRole(
 ) {
   const card = findCard(engine, playerId, cardNumber);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   if (options?.enteredEarlier !== false) {
     card.turnEnteredZone = 0;
   }
@@ -124,7 +124,7 @@ describe('2.6 特殊升变条件完整支持 (BP01-040 & BP04-061 & 浮空对象
     expect(failRes.success).toBe(false);
 
     // 在 1 号位放置《帕瓦》并作为升变额外代价置入下方
-    engine.fieldMgr.playRoleCard(active, pawaHand.instanceId, 1);
+    engine.fieldMgr.playRoleCard(active, pawaHand.instanceId, 1, { suppressEntryTrigger: true });
     const okRes = engine.dispatchAction({
       type: 'PLAY_CARD',
       playerId: active,
@@ -302,7 +302,7 @@ describe('10.18 浮空与浮空模式', () => {
       if (!state.battlefields[active]![s]!.roleCardId) {
         const filler = engine.zoneMgr.getCardsInZone(active, 'DECK').find((c) => db.getCard(c.cardNumber)?.cardType === 'ROLE')!;
         engine.zoneMgr.moveCard(filler.instanceId, 'HAND', { isFaceUp: true });
-        engine.fieldMgr.playRoleCard(active, filler.instanceId, s);
+        engine.fieldMgr.playRoleCard(active, filler.instanceId, s, { suppressEntryTrigger: true });
       }
     }
     endTurn(engine);
@@ -643,7 +643,7 @@ describe('10.8 角色与装备【瞬时】能力 & 10.2.1.b 带条件/代价的�
     const oppVeraField = oppVeras[0]!;
     const oppVeraDeck = oppVeras[1]!;
     e2.zoneMgr.moveCard(oppVeraField.instanceId, 'HAND', { isFaceUp: true });
-    e2.fieldMgr.playRoleCard(op, oppVeraField.instanceId, 0);
+    e2.fieldMgr.playRoleCard(op, oppVeraField.instanceId, 0, { suppressEntryTrigger: true });
 
     const oppBp021 = findCard(e2, op, 'BP04-021');
     for (const c of e2.zoneMgr.getCardsInZone(op, 'COST')) {

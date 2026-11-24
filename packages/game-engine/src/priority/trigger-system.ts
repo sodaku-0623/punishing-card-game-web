@@ -55,6 +55,7 @@ export interface TriggerEvent {
   damageAmount?: number;
   attackChargedHasChargeAuto?: boolean;
   deployedFromHostCardId?: string;
+  suppressEntryTrigger?: boolean;
   subjectSnapshot?: CardTriggerSnapshot;
 }
 
@@ -115,11 +116,6 @@ export interface TriggerDefinition {
  */
 export class TriggerManager {
   private definitions = new Map<string, TriggerDefinition>();
-  private onDelayedDeployCallback?: (playerId: string, cardInstanceId: string) => void;
-
-  setOnDelayedDeployCallback(cb: (playerId: string, cardInstanceId: string) => void): void {
-    this.onDelayedDeployCallback = cb;
-  }
 
   constructor(
     private state: GameState,
@@ -505,7 +501,6 @@ export class TriggerManager {
               appliedByPlayerId: controllerId,
             });
           }
-          this.onDelayedDeployCallback?.(controllerId, partner.instanceId);
         }
       },
     });

@@ -1063,52 +1063,58 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // BP01-058 赛琳娜·希声 (6费 升变；两条独立【出】能力依次询问)
+  // BP01-058 赛琳娜·希声 (6费 升变；两条独立【出】能力各自进入待机并可自选先后顺序)
   {
     cardNumber: 'BP01-058',
     name: '赛琳娜·希声',
-    entry: {
-      steps: [
-        {
-          op: 'DISCARD_COST_STEP',
+    entries: [
+      {
+        id: 'recover_dream',
+        label: '【出1】丢弃 2 张手牌：从墓地回收 1 张《梦赴光寥之乡》',
+        cost: {
+          kind: 'DISCARD_HAND',
           count: 2,
           optional: true,
           prompt: '【赛琳娜·希声】【出1】丢弃 2 张手牌：从墓地回收 1 张《梦赴光寥之乡》',
-          onPaid: [
-            {
-              op: 'CHOOSE_ZONE_CARDS',
-              side: 'SELF',
-              zone: 'GRAVEYARD',
-              filter: { exactName: '梦赴光寥之乡' },
-              prompt: '【赛琳娜·希声】请选择我方墓地 1 张《梦赴光寥之乡》加入手牌：',
-              min: 1,
-              max: 1,
-              saveToVar: 'gyDream',
-            },
-            { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'gyDream' }, toZone: 'HAND' },
-          ],
         },
-        {
-          op: 'DISCARD_COST_STEP',
+        steps: [
+          {
+            op: 'CHOOSE_ZONE_CARDS',
+            side: 'SELF',
+            zone: 'GRAVEYARD',
+            filter: { exactName: '梦赴光寥之乡' },
+            prompt: '【赛琳娜·希声】请选择我方墓地 1 张《梦赴光寥之乡》加入手牌：',
+            min: 1,
+            max: 1,
+            saveToVar: 'gyDream',
+          },
+          { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'gyDream' }, toZone: 'HAND' },
+        ],
+      },
+      {
+        id: 'bottom_opp_role',
+        label: '【出2】丢弃 2 张《梦赴光寥之乡》：将对方战场 1 张费用<=3 的角色放回牌组底',
+        cost: {
+          kind: 'DISCARD_HAND',
           count: 2,
           filter: { exactName: '梦赴光寥之乡' },
           optional: true,
           prompt: '【赛琳娜·希声】【出2】丢弃 2 张《梦赴光寥之乡》：将对方战场 1 张费用<=3 的角色放回牌组底',
-          onPaid: [
-            {
-              op: 'CHOOSE_ROLES',
-              side: 'OPPONENT',
-              filter: { maxCost: 3 },
-              prompt: '【赛琳娜·希声】请选择对方战场 1 张费用 3 及以下的角色放置到对方牌组底：',
-              min: 1,
-              max: 1,
-              saveToVar: 'oppBottom',
-            },
-            { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'oppBottom' }, toZone: 'DECK_BOTTOM' },
-          ],
         },
-      ],
-    },
+        steps: [
+          {
+            op: 'CHOOSE_ROLES',
+            side: 'OPPONENT',
+            filter: { maxCost: 3 },
+            prompt: '【赛琳娜·希声】请选择对方战场 1 张费用 3 及以下的角色放置到对方牌组底：',
+            min: 1,
+            max: 1,
+            saveToVar: 'oppBottom',
+          },
+          { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'oppBottom' }, toZone: 'DECK_BOTTOM' },
+        ],
+      },
+    ],
   },
 
   // BP01-059 赛琳娜·希声 (7费)

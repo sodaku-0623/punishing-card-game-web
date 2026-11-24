@@ -72,7 +72,7 @@ function placeRole(
   const card = findCards(engine, playerId, cardNumber)[options?.instanceIndex ?? 0];
   if (!card) throw new Error(`未找到玩家 ${playerId} 的卡牌 ${cardNumber}`);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   if (options?.enteredEarlier !== false) {
     card.turnEnteredZone = 0;
   }
@@ -459,6 +459,18 @@ describe('ST05 清洁部队官方预组 (13 张 晖/暮形态声明式效果)', 
         targetSlotIndex: 1,
       }).success
     ).toBe(true);
+    // ST05-002 晖/暮双【出】同时进入待机 (Q&A·5)，任选一项优先处理
+    expect(state.currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    expect(state.currentPendingChoice!.options).toHaveLength(2);
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: state.currentPendingChoice!.id,
+        selectedIds: [state.currentPendingChoice!.options[0]!.id],
+      }).success
+    ).toBe(true);
+    expect(state.currentPendingChoice).toBeUndefined();
     expect(engine.zoneMgr.getCardsInZone(active, 'HAND').length).toBe(handBefore); // 打出1张 + 抽1张
 
     // ST05-001 暮【出】：本回合可以攻击对方玩家，但不能攻击对方横置角色
@@ -545,6 +557,16 @@ describe('ST05 清洁部队官方预组 (13 张 晖/暮形态声明式效果)', 
         playerId: active,
         cardInstanceId: st05002B.instanceId,
         targetSlotIndex: 3,
+      }).success
+    ).toBe(true);
+    expect(state.currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    const radianceOpt = state.currentPendingChoice!.options.find((o) => o.label.includes('晖【出】'))!;
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: state.currentPendingChoice!.id,
+        selectedIds: [radianceOpt.id],
       }).success
     ).toBe(true);
     expect(state.currentPendingChoice?.effectType).toBe('PRESET_ST05_002_REVIVE');

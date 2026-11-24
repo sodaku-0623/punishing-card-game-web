@@ -106,7 +106,7 @@ export class ZoneManager {
 
   /**
    * 移动卡牌到指定区域 (3.1.4 新卡牌原则 + 8.10 置换效果拦截)
-   * 返回 true 表示完成了移动，false 表示移动被置换效果阻止或卡牌不存在。
+   * 返回 true 表示完成了移动，false 表示移动被置换效果阻止、因多置换选序挂起或卡牌不存在。
    */
   moveCard(
     cardInstanceId: string,
@@ -118,8 +118,13 @@ export class ZoneManager {
       toBottom?: boolean;
       isOrphanCleanup?: boolean;
       orphanHostCardId?: string;
+      isPlacingUnderneath?: boolean;
+      underneathHostId?: string;
+      includeUnderneath?: boolean;
       appliedReplacementIds?: Set<string>;
+      preferredReplacementId?: string;
       preserveAttachments?: boolean;
+      resetStateOnSameZone?: boolean;
       skipLeftFieldTrigger?: boolean;
       sentByEffectOrCost?: boolean;
       countAsDeckToGy?: boolean;
@@ -136,8 +141,8 @@ export class ZoneManager {
     let effectiveReady = options?.isReady;
     let effectiveToBottom = options?.toBottom;
 
-    // 8.2.1.c / 8.10 在跨区域移动即将发生前拦截置换效果
-    if (fromZone !== toZone && this.replacementEngine) {
+    // 8.2.1.c / 8.10 在跨区域移动或从顶层战场置入其他角色下方即将发生前拦截置换效果
+    if ((fromZone !== toZone || options?.isPlacingUnderneath) && this.replacementEngine) {
       const intercept = this.replacementEngine.interceptMoveCard(
         cardInstanceId,
         fromZone,
@@ -148,6 +153,13 @@ export class ZoneManager {
           toBottom: effectiveToBottom,
           isOrphanCleanup: options?.isOrphanCleanup,
           orphanHostCardId: options?.orphanHostCardId,
+          isPlacingUnderneath: options?.isPlacingUnderneath,
+          underneathHostId: options?.underneathHostId,
+          includeUnderneath: options?.includeUnderneath,
+          skipLeftFieldTrigger: options?.skipLeftFieldTrigger,
+          sentByEffectOrCost: options?.sentByEffectOrCost,
+          countAsDeckToGy: options?.countAsDeckToGy,
+          preferredReplacementId: options?.preferredReplacementId,
         },
         options?.appliedReplacementIds
       );
@@ -160,7 +172,7 @@ export class ZoneManager {
       effectiveToBottom = intercept.toBottom;
     }
 
-    // 3.6.4 费用区最多放置 10 张卡牌 (BP03-052 满足条件时为 11 张)，若已满则改为正面放置到墓地
+    // 3.6.4 兜底：无置换引擎介入或末段仍需放置到已满费用区时，改为正面放置到墓地
     if (
       effectiveToZone === 'COST' &&
       fromZone !== 'COST' &&
@@ -172,18 +184,31 @@ export class ZoneManager {
       effectiveToBottom = false;
     }
 
+    const leavingBattlefieldOrTopLevel =
+      (fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD') ||
+      (fromZone === 'BATTLEFIELD' &&
+        effectiveToZone === 'BATTLEFIELD' &&
+        (Boolean(options?.isPlacingUnderneath) || Boolean(options?.resetStateOnSameZone)));
+
     const leftBattlefieldSnapshot =
-      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD' && !options?.skipLeftFieldTrigger
+      leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger
         ? this.snapshotProvider?.(cardInstanceId)
         : undefined;
+
+    const skipUnderneathOrphanCleanup = Boolean(
+      options?.isPlacingUnderneath && options?.includeUnderneath && effectiveToZone === 'BATTLEFIELD'
+    );
 
     // 9.6 战场卡位上的卡牌离开战场：先解除卡位与上下方关系并收集无所属卡牌，
     // 宿主自身完成移动后再将无所属卡牌送墓/置换 (Q&A·9 BP04-065 顺序固定：先宿主，再装备)
     // (10.18.2.b / 10.18.2.d.3 浮空保留下方牌与装备时跳过解绑，只释放协战搭档 8.13.4.a.3)
-    const orphanInfo =
-      fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD'
-        ? this.detachFromBattlefieldAndCollectOrphans(card, options?.preserveAttachments)
-        : { orphanIds: [], partnerId: undefined };
+    const orphanInfo = leavingBattlefieldOrTopLevel
+      ? this.detachFromBattlefieldAndCollectOrphans(
+          card,
+          options?.preserveAttachments,
+          skipUnderneathOrphanCleanup
+        )
+      : { orphanIds: [], partnerId: undefined };
 
     card.zone = effectiveToZone;
 
@@ -197,9 +222,15 @@ export class ZoneManager {
       this.state.cards[cardInstanceId] = card;
     }
 
-    // 3.1.4 移动到其他区域的卡牌视为新卡牌，原区域适用的效果与状态不延续
-    if (fromZone !== effectiveToZone) {
-      card.enteredFromZone = fromZone;
+    // 3.1.4 移动到其他区域的卡牌 (或离开战场顶层沦为下方牌/搭档) 视为新卡牌，原区域适用的效果与状态不延续
+    const shouldResetState =
+      fromZone !== effectiveToZone ||
+      Boolean(options?.isPlacingUnderneath) ||
+      Boolean(options?.resetStateOnSameZone);
+    if (shouldResetState) {
+      if (fromZone !== effectiveToZone) {
+        card.enteredFromZone = fromZone;
+      }
       card.tempPPBonus = undefined;
       card.tempDPBonus = undefined;
       card.grantedKeywords = undefined;
@@ -207,7 +238,7 @@ export class ZoneManager {
       card.endOfTurnToGraveyard = undefined;
       card.releasePartnerToDeckBottom = undefined;
       card.isFrozen = undefined;
-      if (effectiveToZone !== 'BATTLEFIELD') {
+      if (effectiveToZone !== 'BATTLEFIELD' || options?.isPlacingUnderneath || options?.resetStateOnSameZone) {
         card.wasAscendedPlay = undefined;
         card.ascendedFromAirborne = undefined;
         card.paidHiddenCostOnPlay = undefined;
@@ -225,8 +256,12 @@ export class ZoneManager {
       }
       card.effectiveProhibitions = undefined;
       card.effectiveOrbColors = undefined;
-      if (!options?.preserveAttachments) {
+      card.effectiveOrbValue = undefined;
+      if (!options?.preserveAttachments && !skipUnderneathOrphanCleanup) {
         card.underneathCardIds = [];
+        card.attachedEquipmentId = undefined;
+        card.extraAttachedEquipmentIds = undefined;
+      } else if (skipUnderneathOrphanCleanup) {
         card.attachedEquipmentId = undefined;
         card.extraAttachedEquipmentIds = undefined;
       }
@@ -238,7 +273,9 @@ export class ZoneManager {
       }
       card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
       this.replacementEngine?.cleanupForCard(cardInstanceId);
-      if (effectiveToZone !== 'BATTLEFIELD') card.slotIndex = undefined;
+      if (effectiveToZone !== 'BATTLEFIELD' || options?.isPlacingUnderneath || options?.resetStateOnSameZone) {
+        card.slotIndex = undefined;
+      }
       // 10.1.2.a 回合次数限制只对同一区域中的同一张卡牌计数 (清理 cardInstanceId 及 cardInstanceId:abilityId)
       const usage = this.state.players[card.controllerPlayerId]?.turnAbilityUsage;
       if (usage) {
@@ -250,7 +287,7 @@ export class ZoneManager {
       }
     }
 
-    if (options?.slotIndex !== undefined && effectiveToZone === 'BATTLEFIELD') {
+    if (options?.slotIndex !== undefined && effectiveToZone === 'BATTLEFIELD' && !options?.isPlacingUnderneath) {
       card.slotIndex = options.slotIndex;
     }
     if (effectiveFaceUp !== undefined) card.isFaceUp = effectiveFaceUp;
@@ -267,7 +304,7 @@ export class ZoneManager {
       fromZone,
       toZone: effectiveToZone,
       fromSlot,
-      toSlot: effectiveToZone === 'BATTLEFIELD' ? options?.slotIndex : undefined,
+      toSlot: effectiveToZone === 'BATTLEFIELD' && !options?.isPlacingUnderneath ? options?.slotIndex : undefined,
       isFaceUp: card.isFaceUp,
       isReady: card.isReady,
     });
@@ -310,7 +347,7 @@ export class ZoneManager {
     }
 
     // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报)
-    if (fromZone === 'BATTLEFIELD' && effectiveToZone !== 'BATTLEFIELD' && !options?.skipLeftFieldTrigger) {
+    if (leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger) {
       this.onTriggerEventCallback?.({
         type: 'CARD_LEFT_FIELD',
         playerId: card.controllerPlayerId,
@@ -346,6 +383,74 @@ export class ZoneManager {
       });
     }
 
+    // BP04-059：从墓地放置到牌组底时触发
+    if (fromZone === 'GRAVEYARD' && effectiveToZone === 'DECK' && effectiveToBottom) {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_MOVED_GY_TO_DECK_BOTTOM',
+        playerId: card.controllerPlayerId,
+        cardInstanceId,
+        fromZone: 'GRAVEYARD',
+        toZone: 'DECK',
+        subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
+      });
+    }
+
+    return true;
+  }
+
+  /**
+   * 同步附属卡牌 (升变对象、下方牌、附着装备) 随宿主一并迁区时的区域与瞬态字段，不触发独立离场事件。
+   */
+  syncAttachedCardZone(
+    cardInstanceId: string,
+    toZone: ZoneId,
+    options?: {
+      slotIndex?: number;
+      controllerPlayerId?: string;
+      isFaceUp?: boolean;
+      isReady?: boolean;
+      clearTransientState?: boolean;
+    }
+  ): boolean {
+    const card = this.state.cards[cardInstanceId];
+    if (!card) return false;
+    const prevZone = card.zone;
+    card.zone = toZone;
+    card.slotIndex = options?.slotIndex;
+    if (options?.controllerPlayerId !== undefined) {
+      card.controllerPlayerId = options.controllerPlayerId;
+    }
+    if (options?.isFaceUp !== undefined) card.isFaceUp = options.isFaceUp;
+    if (options?.isReady !== undefined) card.isReady = options.isReady;
+    if (options?.clearTransientState) {
+      card.modifiers = undefined;
+      card.tempPPBonus = undefined;
+      card.tempDPBonus = undefined;
+      card.grantedKeywords = undefined;
+      card.isFrozen = undefined;
+      card.endOfTurnToGraveyard = undefined;
+      card.isAirborne = undefined;
+      card.wasAscendedPlay = undefined;
+      card.ascendedFromAirborne = undefined;
+      card.paidHiddenCostOnPlay = undefined;
+      card.effectivePP = undefined;
+      card.effectiveDP = undefined;
+      card.effectiveKeywords = undefined;
+      card.effectiveTraits = undefined;
+      card.effectiveProhibitions = undefined;
+      card.effectiveOrbColors = undefined;
+      card.effectiveOrbValue = undefined;
+    }
+    if (prevZone !== toZone) {
+      card.enteredFromZone = prevZone;
+      card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
+      card.turnEnteredZone = this.state.turnNumber;
+      delete this.state.cards[cardInstanceId];
+      this.state.cards[cardInstanceId] = card;
+    }
+    if (prevZone === 'COST' || toZone === 'COST') {
+      this.syncCostStats(card.controllerPlayerId);
+    }
     return true;
   }
 
@@ -376,7 +481,8 @@ export class ZoneManager {
    */
   private detachFromBattlefieldAndCollectOrphans(
     card: CardInstance,
-    preserveAttachments?: boolean
+    preserveAttachments?: boolean,
+    skipUnderneathCleanup?: boolean
   ): { orphanIds: string[]; partnerId?: string } {
     const playerId = card.controllerPlayerId;
     for (const slot of this.state.battlefields[playerId] ?? []) {
@@ -423,10 +529,12 @@ export class ZoneManager {
       return { orphanIds: [], partnerId };
     }
 
-    const orphanIds = [...(card.underneathCardIds ?? [])];
+    const orphanIds = skipUnderneathCleanup ? [] : [...(card.underneathCardIds ?? [])];
     if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
     if (card.extraAttachedEquipmentIds?.length) orphanIds.push(...card.extraAttachedEquipmentIds);
-    card.underneathCardIds = [];
+    if (!skipUnderneathCleanup) {
+      card.underneathCardIds = [];
+    }
     card.attachedEquipmentId = undefined;
     card.extraAttachedEquipmentIds = undefined;
     return { orphanIds, partnerId };
@@ -504,48 +612,32 @@ export class ZoneManager {
   /**
    * 将卡牌移动到牌组底 (保持物理顺序，放在牌组最末位；从墓地放回牌组底时发射 CARD_MOVED_GY_TO_DECK_BOTTOM)
    */
-  moveCardToBottomOfDeck(cardInstanceId: string): void {
+  moveCardToBottomOfDeck(cardInstanceId: string): boolean {
     const card = this.state.cards[cardInstanceId];
-    if (!card) return;
-    const prevZone = card.zone;
+    if (!card) return false;
 
-    this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false });
+    const moved = this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false, toBottom: true });
+    if (!moved) return false;
+    if (card.zone !== 'DECK') return false;
+
     // 将键移至对象末尾以保证在牌组底（Object.values 遍历顺序最末）
     delete this.state.cards[cardInstanceId];
     this.state.cards[cardInstanceId] = card;
-
-    if (prevZone === 'GRAVEYARD' && card.zone === 'DECK') {
-      this.onTriggerEventCallback?.({
-        type: 'CARD_MOVED_GY_TO_DECK_BOTTOM',
-        playerId: card.controllerPlayerId,
-        cardInstanceId,
-        fromZone: 'GRAVEYARD',
-        toZone: 'DECK',
-        subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
-      });
-    }
+    return true;
   }
 
   /**
    * 将卡牌移动到牌组顶 (放置在牌组最前位，遍历顺序第一位)
    */
-  moveCardToTopOfDeck(cardInstanceId: string): void {
+  moveCardToTopOfDeck(cardInstanceId: string): boolean {
     const card = this.state.cards[cardInstanceId];
-    if (!card) return;
+    if (!card) return false;
 
-    this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false });
-    const newCards: Record<string, CardInstance> = {
-      [cardInstanceId]: card,
-    };
-    for (const [k, v] of Object.entries(this.state.cards)) {
-      if (k !== cardInstanceId) {
-        newCards[k] = v;
-      }
-    }
-    for (const k of Object.keys(this.state.cards)) {
-      delete this.state.cards[k];
-    }
-    Object.assign(this.state.cards, newCards);
+    const moved = this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false });
+    if (!moved) return false;
+    if (card.zone !== 'DECK') return false;
+    this.placeCardKeyAtFront(cardInstanceId, card);
+    return true;
   }
 
   /**
@@ -841,13 +933,27 @@ export class ZoneManager {
 
   /**
    * 4.10 伤害处理：依次执行与伤害量相同次数的伤害充能，每次完毕侵蚀计数 +1
-   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用；经 8.10 置换引擎拦截伤害量)
+   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用；经 8.10 置换引擎拦截伤害量并支持多置换选序挂起)
    */
-  applyDamageToPlayer(defenderPlayerId: string, damageAmount: number, sourceCardId?: string): void {
+  applyDamageToPlayer(
+    defenderPlayerId: string,
+    damageAmount: number,
+    sourceCardId?: string,
+    options?: { appliedReplacementIds?: Set<string>; preferredReplacementId?: string }
+  ): void {
     if (!this.state.players[defenderPlayerId] || damageAmount <= 0) return;
-    const effectiveDamage = this.replacementEngine
-      ? this.replacementEngine.interceptDealDamage(defenderPlayerId, damageAmount, sourceCardId)
-      : damageAmount;
+    let effectiveDamage = damageAmount;
+    if (this.replacementEngine) {
+      const res = this.replacementEngine.interceptDealDamageDetailed(
+        defenderPlayerId,
+        damageAmount,
+        sourceCardId,
+        options?.appliedReplacementIds,
+        { preferredReplacementId: options?.preferredReplacementId, applyMode: 'DIRECT_DAMAGE' }
+      );
+      if (res.pendingChoice) return;
+      effectiveDamage = res.amount;
+    }
     if (effectiveDamage <= 0) return;
     for (let i = 0; i < effectiveDamage; i++) {
       if (this.isFinished()) return;

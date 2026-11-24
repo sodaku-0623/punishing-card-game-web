@@ -680,9 +680,9 @@ describe('Stage 1B-2 (§2.4) 全表 19 张白板/空桩/死分支/必败卡修�
     const alisa = findCards(engine, 'p2', 'BP04-048')[0]!;
     const yellowOrb = findCards(engine, 'p2', 'BP01-084')[0]!;
 
-    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[attacker.instanceId]!.turnEnteredZone = 0;
-    engine.fieldMgr.playRoleCard('p2', alisa.instanceId, 0, { enterTapped: true });
+    engine.fieldMgr.playRoleCard('p2', alisa.instanceId, 0, { enterTapped: true, suppressEntryTrigger: true });
     engine.zoneMgr.moveCard(cecily.instanceId, 'GRAVEYARD', { isFaceUp: true });
     engine.zoneMgr.moveCard(yellowOrb.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
 
@@ -946,8 +946,8 @@ describe('Stage 1B-2 (§2.4) 全表 19 张白板/空桩/死分支/必败卡修�
     const luna = findCards(engine, 'p1', 'BP04-002')[0]!;
     const voidCard = findCards(engine, 'p1', 'BP02-003')[0]!;
 
-    engine.fieldMgr.playAssistCard('p1', pr041.instanceId, 0);
-    engine.fieldMgr.playRoleCard('p1', luna.instanceId, 1);
+    engine.fieldMgr.playAssistCard('p1', pr041.instanceId, 0, { suppressEntryTrigger: true });
+    engine.fieldMgr.playRoleCard('p1', luna.instanceId, 1, { suppressEntryTrigger: true });
     engine.zoneMgr.moveCard(voidCard.instanceId, 'HAND');
 
     // 触发 PR-041 回合结束变身为角色牌，并将 voidCard 置入其下方

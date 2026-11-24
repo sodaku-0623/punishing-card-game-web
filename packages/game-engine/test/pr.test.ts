@@ -79,7 +79,7 @@ function placeRole(
 ) {
   const card = findCard(engine, playerId, cardNumber, options?.instanceIndex ?? 0);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  const played = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  const played = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   expect(played, `placeRole(${playerId}, ${cardNumber}, slot=${slotIndex}) 失败，当前槽位=${JSON.stringify(engine.fieldMgr.getSlots(playerId)[slotIndex])}`).toBe(true);
   if (options?.enteredEarlier !== false) card.turnEnteredZone = 0;
   if (options?.isReady !== undefined) card.isReady = options.isReady;

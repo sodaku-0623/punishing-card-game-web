@@ -138,6 +138,7 @@ export class BattlefieldManager {
       enterAbilitiesLost?: boolean;
       deployedFromHostCardId?: string;
       sourceCardNumber?: string;
+      suppressEntryTrigger?: boolean;
     }
   ): boolean {
     const slot = this.getSlots(playerId)[slotIndex];
@@ -151,35 +152,33 @@ export class BattlefieldManager {
     const airborneUnderIds = wasAirborne ? [...(srcCard!.underneathCardIds ?? [])] : [];
     const airborneEqIds = wasAirborne ? getAttachedEquipmentIds(srcCard) : [];
 
-    slot.roleCardId = cardInstanceId;
-    this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
+    const moved = this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
       isReady: !options?.enterTapped,
       ...(wasAirborne ? { preserveAttachments: true } : {}),
     });
     const movedCard = this.state.cards[cardInstanceId];
-    if (movedCard && wasAirborne) {
+    if (!moved || !movedCard || movedCard.zone !== 'BATTLEFIELD') {
+      return false;
+    }
+
+    slot.roleCardId = cardInstanceId;
+    if (wasAirborne) {
       movedCard.underneathCardIds = airborneUnderIds;
       setAttachedEquipmentIds(movedCard, airborneEqIds);
       for (const uid of airborneUnderIds) {
-        const uc = this.state.cards[uid];
-        if (uc) {
-          uc.zone = 'BATTLEFIELD';
-          uc.slotIndex = undefined;
-        }
+        this.zoneMgr.syncAttachedCardZone(uid, 'BATTLEFIELD');
       }
       for (const eqId of airborneEqIds) {
-        const eq = this.state.cards[eqId];
-        if (eq) {
-          eq.zone = 'BATTLEFIELD';
-          eq.slotIndex = slotIndex;
-          eq.isFaceUp = true;
-          eq.isReady = true;
-        }
+        this.zoneMgr.syncAttachedCardZone(eqId, 'BATTLEFIELD', {
+          slotIndex,
+          isFaceUp: true,
+          isReady: true,
+        });
       }
     }
-    if (movedCard && options?.enterAbilitiesLost) {
+    if (options?.enterAbilitiesLost) {
       addCardModifier(this.state, movedCard, {
         loseAbilities: true,
         untilTurn: undefined,
@@ -202,6 +201,7 @@ export class BattlefieldManager {
       toZone: 'BATTLEFIELD',
       isAscension: false,
       deployedFromHostCardId: options?.deployedFromHostCardId,
+      suppressEntryTrigger: options?.suppressEntryTrigger,
       subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
     });
     return true;
@@ -210,17 +210,58 @@ export class BattlefieldManager {
   /**
    * 8.6.2.e.2 装备牌以正面竖直状态单独放置到空余卡位 (占用该卡位，4.18.5)
    */
-  playStandaloneEquipment(playerId: string, cardInstanceId: string, slotIndex: number): boolean {
+  playStandaloneEquipment(
+    playerId: string,
+    cardInstanceId: string,
+    slotIndex: number,
+    options?: {
+      enterTapped?: boolean;
+      enterAbilitiesLost?: boolean;
+      sourceCardNumber?: string;
+      suppressEntryTrigger?: boolean;
+    }
+  ): boolean {
     const slot = this.getSlots(playerId)[slotIndex];
     if (!slot || slot.roleCardId || slot.standaloneEquipmentId || slot.assistCardId) {
       return false;
     }
 
-    slot.standaloneEquipmentId = cardInstanceId;
-    this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
+    const fromZone = this.state.cards[cardInstanceId]?.zone;
+    const moved = this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
-      isReady: true,
+      isReady: !options?.enterTapped,
+    });
+    const movedCard = this.state.cards[cardInstanceId];
+    if (!moved || !movedCard || movedCard.zone !== 'BATTLEFIELD') {
+      return false;
+    }
+
+    slot.standaloneEquipmentId = cardInstanceId;
+    if (options?.enterAbilitiesLost) {
+      addCardModifier(this.state, movedCard, {
+        loseAbilities: true,
+        untilTurn: undefined,
+        source: options.sourceCardNumber ?? movedCard.cardNumber,
+      });
+    }
+
+    this.events.push({
+      type: 'CARD_PLAYED',
+      playerId,
+      cardInstanceId,
+      slotIndex,
+      isAscension: false,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId,
+      fromZone,
+      toZone: 'BATTLEFIELD',
+      isAscension: false,
+      suppressEntryTrigger: options?.suppressEntryTrigger,
+      subjectSnapshot: this.snapshotProvider?.(cardInstanceId),
     });
     return true;
   }
@@ -234,7 +275,11 @@ export class BattlefieldManager {
     playerId: string,
     ascensionCardId: string,
     targetRoleCardId: string,
-    options?: { targetSlotIndex?: number; extraStackRoleCardId?: string }
+    options?: {
+      targetSlotIndex?: number;
+      extraStackRoleCardId?: string;
+      suppressEntryTrigger?: boolean;
+    }
   ): boolean {
     const targetCard = this.state.cards[targetRoleCardId];
     if (!targetCard || targetCard.controllerPlayerId !== playerId) {
@@ -245,17 +290,14 @@ export class BattlefieldManager {
     if (!ascensionCard) return false;
 
     const wasTargetAirborne = targetCard.zone === 'PROCESSING' && targetCard.isAirborne === true;
+    const targetFromZone = targetCard.zone;
     let slotIndex: number | undefined;
-    if (targetCard.zone === 'BATTLEFIELD') {
+    if (targetFromZone === 'BATTLEFIELD') {
       if (!this.isSlotRole(playerId, targetRoleCardId) || targetCard.slotIndex === undefined) {
         return false;
       }
       slotIndex = targetCard.slotIndex;
-      // 8.13.4.a.3 / 8.13.4.c.4 协战角色作为升变对象时，原搭档解除协战置入墓地
-      if (targetCard.partnerCardId) {
-        this.releasePartner(targetRoleCardId, true);
-      }
-    } else if (targetCard.zone === 'SIGNAL_ORB') {
+    } else if (targetFromZone === 'SIGNAL_ORB') {
       if (!targetCard.isFaceUp) return false; // Q&A·10 背面不能作为升变对象
       slotIndex = options?.targetSlotIndex ?? this.findFirstEmptySlot(playerId);
       if (slotIndex === undefined) return false;
@@ -279,85 +321,60 @@ export class BattlefieldManager {
 
     // 先将升变卡放置到卡位 (移动区域会重置卡牌状态，下方卡牌与装备须在移动之后再挂接)
     const fromZone = ascensionCard.zone;
-    slot.roleCardId = ascensionCardId;
-    this.zoneMgr.moveCard(ascensionCardId, 'BATTLEFIELD', {
+    const moved = this.zoneMgr.moveCard(ascensionCardId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
       isReady: true,
     });
+    if (!moved || ascensionCard.zone !== 'BATTLEFIELD') {
+      return false;
+    }
 
-    // 确保从非战场 (信号球区/浮空区) 升变的原对象及其下方卡牌迁入 BATTLEFIELD
-    targetCard.zone = 'BATTLEFIELD';
-    targetCard.slotIndex = undefined;
-    targetCard.isFaceUp = true;
-    targetCard.isReady = true;
-    targetCard.isAirborne = undefined;
+    // 8.13.4.a.3 / 8.13.4.c.4 协战角色作为升变对象时，原搭档解除协战置入墓地
+    if (targetFromZone === 'BATTLEFIELD' && targetCard.partnerCardId) {
+      this.releasePartner(targetRoleCardId, true);
+    }
 
-    // 8.11.3.f.1 升变对象及其下方原本的卡牌将保留在升变出场的卡牌下方
+    slot.roleCardId = ascensionCardId;
+
+    // 8.11.4.c & 8.11.3.f.1 升变对象及下方原本的卡牌同步留在该卡位下方 (不继承持续效果与状态)
     const stackedCardIds = [...targetCard.underneathCardIds, targetRoleCardId];
     for (const underId of targetCard.underneathCardIds) {
-      const uc = this.state.cards[underId];
-      if (uc) {
-        uc.zone = 'BATTLEFIELD';
-        uc.slotIndex = undefined;
-      }
+      this.zoneMgr.syncAttachedCardZone(underId, 'BATTLEFIELD', {
+        slotIndex: undefined,
+        isFaceUp: true,
+        isReady: true,
+        clearTransientState: true,
+      });
     }
 
     // 8.11.3.f.2 升变对象原本的装备将保留并成为升变出场的卡牌的装备 (支持双持装备)
     const inheritedEqIds = getAttachedEquipmentIds(targetCard);
     if (inheritedEqIds.length > 0) {
       for (const eqId of inheritedEqIds) {
-        const eqCard = this.state.cards[eqId];
-        if (eqCard) {
-          eqCard.zone = 'BATTLEFIELD';
-          eqCard.slotIndex = slotIndex;
-        }
+        this.zoneMgr.syncAttachedCardZone(eqId, 'BATTLEFIELD', { slotIndex });
       }
       setAttachedEquipmentIds(ascensionCard, inheritedEqIds);
       setAttachedEquipmentIds(targetCard, []);
     }
 
+    this.zoneMgr.syncAttachedCardZone(targetRoleCardId, 'BATTLEFIELD', {
+      slotIndex: undefined,
+      isFaceUp: true,
+      isReady: true,
+      clearTransientState: true,
+    });
+    // 被升变的原卡不再单独计为顶层角色
+    targetCard.underneathCardIds = [];
+    ascensionCard.underneathCardIds = stackedCardIds;
+
     // BP01-040 额外升变代价：将我方战场 1 张《帕瓦》放置到该牌下方
     if (options?.extraStackRoleCardId && options.extraStackRoleCardId !== targetRoleCardId) {
       const extraCard = this.state.cards[options.extraStackRoleCardId];
       if (extraCard && this.isSlotRole(playerId, extraCard.instanceId)) {
-        if (extraCard.partnerCardId) {
-          this.releasePartner(extraCard.instanceId, true);
-        }
-        for (const s of this.getSlots(playerId)) {
-          if (s.roleCardId === extraCard.instanceId) s.roleCardId = undefined;
-        }
-        const extraOrphans = [...extraCard.underneathCardIds, ...getAttachedEquipmentIds(extraCard)];
-        extraCard.underneathCardIds = [];
-        setAttachedEquipmentIds(extraCard, []);
-        for (const oid of extraOrphans) {
-          const o = this.state.cards[oid];
-          if (o && o.zone === 'BATTLEFIELD') {
-            this.zoneMgr.moveCard(oid, 'GRAVEYARD', {
-              isFaceUp: true,
-              isOrphanCleanup: true,
-              orphanHostCardId: extraCard.instanceId,
-            });
-          }
-        }
-        extraCard.slotIndex = undefined;
-        extraCard.tempPPBonus = undefined;
-        extraCard.tempDPBonus = undefined;
-        extraCard.grantedKeywords = undefined;
-        extraCard.modifiers = undefined;
-        extraCard.isFrozen = undefined;
-        stackedCardIds.push(extraCard.instanceId);
+        this.placeCardUnderneath(extraCard.instanceId, ascensionCardId, { actorPlayerId: playerId });
       }
     }
-
-    ascensionCard.underneathCardIds = stackedCardIds;
-
-    // 8.11.4.c 升变对象原本的卡牌状态不继承；作为下方的牌，其持续效果也不再适用 (3.2.6)
-    targetCard.tempPPBonus = undefined;
-    targetCard.tempDPBonus = undefined;
-    targetCard.grantedKeywords = undefined;
-    targetCard.modifiers = undefined;
-    targetCard.isFrozen = undefined;
 
     // 8.11.2.c 执行升变能力：通过 CardModifier 获得升变能力记述的关键字 (持续到离场为止，3.1.4)
     const ascensionDef =
@@ -373,8 +390,6 @@ export class BattlefieldManager {
       });
     }
 
-    // 被升变的原卡不再单独计为顶层角色
-    targetCard.underneathCardIds = [];
     ascensionCard.wasAscendedPlay = true;
     ascensionCard.ascendedFromAirborne = wasTargetAirborne || undefined;
 
@@ -388,7 +403,7 @@ export class BattlefieldManager {
     this.events.push({
       type: 'CARD_ASCENDED',
       parentCardId: ascensionCardId,
-      underneathCardIds: stackedCardIds,
+      underneathCardIds: [...ascensionCard.underneathCardIds],
     });
     this.onTriggerEventCallback?.({
       type: 'CARD_ENTERED_FIELD',
@@ -397,6 +412,7 @@ export class BattlefieldManager {
       fromZone,
       toZone: 'BATTLEFIELD',
       isAscension: true,
+      suppressEntryTrigger: options?.suppressEntryTrigger,
       subjectSnapshot: this.snapshotProvider?.(ascensionCardId),
     });
 
@@ -431,27 +447,39 @@ export class BattlefieldManager {
   }
 
   /**
-   * 4.18 装备道具牌给角色
+   * 4.18 装备道具牌给角色 (从手牌/处理区/墓地直接装备视为出场；从战场独立装备改为装备不算出场，Q&A·4)
    */
-  equipToRole(playerId: string, equipmentCardId: string, roleCardId: string): boolean {
+  equipToRole(
+    playerId: string,
+    equipmentCardId: string,
+    roleCardId: string,
+    options?: { suppressEntryTrigger?: boolean }
+  ): boolean {
     if (!this.canEquipToRole(playerId, equipmentCardId, roleCardId)) return false;
     const equipCard = this.state.cards[equipmentCardId]!;
     const roleCard = this.state.cards[roleCardId]!;
+    const prevZone = equipCard.zone;
+    const origSlotIdx = equipCard.slotIndex;
+
+    const nextEqIds = [...getAttachedEquipmentIds(roleCard), equipmentCardId];
+    const moved = this.zoneMgr.moveCard(equipmentCardId, 'BATTLEFIELD', {
+      slotIndex: roleCard.slotIndex,
+      isFaceUp: true,
+      isReady: true,
+      ...(prevZone === 'BATTLEFIELD' ? { skipLeftFieldTrigger: true } : {}),
+    });
+    if (!moved || equipCard.zone !== 'BATTLEFIELD') {
+      return false;
+    }
 
     // 如果装备牌原本单独占位，清空原卡位
-    if (equipCard.zone === 'BATTLEFIELD' && equipCard.slotIndex !== undefined) {
-      const origSlot = this.getSlots(playerId)[equipCard.slotIndex];
+    if (prevZone === 'BATTLEFIELD' && origSlotIdx !== undefined) {
+      const origSlot = this.getSlots(playerId)[origSlotIdx];
       if (origSlot && origSlot.standaloneEquipmentId === equipmentCardId) {
         origSlot.standaloneEquipmentId = undefined;
       }
     }
 
-    const nextEqIds = [...getAttachedEquipmentIds(roleCard), equipmentCardId];
-    this.zoneMgr.moveCard(equipmentCardId, 'BATTLEFIELD', {
-      slotIndex: roleCard.slotIndex,
-      isFaceUp: true,
-      isReady: true,
-    });
     setAttachedEquipmentIds(roleCard, nextEqIds);
 
     this.events.push({
@@ -466,6 +494,18 @@ export class BattlefieldManager {
       targetCardId: roleCardId,
       subjectSnapshot: this.snapshotProvider?.(equipmentCardId),
     });
+    if (prevZone !== 'BATTLEFIELD') {
+      this.onTriggerEventCallback?.({
+        type: 'CARD_ENTERED_FIELD',
+        playerId,
+        cardInstanceId: equipmentCardId,
+        fromZone: prevZone,
+        toZone: 'BATTLEFIELD',
+        isAscension: false,
+        suppressEntryTrigger: options?.suppressEntryTrigger,
+        subjectSnapshot: this.snapshotProvider?.(equipmentCardId),
+      });
+    }
 
     return true;
   }
@@ -473,7 +513,17 @@ export class BattlefieldManager {
   /**
    * 2.2.2.c.2 放置辅助机出场 (玩家战场最多存在1张辅助机)
    */
-  playAssistCard(playerId: string, assistCardId: string, slotIndex: number): boolean {
+  playAssistCard(
+    playerId: string,
+    assistCardId: string,
+    slotIndex: number,
+    options?: {
+      enterTapped?: boolean;
+      enterAbilitiesLost?: boolean;
+      sourceCardNumber?: string;
+      suppressEntryTrigger?: boolean;
+    }
+  ): boolean {
     const slots = this.getSlots(playerId);
     const targetSlot = slots[slotIndex];
     if (!targetSlot) return false;
@@ -489,6 +539,17 @@ export class BattlefieldManager {
     if (targetSlot.roleCardId || targetSlot.standaloneEquipmentId) return false;
     if (targetSlot.assistCardId && !isEffectiveAssist(targetSlot.assistCardId)) return false;
 
+    const fromZone = this.state.cards[assistCardId]?.zone;
+    const moved = this.zoneMgr.moveCard(assistCardId, 'BATTLEFIELD', {
+      slotIndex,
+      isFaceUp: true,
+      isReady: !options?.enterTapped,
+    });
+    const movedCard = this.state.cards[assistCardId];
+    if (!moved || !movedCard || movedCard.zone !== 'BATTLEFIELD') {
+      return false;
+    }
+
     // 8.6.2.e.3 若已有辅助机（且当前有效类型仍为 ASSIST），将其置入墓地替换
     for (const slot of slots) {
       if (slot.assistCardId && isEffectiveAssist(slot.assistCardId)) {
@@ -499,10 +560,30 @@ export class BattlefieldManager {
     }
 
     targetSlot.assistCardId = assistCardId;
-    this.zoneMgr.moveCard(assistCardId, 'BATTLEFIELD', {
+    if (options?.enterAbilitiesLost) {
+      addCardModifier(this.state, movedCard, {
+        loseAbilities: true,
+        untilTurn: undefined,
+        source: options.sourceCardNumber ?? movedCard.cardNumber,
+      });
+    }
+
+    this.events.push({
+      type: 'CARD_PLAYED',
+      playerId,
+      cardInstanceId: assistCardId,
       slotIndex,
-      isFaceUp: true,
-      isReady: true,
+      isAscension: false,
+    });
+    this.onTriggerEventCallback?.({
+      type: 'CARD_ENTERED_FIELD',
+      playerId,
+      cardInstanceId: assistCardId,
+      fromZone,
+      toZone: 'BATTLEFIELD',
+      isAscension: false,
+      suppressEntryTrigger: options?.suppressEntryTrigger,
+      subjectSnapshot: this.snapshotProvider?.(assistCardId),
     });
 
     return true;
@@ -584,21 +665,8 @@ export class BattlefieldManager {
       return false;
     }
 
-    // 8.13.4.a.3 若处于协战状态，离场前先解除协战并将搭档置入墓地
-    if (fromBattlefield && card.partnerCardId) {
-      this.releasePartner(cardInstanceId, true);
-    }
-
     const underIds = fromBattlefield ? [...card.underneathCardIds] : [];
     const eqIds = fromBattlefield ? getAttachedEquipmentIds(card) : [];
-
-    if (fromBattlefield) {
-      for (const slot of this.getSlots(playerId)) {
-        if (slot.roleCardId === cardInstanceId) {
-          slot.roleCardId = undefined;
-        }
-      }
-    }
 
     card.isAirborne = true;
     const moved = this.zoneMgr.moveCard(cardInstanceId, 'PROCESSING', {
@@ -606,7 +674,7 @@ export class BattlefieldManager {
       isReady: true,
       preserveAttachments: fromBattlefield,
     });
-    if (!moved) {
+    if (!moved || card.zone !== 'PROCESSING') {
       card.isAirborne = undefined;
       return false;
     }
@@ -615,14 +683,7 @@ export class BattlefieldManager {
       card.underneathCardIds = underIds;
       setAttachedEquipmentIds(card, eqIds);
       for (const id of [...underIds, ...eqIds]) {
-        const sub = this.state.cards[id];
-        if (sub) {
-          sub.zone = 'PROCESSING';
-          sub.slotIndex = undefined;
-          sub.modifiers = undefined;
-          sub.isFrozen = undefined;
-          sub.isAirborne = undefined;
-        }
+        this.zoneMgr.syncAttachedCardZone(id, 'PROCESSING', { clearTransientState: true });
       }
     }
     return true;
@@ -654,31 +715,29 @@ export class BattlefieldManager {
       return undefined;
     }
 
-    const slot = this.getSlots(playerId)[slotIndex]!;
-    slot.roleCardId = airborne.instanceId;
-    this.zoneMgr.moveCard(airborne.instanceId, 'BATTLEFIELD', {
+    const moved = this.zoneMgr.moveCard(airborne.instanceId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
       isReady: true,
       preserveAttachments: true,
     });
+    if (!moved || airborne.zone !== 'BATTLEFIELD') {
+      return undefined;
+    }
+
+    const slot = this.getSlots(playerId)[slotIndex]!;
+    slot.roleCardId = airborne.instanceId;
     airborne.underneathCardIds = underIds;
     setAttachedEquipmentIds(airborne, eqIds);
     for (const id of underIds) {
-      const uc = this.state.cards[id];
-      if (uc) {
-        uc.zone = 'BATTLEFIELD';
-        uc.slotIndex = undefined;
-      }
+      this.zoneMgr.syncAttachedCardZone(id, 'BATTLEFIELD');
     }
     for (const eqId of eqIds) {
-      if (this.state.cards[eqId]) {
-        const eq = this.state.cards[eqId]!;
-        eq.zone = 'BATTLEFIELD';
-        eq.slotIndex = slotIndex;
-        eq.isFaceUp = true;
-        eq.isReady = true;
-      }
+      this.zoneMgr.syncAttachedCardZone(eqId, 'BATTLEFIELD', {
+        slotIndex,
+        isFaceUp: true,
+        isReady: true,
+      });
     }
 
     this.events.push({
@@ -701,6 +760,82 @@ export class BattlefieldManager {
   }
 
   /**
+   * 统一将指定卡牌置入战场目标角色下方 (经过 ZoneManager.moveCard + 8.10 置换拦截，禁止直写 zone)
+   */
+  placeCardUnderneath(
+    cardInstanceId: string,
+    hostCardId: string,
+    options?: {
+      includeUnderneath?: boolean;
+      actorPlayerId?: string;
+      appliedReplacementIds?: Set<string>;
+      preferredReplacementId?: string;
+    }
+  ): boolean {
+    const card = this.state.cards[cardInstanceId];
+    const host = this.state.cards[hostCardId];
+    if (!card || !host || host.zone !== 'BATTLEFIELD' || host.instanceId === cardInstanceId) {
+      return false;
+    }
+
+    // 1.3.3 / Q&A·10：禁止因效果或我方效果置入角色下方 (BP04-002/003/005/008)
+    const prohibitions = this.evaluateRoleStats(cardInstanceId).prohibitions;
+    if (prohibitions.includes('CANNOT_BE_PLACED_UNDERNEATH')) return false;
+    if (
+      options?.actorPlayerId &&
+      card.controllerPlayerId === options.actorPlayerId &&
+      prohibitions.includes('CANNOT_BE_PLACED_UNDERNEATH_BY_SELF')
+    ) {
+      return false;
+    }
+
+    const wasTopLevelField =
+      card.zone === 'BATTLEFIELD' && this.isTopLevelFieldCard(card.controllerPlayerId, cardInstanceId);
+    const carriedUnderIds = options?.includeUnderneath ? [...(card.underneathCardIds ?? [])] : [];
+
+    const moved = this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
+      isFaceUp: true,
+      isReady: true,
+      isPlacingUnderneath: true,
+      underneathHostId: hostCardId,
+      includeUnderneath: options?.includeUnderneath,
+      preserveAttachments: false,
+      appliedReplacementIds: options?.appliedReplacementIds,
+      preferredReplacementId: options?.preferredReplacementId,
+      skipLeftFieldTrigger: !wasTopLevelField,
+    });
+    if (!moved || card.zone !== 'BATTLEFIELD') {
+      return false;
+    }
+
+    card.controllerPlayerId = host.controllerPlayerId;
+    card.slotIndex = undefined;
+    if (options?.includeUnderneath) {
+      card.underneathCardIds = [];
+    }
+    if (!host.underneathCardIds.includes(cardInstanceId)) {
+      host.underneathCardIds.push(cardInstanceId);
+    }
+
+    for (const carriedId of carriedUnderIds) {
+      const cc = this.state.cards[carriedId];
+      if (!cc || carriedId === host.instanceId) continue;
+      this.zoneMgr.syncAttachedCardZone(carriedId, 'BATTLEFIELD', {
+        slotIndex: undefined,
+        controllerPlayerId: host.controllerPlayerId,
+        isFaceUp: true,
+        isReady: true,
+        clearTransientState: true,
+      });
+      if (!host.underneathCardIds.includes(carriedId)) {
+        host.underneathCardIds.push(carriedId);
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * 8.13.3.d 使指定卡牌成为战场上协战角色的协战搭档
    */
   attachPartner(
@@ -717,83 +852,33 @@ export class BattlefieldManager {
     }
     if (partner.partnerOfCardId) return false;
 
+    const fromDeck = partner.zone === 'DECK';
+
+    const moved = this.zoneMgr.moveCard(partnerCardId, 'BATTLEFIELD', {
+      slotIndex: host.slotIndex,
+      isFaceUp: true,
+      isReady: true,
+      skipLeftFieldTrigger: true,
+      resetStateOnSameZone: true,
+    });
+    if (!moved || partner.zone !== 'BATTLEFIELD') {
+      return false;
+    }
+
     // 8.13.2.a.2 / 8.13.4.c.3 已有搭档时先将原搭档解除协战置入墓地
-    if (host.partnerCardId) {
+    if (host.partnerCardId && host.partnerCardId !== partnerCardId) {
       this.releasePartner(hostRoleCardId, true);
     }
 
-    const fromDeck = partner.zone === 'DECK';
-
-    // 8.13.3.d.3 战场上的卡牌成为搭档时，清空其原有卡位并将下方牌/装备/搭档置入墓地
-    if (partner.zone === 'BATTLEFIELD') {
-      for (const s of this.getSlots(playerId)) {
-        if (s.roleCardId === partnerCardId) s.roleCardId = undefined;
-        if (s.assistCardId === partnerCardId) s.assistCardId = undefined;
-        if (s.standaloneEquipmentId === partnerCardId) s.standaloneEquipmentId = undefined;
-      }
-      if (partner.partnerCardId) {
-        this.releasePartner(partnerCardId, true);
-      }
-      const oldUnder = [...partner.underneathCardIds];
-      const oldEqIds = getAttachedEquipmentIds(partner);
-      partner.underneathCardIds = [];
-      setAttachedEquipmentIds(partner, []);
-      for (const oid of oldUnder) {
-        if (this.state.cards[oid]?.zone === 'BATTLEFIELD') {
-          this.zoneMgr.moveCard(oid, 'GRAVEYARD', {
-            isFaceUp: true,
-            isOrphanCleanup: true,
-            orphanHostCardId: partnerCardId,
-          });
-        }
-      }
-      for (const oldEq of oldEqIds) {
-        if (this.state.cards[oldEq]?.zone === 'BATTLEFIELD') {
-          this.zoneMgr.moveCard(oldEq, 'GRAVEYARD', {
-            isFaceUp: true,
-            isOrphanCleanup: true,
-            orphanHostCardId: partnerCardId,
-          });
-        }
-      }
-    }
-
-    const prevZone = partner.zone;
-    // 8.13.2.b.3 / 8.13.3.d.2 放置到战场紧贴宿主，不继承原有状态，不触发出场能力
-    partner.zone = 'BATTLEFIELD';
-    partner.slotIndex = host.slotIndex;
-    partner.isFaceUp = true;
-    partner.isReady = true;
-    partner.modifiers = undefined;
-    partner.tempPPBonus = undefined;
-    partner.tempDPBonus = undefined;
-    partner.grantedKeywords = undefined;
-    partner.endOfTurnToGraveyard = undefined;
-    partner.isFrozen = undefined;
-    partner.isAirborne = undefined;
-    partner.underneathCardIds = [];
-    setAttachedEquipmentIds(partner, []);
     partner.partnerOfCardId = hostRoleCardId;
     partner.releasePartnerToDeckBottom = options?.releaseToDeckBottom || undefined;
     host.partnerCardId = partnerCardId;
 
-    if (prevZone === 'COST') {
-      this.zoneMgr.syncCostStats(playerId);
-    }
     if (fromDeck) {
       // 8.13.3.b.3 从牌组选择搭档后洗切牌组
       this.zoneMgr.shuffleDeck(playerId);
     }
 
-    this.events.push({
-      type: 'CARD_MOVED',
-      cardInstanceId: partnerCardId,
-      fromZone: prevZone,
-      toZone: 'BATTLEFIELD',
-      toSlot: host.slotIndex,
-      isFaceUp: true,
-      isReady: true,
-    });
     return true;
   }
 
