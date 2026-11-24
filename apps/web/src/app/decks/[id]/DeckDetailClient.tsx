@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useRouteId } from '@/lib/route-id';
+import { useAuth } from '@/lib/auth-context';
+import { apiUrl } from '@/lib/api';
 import Link from 'next/link';
 import {
   ALL_OFFICIAL_CARDS,
@@ -505,6 +507,7 @@ const COST_OPTIONS = ['ALL', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '
 export default function DeckBuilderEditorPage() {
   const router = useRouter();
   const deckId = useRouteId();
+  const { isLoggedIn, authFetch } = useAuth();
 
   const [deckName, setDeckName] = useState('新编制战术卡组');
   const [deckDesc, setDeckDesc] = useState('灰鸦/升格者战术联调构筑');
@@ -852,29 +855,31 @@ export default function DeckBuilderEditorPage() {
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 2500);
 
-    try {
-      fetch('/api/decks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: currentId,
-          name: updatedDeck.name,
-          description: deckDesc,
-          cards: deckEntries.map((e) => ({
-            cardId: e.cardId,
-            cardNumber:
-              e.cardNumber ||
-              cardMap.get(e.cardId)?.cardNumber ||
-              e.cardId.replace(/^c-/, '').toUpperCase(),
-            count: e.count,
-            imageUrl: e.imageUrl,
-            variantKey: e.variantKey,
-            variantBadge: e.variantBadge,
-            variantStar: e.variantStar,
-          })),
-        }),
-      }).catch(() => {});
-    } catch {}
+    if (isLoggedIn) {
+      try {
+        authFetch(apiUrl('/api/decks'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: currentId,
+            name: updatedDeck.name,
+            description: deckDesc,
+            cards: deckEntries.map((e) => ({
+              cardId: e.cardId,
+              cardNumber:
+                e.cardNumber ||
+                cardMap.get(e.cardId)?.cardNumber ||
+                e.cardId.replace(/^c-/, '').toUpperCase(),
+              count: e.count,
+              imageUrl: e.imageUrl,
+              variantKey: e.variantKey,
+              variantBadge: e.variantBadge,
+              variantStar: e.variantStar,
+            })),
+          }),
+        }).catch(() => {});
+      } catch {}
+    }
 
     if (deckId === 'new' || isOfficialPreset) {
       router.replace(`/decks/${currentId}`);

@@ -70,13 +70,23 @@ describe('Phase 7 Deck Builder REST APIs (卡组管理与构筑验证接口)', (
     expect(deckNames.some((name: string) => name.includes('ST03'))).toBe(true);
   });
 
-  it('3. POST & PUT & DELETE /api/decks - 构筑生命周期与规则校验', async () => {
+  it('3. POST & PUT & DELETE /api/decks - 构筑生命周期与规则校验 (需登录鉴权)', async () => {
+    const loginRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'player1', password: '123456' },
+    });
+    expect(loginRes.statusCode).toBe(200);
+    const { token, user } = JSON.parse(loginRes.payload);
+    const authHeaders = { authorization: `Bearer ${token}` };
+
     // 1. 创建新卡组
     const createRes = await app.fastify.inject({
       method: 'POST',
       url: '/api/decks',
+      headers: authHeaders,
       payload: {
-        userId: 'commander-1',
+        userId: 'forged-user-id',
         name: '自定义极速突击卡组',
         description: '测试自定义卡组',
       },
@@ -84,12 +94,14 @@ describe('Phase 7 Deck Builder REST APIs (卡组管理与构筑验证接口)', (
     expect(createRes.statusCode).toBe(200);
     const created = JSON.parse(createRes.payload).data;
     expect(created.name).toBe('自定义极速突击卡组');
+    expect(created.userId).toBe(user.id);
     expect(created.isValid).toBe(false);
 
     // 2. 保存非法张数卡组 (未满50张)
     const updateInvalidRes = await app.fastify.inject({
       method: 'PUT',
       url: `/api/decks/${created.id}`,
+      headers: authHeaders,
       payload: {
         name: '更新卡组名',
         cards: [
@@ -109,6 +121,7 @@ describe('Phase 7 Deck Builder REST APIs (卡组管理与构筑验证接口)', (
     const delRes = await app.fastify.inject({
       method: 'DELETE',
       url: `/api/decks/${created.id}`,
+      headers: authHeaders,
     });
     expect(delRes.statusCode).toBe(200);
     expect(JSON.parse(delRes.payload).success).toBe(true);

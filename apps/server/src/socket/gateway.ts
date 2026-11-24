@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Server, Socket } from 'socket.io';
 import {
   ClientToServerEvents,
@@ -16,19 +17,22 @@ import { MetricsService } from '../services/metrics-service.js';
 export interface SocketIdentity {
   userId: string;
   username: string;
-  /** 是否通过 JWT 登录凭据认证 (false 表示游客身份) */
+  /** 是否通过登录用户 JWT 认证 (false 表示游客身份) */
   isAuthenticated: boolean;
 }
 
 export interface GatewayOptions {
-  /** 校验握手携带的 JWT，返回登录用户身份；无效时返回 null */
-  resolveToken?: (token: string) => Promise<{ userId: string; username: string } | null>;
-  /** 判断某个 userId 是否属于已注册账号 (游客不得冒用注册账号的 ID) */
+  /** 校验握手携带的 JWT，返回登录用户或签名游客身份；无效时返回 null */
+  resolveToken?: (token: string) => Promise<{ userId: string; username: string; isGuest?: boolean } | null>;
+  /** 判断某个 userId 是否属于已注册账号 (保留兼容扩展) */
   isRegisteredUserId?: (userId: string) => Promise<boolean>;
 }
 
-const GUEST_ID_PATTERN = /^[A-Za-z0-9_\-.:]{1,64}$/;
 const MAX_USERNAME_LENGTH = 32;
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 function sanitizeUsername(raw: unknown, fallback: string): string {
   if (typeof raw !== 'string') return fallback;
@@ -111,32 +115,30 @@ export function setupSocketGateway(
     }
   }
 
-  // 握手阶段确定连接身份：优先使用 JWT 登录凭据，否则作为游客接入
+  // 握手阶段确定连接身份：优先使用登录 JWT 或服务端签发的游客 JWT，否则分配全新随机游客 ID
   io.use(async (socket, next) => {
-    const fallbackGuestId = `guest_${socket.id.substring(0, 8)}`;
+    const fallbackGuestId = `guest_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     try {
       const token = (socket.handshake.auth as any)?.token;
       if (typeof token === 'string' && token && options.resolveToken) {
         const resolved = await options.resolveToken(token);
         if (resolved) {
+          const isGuest = Boolean(resolved.isGuest);
           socket.data.identity = {
             userId: resolved.userId,
-            username: sanitizeUsername(resolved.username, resolved.userId),
-            isAuthenticated: true,
+            username: isGuest
+              ? sanitizeUsername(socket.handshake.query.username, sanitizeUsername(resolved.username, resolved.userId))
+              : sanitizeUsername(resolved.username, resolved.userId),
+            isAuthenticated: !isGuest,
           } satisfies SocketIdentity;
           return next();
         }
       }
 
-      const rawUserId = socket.handshake.query.userId;
-      let guestId = typeof rawUserId === 'string' && GUEST_ID_PATTERN.test(rawUserId) ? rawUserId : fallbackGuestId;
-      // 游客不得冒用已注册账号的 userId (否则可读取其手牌等隐藏信息)
-      if (guestId !== fallbackGuestId && options.isRegisteredUserId && (await options.isRegisteredUserId(guestId))) {
-        guestId = fallbackGuestId;
-      }
+      // 彻底废弃未签名的 handshake.query.userId，杜绝游客之间互相冒充
       socket.data.identity = {
-        userId: guestId,
-        username: sanitizeUsername(socket.handshake.query.username, `指挥官_${guestId.substring(0, 8)}`),
+        userId: fallbackGuestId,
+        username: sanitizeUsername(socket.handshake.query.username, `指挥官_${fallbackGuestId.substring(0, 8)}`),
         isAuthenticated: false,
       } satisfies SocketIdentity;
       next();
@@ -166,8 +168,21 @@ export function setupSocketGateway(
     // ---------------------------------------------
     // 房间通信 (Room Events)
     // ---------------------------------------------
-    socket.on('room:join', async ({ roomId, title, password, username: pUsername }) => {
+    socket.on('room:join', async (rawPayload: unknown) => {
       try {
+        if (!isPlainObject(rawPayload) || typeof rawPayload.roomId !== 'string' || !rawPayload.roomId.trim()) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '加入房间参数格式非法',
+          });
+          return;
+        }
+        const { roomId, title, password, username: pUsername } = rawPayload as {
+          roomId: string;
+          title?: string;
+          password?: string;
+          username?: string;
+        };
         // 游客允许在加入时更新展示昵称；登录用户以账号昵称为准
         if (!identity.isAuthenticated) {
           username = sanitizeUsername(pUsername, username);
@@ -235,8 +250,16 @@ export function setupSocketGateway(
       } catch {}
     });
 
-    socket.on('room:ready', async ({ roomId, isReady, deckId, customDeck }: any) => {
+    socket.on('room:ready', async (rawPayload: unknown) => {
       try {
+        if (!isPlainObject(rawPayload)) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '准备请求格式非法',
+          });
+          return;
+        }
+        const { roomId, isReady, deckId, customDeck } = rawPayload as any;
         const effectiveRoomId = findJoinedRoomId(roomId);
         if (!effectiveRoomId) {
           socket.emit('game:error', {
@@ -265,8 +288,10 @@ export function setupSocketGateway(
       }
     });
 
-    socket.on('room:select_deck', async ({ roomId, deckId, customDeck }: any) => {
+    socket.on('room:select_deck', async (rawPayload: unknown) => {
       try {
+        if (!isPlainObject(rawPayload)) return;
+        const { roomId, deckId, customDeck } = rawPayload as any;
         const effectiveRoomId = findJoinedRoomId(roomId);
         if (!effectiveRoomId) return;
 
@@ -350,8 +375,20 @@ export function setupSocketGateway(
     // ---------------------------------------------
     // 对局核心交互 (Authoritative Game Actions)
     // ---------------------------------------------
-    socket.on('game:action', async ({ gameId, action }) => {
+    socket.on('game:action', async (rawPayload: unknown) => {
       try {
+        if (
+          !isPlainObject(rawPayload) ||
+          typeof rawPayload.gameId !== 'string' ||
+          !isPlainObject(rawPayload.action)
+        ) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '行动参数格式非法',
+          });
+          return;
+        }
+        const { gameId, action } = rawPayload as { gameId: string; action: any };
         const actionStart = Date.now();
         // 1. 防刷与 DoS 速率限制 (Rate Limiting: 1秒内最多15次操作)
         if (isRateLimited(userId)) {
@@ -417,8 +454,24 @@ export function setupSocketGateway(
     // ---------------------------------------------
     // 玩家提交决策 (Choice Selection)
     // ---------------------------------------------
-    socket.on('game:choice', async ({ gameId, pendingChoiceId, selectedIds }) => {
+    socket.on('game:choice', async (rawPayload: unknown) => {
       try {
+        if (
+          !isPlainObject(rawPayload) ||
+          typeof rawPayload.gameId !== 'string' ||
+          typeof rawPayload.pendingChoiceId !== 'string'
+        ) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '决策参数格式非法',
+          });
+          return;
+        }
+        const { gameId, pendingChoiceId, selectedIds } = rawPayload as {
+          gameId: string;
+          pendingChoiceId: string;
+          selectedIds?: unknown;
+        };
         if (isRateLimited(userId)) {
           socket.emit('game:error', {
             code: ErrorCode.RATE_LIMIT_EXCEEDED,

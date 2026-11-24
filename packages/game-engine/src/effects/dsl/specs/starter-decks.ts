@@ -1,5 +1,7 @@
 import type { CardEffectSpec } from '../types.js';
 import { validateCardEffectRegistry } from '../validator.js';
+import { MemoryCardDatabase } from '../../../database/card-registry.js';
+import { OFFICIAL_CARDS_DATA } from '../../../database/official-cards-data.js';
 import { ST01_EFFECT_SPECS } from './st01.js';
 import { ST02_EFFECT_SPECS } from './st02.js';
 import { ST03_EFFECT_SPECS } from './st03.js';
@@ -32,7 +34,7 @@ export const STARTER_DECK_EFFECT_SPECS: readonly CardEffectSpec[] = [
 ];
 
 /**
- * 经结构校验后的声明式效果总索引 (启动加载时即验证，格式错误直接抛出异常)
+ * 经结构校验后的声明式效果总索引 (启动加载时即与官方全卡表交叉验证，格式或卡号/卡名错误直接抛出异常)
  */
 export const STARTER_DECK_SPEC_MAP: ReadonlyMap<string, CardEffectSpec> =
-  validateCardEffectRegistry(STARTER_DECK_EFFECT_SPECS);
+  validateCardEffectRegistry(STARTER_DECK_EFFECT_SPECS, new MemoryCardDatabase(OFFICIAL_CARDS_DATA));

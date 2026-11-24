@@ -20,11 +20,15 @@ export interface DeckValidationResult {
 }
 
 /**
- * 提取核心卡牌编号 (2.7.3 部分卡牌编号末尾会记述有小写字母 a、b、c等。该部分不视为卡牌编号)
+ * 提取核心卡牌编号 (2.7.3 部分卡牌编号末尾会记述有小写字母 a、b、c 或【冠军】等异画标识，不视为独立卡牌编号)
  * 注意：必须严格匹配小写字母，不能大小写无关匹配，避免误删类似 ORB-RED 的大写标识
  */
 export function extractCoreCardNumber(cardNumber: string): string {
-  return cardNumber.replace(/[a-z]+$/, '').trim();
+  return cardNumber
+    .trim()
+    .replace(/【[^】]+】$/g, '')
+    .replace(/[a-z]+$/, '')
+    .trim();
 }
 
 /**
@@ -39,7 +43,7 @@ export function validateDeck(deckCards: DeckCardInput[]): DeckValidationResult {
   const cardCopies: Record<string, number> = {};
 
   for (const card of deckCards) {
-    if (card.count <= 0) {
+    if (!Number.isInteger(card.count) || card.count <= 0) {
       errors.push(`卡牌 ${card.name} (${card.cardNumber}) 数量非法: ${card.count}`);
       continue;
     }

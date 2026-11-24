@@ -1,5 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import { ClientToServerEvents, ServerToClientEvents } from '@zhanshuang/shared';
+import { apiUrl } from './api';
 
 type EventHandler = (...args: any[]) => void;
 
@@ -255,7 +256,94 @@ export function resetSocket(): void {
 const AUTH_USER_KEY = 'zhanshuang_auth_user';
 const AUTH_TOKEN_KEY = 'zhanshuang_auth_token';
 const GUEST_ID_KEY = 'zs_user_id';
+const GUEST_TOKEN_KEY = 'zs_guest_token';
+const GUEST_VERIFIED_SESSION_KEY = 'zs_guest_verified';
 const LEGACY_SHARED_GUEST_IDS = new Set(['guest', 'guest_lobby', 'host']);
+let pendingGuestSessionPromise: Promise<{ id: string; token: string } | null> | null = null;
+
+function isGuestTokenStillValid(token: string): boolean {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    const base64 = parts[1]!.replace(/-/g, '+').replace(/_/g, '/');
+    const json = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='));
+    const payload = JSON.parse(json) as { exp?: number };
+    const now = Math.floor(Date.now() / 1000);
+    return typeof payload.exp !== 'number' || payload.exp > now + 60;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 为未登录游客向服务端申请/续期签名游客凭据，防止客户端自报 guestId 冒充他人。
+ * 失败时静默返回 null，不阻塞页面加载。
+ */
+export async function ensureGuestSession(nickname?: string): Promise<{ id: string; token: string } | null> {
+  if (typeof window === 'undefined') return null;
+  const authUser = readAuthUser();
+  try {
+    if (authUser?.id && localStorage.getItem(AUTH_TOKEN_KEY)) return null;
+  } catch {}
+
+  try {
+    const existingToken = localStorage.getItem(GUEST_TOKEN_KEY);
+    const existingId = localStorage.getItem(GUEST_ID_KEY);
+    if (
+      sessionStorage.getItem(GUEST_VERIFIED_SESSION_KEY) === '1' &&
+      existingToken &&
+      existingId &&
+      !LEGACY_SHARED_GUEST_IDS.has(existingId) &&
+      isGuestTokenStillValid(existingToken)
+    ) {
+      return { id: existingId, token: existingToken };
+    }
+  } catch {}
+
+  if (pendingGuestSessionPromise) return pendingGuestSessionPromise;
+
+  pendingGuestSessionPromise = (async () => {
+    try {
+      let existingToken: string | null = null;
+      let storedNick = nickname;
+      try {
+        existingToken = localStorage.getItem(GUEST_TOKEN_KEY);
+        if (!storedNick) storedNick = localStorage.getItem('zs_username') || undefined;
+      } catch {}
+
+      const res = await fetch(apiUrl('/api/auth/guest'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(existingToken ? { token: existingToken } : {}),
+          ...(storedNick ? { nickname: storedNick } : {}),
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const guestId: string | undefined = data?.user?.id || data?.data?.guest?.id;
+      const guestToken: string | undefined = data?.token || data?.data?.token;
+      if (!data?.success || !guestId || !guestToken) return null;
+
+      try {
+        const prevId = localStorage.getItem(GUEST_ID_KEY);
+        localStorage.setItem(GUEST_ID_KEY, guestId);
+        localStorage.setItem(GUEST_TOKEN_KEY, guestToken);
+        sessionStorage.setItem(GUEST_VERIFIED_SESSION_KEY, '1');
+        if (socketInstance && prevId !== guestId) {
+          resetSocket();
+        }
+      } catch {}
+      return { id: guestId, token: guestToken };
+    } catch {
+      return null;
+    } finally {
+      pendingGuestSessionPromise = null;
+    }
+  })();
+
+  return pendingGuestSessionPromise;
+}
 
 function readAuthUser(): { id?: string; username?: string; nickname?: string } | null {
   try {
@@ -345,9 +433,9 @@ function pathFromLocation(): string | null {
   return `/ws/${match[1]}/${match[2]}`;
 }
 
-function buildNativeWsUrl(path: string, userId: string, username: string, token: string | null): string {
+function buildNativeWsUrl(path: string, username: string, token: string | null): string {
   const baseWs = getSocketUrl().replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
-  const query = new URLSearchParams({ guestId: userId, nickname: username });
+  const query = new URLSearchParams({ nickname: username });
   if (token) query.set('token', token);
   return `${baseWs}${path}?${query.toString()}`;
 }
@@ -356,19 +444,22 @@ function buildNativeWsUrl(path: string, userId: string, username: string, token:
  * 获取全局唯一 Socket 连接。
  * - 默认使用 Socket.IO，对接 Node 版服务端 (apps/server，本地 / 局域网 / 内网穿透部署)；
  * - 构建时设置 NEXT_PUBLIC_WS_TRANSPORT=native 时使用原生 WebSocket，对接 Cloudflare 版 (apps/worker)。
- * 身份以握手为准：登录用户携带 JWT，游客使用本浏览器唯一的游客 ID。
+ * 身份以握手为准：登录用户携带登录 JWT，游客携带服务端签发的游客 JWT。
  */
 export function getSocket(userId?: string, username?: string): TypedSocket {
   if (!socketInstance) {
     const serverUrl = getSocketUrl();
     const authUser = typeof window !== 'undefined' ? readAuthUser() : null;
-    let token: string | null = null;
+    let authToken: string | null = null;
+    let guestToken: string | null = null;
     if (typeof window !== 'undefined') {
       try {
-        token = localStorage.getItem(AUTH_TOKEN_KEY);
+        authToken = localStorage.getItem(AUTH_TOKEN_KEY);
+        guestToken = localStorage.getItem(GUEST_TOKEN_KEY);
       } catch {}
     }
 
+    const token = authUser?.id && authToken ? authToken : guestToken;
     const requestedId = userId && !LEGACY_SHARED_GUEST_IDS.has(userId) ? userId : undefined;
     const finalUserId = authUser?.id || requestedId || getGuestUserId();
     const finalUsername =
@@ -386,7 +477,6 @@ export function getSocket(userId?: string, username?: string): TypedSocket {
     if (!useNative) {
       socketInstance = io(serverUrl, {
         query: {
-          userId: finalUserId,
           username: finalUsername,
         },
         auth: token ? { token } : {},
@@ -398,7 +488,7 @@ export function getSocket(userId?: string, username?: string): TypedSocket {
       }) as TypedSocket;
     } else {
       socketInstance = new NativeWebSocketClient(null, finalUserId, (path) =>
-        buildNativeWsUrl(path, finalUserId, finalUsername, token)
+        buildNativeWsUrl(path, finalUsername, token)
       );
     }
   }

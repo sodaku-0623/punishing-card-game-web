@@ -34,7 +34,7 @@ import {
 
 export default function RoomsLobbyPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isLoading: authLoading = false } = useAuth();
 
   const [rooms, setRooms] = useState<PublicRoomState[]>([]);
   const [loading, setLoading] = useState(false);
@@ -76,14 +76,16 @@ export default function RoomsLobbyPage() {
     useGameStore.getState().reset();
   }, []);
 
-  // 当前浏览器的真实身份 (登录用户 ID 或本机唯一游客 ID)
+  // 当前浏览器的真实身份 (登录用户 ID 或服务端签发的本机唯一游客 ID)
   const [currentUserId, setCurrentUserId] = useState<string>('');
   useEffect(() => {
+    if (authLoading) return;
     setCurrentUserId(user?.id || getSocketUserId());
-  }, [user]);
+  }, [user, authLoading]);
 
   useEffect(() => {
     fetchRooms();
+    if (authLoading) return;
     // 页面不可见时暂停轮询，回到前台立即刷新
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') fetchRooms();
@@ -124,7 +126,7 @@ export default function RoomsLobbyPage() {
       socket.off('room:closed', handleRoomDeleted);
       socket.off('room:state_updated', handleRoomStateUpdated);
     };
-  }, [user]);
+  }, [user, authLoading]);
 
   const handleOpenCreateModal = () => {
     const defaultName = user?.nickname ? `${user.nickname}的作战推演` : '空中花园特遣战术室';

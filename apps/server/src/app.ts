@@ -22,7 +22,7 @@ import {
 import { RoomManager } from './services/room-manager.js';
 import { GameSessionManager } from './services/game-session-manager.js';
 import { setupSocketGateway } from './socket/gateway.js';
-import { validateDeck, DeckCardInput } from '@zhanshuang/game-rules';
+import { validateDeck, DeckCardInput, findOfficialStarterDeck } from '@zhanshuang/game-rules';
 import { MetricsService } from './services/metrics-service.js';
 
 const SCRYPT_PREFIX = 'scrypt';
@@ -272,6 +272,9 @@ export async function createServerApp(options?: {
   const verifyUser = async (req: any, reply: any) => {
     try {
       await req.jwtVerify();
+      if (req.user?.role === 'GUEST' || req.user?.isGuest) {
+        return reply.code(401).send({ success: false, error: '游客身份无权执行此操作，请先登录注册账号' });
+      }
     } catch (err) {
       return reply.code(401).send({ success: false, error: '未登录或登录凭据已过期，请重新登录' });
     }
@@ -368,6 +371,72 @@ export async function createServerApp(options?: {
     };
   });
 
+  /**
+   * 签发或刷新签名游客凭据：防止客户端自报伪造他人 guestId
+   */
+  fastify.post('/api/auth/guest', async (req) => {
+    const rawBody =
+      req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? (req.body as Record<string, any>)
+        : {};
+    const authHeader = req.headers.authorization;
+    const candidateToken =
+      (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+        ? authHeader.substring(7).trim()
+        : '') || (typeof rawBody.token === 'string' ? rawBody.token.trim() : '');
+
+    let guestId: string | null = null;
+    let existingNickname = '';
+    if (candidateToken) {
+      try {
+        const payload = fastify.jwt.verify<{
+          userId?: string;
+          nickname?: string;
+          role?: string;
+          isGuest?: boolean;
+        }>(candidateToken);
+        if (
+          payload?.userId &&
+          payload.userId.startsWith('guest_') &&
+          (payload.role === 'GUEST' || payload.isGuest)
+        ) {
+          const collision = await userRepo.findById(payload.userId);
+          if (!collision) {
+            guestId = payload.userId;
+            existingNickname = payload.nickname || '';
+          }
+        }
+      } catch {
+        // 失效或不可信游客令牌，重新签发
+      }
+    }
+
+    if (!guestId) {
+      guestId = `guest_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    }
+    const requestedNickname =
+      typeof rawBody.nickname === 'string' ? rawBody.nickname.trim().slice(0, 32) : '';
+    const nickname = requestedNickname || existingNickname || `指挥官_${guestId.slice(0, 8)}`;
+
+    const token = fastify.jwt.sign({
+      userId: guestId,
+      username: guestId,
+      nickname,
+      role: 'GUEST',
+      isGuest: true,
+    });
+    const guestSummary = { id: guestId, username: guestId, nickname, role: 'GUEST' as const };
+    return {
+      success: true,
+      token,
+      user: guestSummary,
+      data: {
+        token,
+        guest: { id: guestId, nickname },
+      },
+    };
+  });
+
   fastify.get('/api/auth/me', { preHandler: [verifyUser] }, async (req: any, reply) => {
     const user = await userRepo.findById(req.user.userId);
     if (!user) {
@@ -426,12 +495,15 @@ export async function createServerApp(options?: {
     return { success: true, data: roomMgr.listRooms() };
   });
 
-  fastify.post('/api/rooms', async (req) => {
-    const body = (req.body as any) || {};
-    const title = body.title?.trim() || '空中花园特遣战术室';
-    const creatorId = body.creatorId || 'host';
-    const creatorName = body.creatorName || '指挥官';
-    const customRoomId = body.roomId?.trim() || undefined;
+  fastify.post('/api/rooms', { preHandler: [verifyAdmin] }, async (req, reply) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return reply.code(400).send({ success: false, error: '请求体格式非法' });
+    }
+    const body = req.body as any;
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : '空中花园特遣战术室';
+    const creatorId = typeof body.creatorId === 'string' && body.creatorId.trim() ? body.creatorId.trim() : 'host';
+    const creatorName = typeof body.creatorName === 'string' && body.creatorName.trim() ? body.creatorName.trim() : '指挥官';
+    const customRoomId = typeof body.roomId === 'string' && body.roomId.trim() ? body.roomId.trim() : undefined;
     const res = await roomMgr.createRoom(creatorId, creatorName, title, body.password, customRoomId);
     return res;
   });
@@ -445,7 +517,7 @@ export async function createServerApp(options?: {
     return { success: true, data: room };
   });
 
-  fastify.delete('/api/rooms/:id', async (req, reply) => {
+  fastify.delete('/api/rooms/:id', { preHandler: [verifyAdmin] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const ok = await roomMgr.closeRoom(id);
     if (!ok) {
@@ -470,23 +542,41 @@ export async function createServerApp(options?: {
     return { success: true, data: deck };
   });
 
-  fastify.post('/api/decks', async (req, reply) => {
+  fastify.post('/api/decks', { preHandler: [verifyUser] }, async (req: any, reply) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return reply.code(400).send({ success: false, error: '请求体格式非法' });
+    }
     const body = req.body as {
       id?: string;
-      userId?: string;
-      name: string;
+      name?: string;
       description?: string;
       cards?: { cardId?: string; cardNumber?: string; count: number; imageUrl?: string }[];
     };
-    const userId = body.userId || 'user_default';
-    let deck = body.id ? await deckRepo.findById(body.id) : null;
-    if (deck && deck.userId !== userId) {
+    const userId = req.user.userId as string;
+    const targetDeckId = typeof body.id === 'string' && body.id.trim() ? body.id.trim() : undefined;
+    if (targetDeckId && findOfficialStarterDeck(targetDeckId)) {
+      return reply.code(403).send({ success: false, error: '系统预组只读，不可修改' });
+    }
+    let deck = targetDeckId ? await deckRepo.findById(targetDeckId) : null;
+    if (deck && (deck.userId === 'system' || deck.userId !== userId)) {
       return reply.code(403).send({ success: false, error: '无权修改系统预组或其他玩家的卡组' });
     }
+    const deckName = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 64) : '未命名卡组';
+    if (body.cards !== undefined) {
+      if (!Array.isArray(body.cards) || body.cards.length > 200) {
+        return reply.code(400).send({ success: false, error: '卡牌列表格式或条目数量非法' });
+      }
+      for (const item of body.cards) {
+        if (!item || typeof item !== 'object' || !Number.isInteger(item.count) || item.count <= 0) {
+          return reply.code(400).send({ success: false, error: '卡牌数量必须为正整数' });
+        }
+      }
+    }
+
     if (!deck) {
-      deck = await deckRepo.create(userId, body.name, body.description, body.id);
+      deck = await deckRepo.create(userId, deckName, body.description, targetDeckId);
     } else {
-      deck = await deckRepo.update(deck.id, body.name, body.description);
+      deck = await deckRepo.update(deck.id, deckName, body.description);
     }
     let valResult: any = undefined;
     if (body.cards && body.cards.length > 0) {
@@ -498,7 +588,10 @@ export async function createServerApp(options?: {
           c = await cardRepo.findByCardNumber(item.cardNumber);
         }
         if (!c && item.cardId) {
-          const cleaned = item.cardId.replace(/^c-/, '').toUpperCase();
+          const cleaned = item.cardId
+            .replace(/^c-/, '')
+            .replace(/-champion$/i, '【冠军】')
+            .toUpperCase();
           c = await cardRepo.findByCardNumber(cleaned);
         }
         if (c) {
@@ -519,19 +612,35 @@ export async function createServerApp(options?: {
     return { success: true, data: updated, validation: valResult };
   });
 
-  fastify.put('/api/decks/:id', async (req, reply) => {
+  fastify.put('/api/decks/:id', { preHandler: [verifyUser] }, async (req: any, reply) => {
     const { id } = req.params as { id: string };
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return reply.code(400).send({ success: false, error: '请求体格式非法' });
+    }
     const body = req.body as {
       name?: string;
       description?: string;
       cards?: { cardId?: string; cardNumber?: string; count: number; imageUrl?: string }[];
     };
+    if (findOfficialStarterDeck(id)) {
+      return reply.code(403).send({ success: false, error: '系统预组不可修改' });
+    }
     let deck = await deckRepo.findById(id);
     if (!deck) {
       return reply.code(404).send({ success: false, error: 'Deck not found' });
     }
-    if (deck.userId === 'system') {
-      return reply.code(403).send({ success: false, error: '系统预组不可修改' });
+    if (deck.userId === 'system' || deck.userId !== req.user.userId) {
+      return reply.code(403).send({ success: false, error: deck.userId === 'system' ? '系统预组不可修改' : '无权修改其他玩家的卡组' });
+    }
+    if (body.cards !== undefined) {
+      if (!Array.isArray(body.cards) || body.cards.length > 200) {
+        return reply.code(400).send({ success: false, error: '卡牌列表格式或条目数量非法' });
+      }
+      for (const item of body.cards) {
+        if (!item || typeof item !== 'object' || !Number.isInteger(item.count) || item.count <= 0) {
+          return reply.code(400).send({ success: false, error: '卡牌数量必须为正整数' });
+        }
+      }
     }
     if (body.name || body.description !== undefined) {
       deck = await deckRepo.update(id, body.name, body.description);
@@ -544,6 +653,13 @@ export async function createServerApp(options?: {
         let c = item.cardId ? await cardRepo.findById(item.cardId) : null;
         if (!c && item.cardNumber) {
           c = await cardRepo.findByCardNumber(item.cardNumber);
+        }
+        if (!c && item.cardId) {
+          const cleaned = item.cardId
+            .replace(/^c-/, '')
+            .replace(/-champion$/i, '【冠军】')
+            .toUpperCase();
+          c = await cardRepo.findByCardNumber(cleaned);
         }
         if (c) {
           normalizedCards.push({ cardId: c.id, count: item.count, imageUrl: item.imageUrl });
@@ -562,11 +678,17 @@ export async function createServerApp(options?: {
     return { success: true, data: deck, validation: valResult };
   });
 
-  fastify.delete('/api/decks/:id', async (req, reply) => {
+  fastify.delete('/api/decks/:id', { preHandler: [verifyUser] }, async (req: any, reply) => {
     const { id } = req.params as { id: string };
-    const existing = await deckRepo.findById(id);
-    if (existing?.userId === 'system') {
+    if (findOfficialStarterDeck(id)) {
       return reply.code(403).send({ success: false, error: '系统预组不可删除' });
+    }
+    const existing = await deckRepo.findById(id);
+    if (!existing) {
+      return reply.code(404).send({ success: false, error: 'Deck not found' });
+    }
+    if (existing.userId === 'system' || existing.userId !== req.user.userId) {
+      return reply.code(403).send({ success: false, error: existing.userId === 'system' ? '系统预组不可删除' : '无权删除其他玩家的卡组' });
     }
     const deleted = await deckRepo.delete(id);
     return { success: deleted };
@@ -783,9 +905,25 @@ export async function createServerApp(options?: {
   setupSocketGateway(io, roomMgr, gameSessionMgr, {
     resolveToken: async (token) => {
       try {
-        const payload = fastify.jwt.verify<{ userId: string }>(token);
-        const user = payload?.userId ? await userRepo.findById(payload.userId) : null;
-        return user ? { userId: user.id, username: user.nickname || user.username } : null;
+        const payload = fastify.jwt.verify<{
+          userId: string;
+          nickname?: string;
+          role?: string;
+          isGuest?: boolean;
+        }>(token);
+        if (!payload?.userId) return null;
+        if (payload.role === 'GUEST' || payload.isGuest) {
+          if (!payload.userId.startsWith('guest_')) return null;
+          const collision = await userRepo.findById(payload.userId);
+          if (collision) return null;
+          return {
+            userId: payload.userId,
+            username: payload.nickname || `指挥官_${payload.userId.slice(0, 8)}`,
+            isGuest: true,
+          };
+        }
+        const user = await userRepo.findById(payload.userId);
+        return user ? { userId: user.id, username: user.nickname || user.username, isGuest: false } : null;
       } catch {
         return null;
       }

@@ -73,6 +73,9 @@ const VALID_MOVE_ZONES = new Set([
   'BATTLEFIELD',
 ]);
 const VALID_ZONES = new Set(['DECK', 'HAND', 'BATTLEFIELD', 'COST', 'SIGNAL_ORB', 'GRAVEYARD', 'PROCESSING']);
+const VALID_PLAY_FROM_ZONES = new Set(['HAND', 'GRAVEYARD', 'UNDERNEATH']);
+const VALID_PLAY_SACRIFICE_ZONES = new Set(['HAND', 'BATTLEFIELD', 'COST', 'SIGNAL_ORB', 'GRAVEYARD']);
+const VALID_REPLACEMENT_EVENTS = new Set(['DESTROY_ROLE', 'MOVE_CARD', 'DEAL_DAMAGE']);
 const VALID_ORB_COLORS = new Set(['RED', 'BLUE', 'YELLOW']);
 const VALID_TRIGGER_MATCHERS = new Set([
   'EQUIPPED_ROLE_ATTACKING',
@@ -471,6 +474,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         assertNonNegativeInt(min, `${sp}.min`);
         assertPositiveInt(max, `${sp}.max`);
         assert(min <= max, `${sp}.min (${min}) 不能大于 max (${max})`);
+        if (step.maxTotalCost !== undefined) assertPositiveInt(step.maxTotalCost, `${sp}.maxTotalCost`);
         validateFilter(step.filter, `${sp}.filter`);
         validateFilter(step.eligibilityFilter, `${sp}.eligibilityFilter`);
         assert(step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
@@ -665,7 +669,15 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         if (step.amount !== undefined) assertPositiveInt(step.amount, `${sp}.amount`);
         break;
       case 'REGISTER_REPLACEMENT':
+        assert(VALID_REPLACEMENT_EVENTS.has(step.eventType), `${sp}.eventType 非法: ${String(step.eventType)}`);
         validateTarget(step.target, vars, `${sp}.target`);
+        assert(
+          step.action && (step.action.kind === 'PREVENT' || step.action.kind === 'REDIRECT_ZONE'),
+          `${sp}.action.kind 非法`
+        );
+        if (step.action.kind === 'REDIRECT_ZONE') {
+          assert(VALID_ZONES.has(step.action.zone), `${sp}.action.zone 非法: ${String(step.action.zone)}`);
+        }
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法`);
         break;
       case 'MODIFY_STATS': {
@@ -807,6 +819,7 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
   validateNumberExpr(eff.costDelta, `${path}.costDelta`);
   validateNumberExpr(eff.setCost, `${path}.setCost`);
   if (eff.unblockableMaxPP !== undefined) assertNonNegativeInt(eff.unblockableMaxPP, `${path}.unblockableMaxPP`);
+  if (eff.orbValue !== undefined) assertPositiveInt(eff.orbValue, `${path}.orbValue`);
   if (eff.canAttackReadyRolesMaxCost !== undefined) {
     assertNonNegativeInt(eff.canAttackReadyRolesMaxCost, `${path}.canAttackReadyRolesMaxCost`);
   }
@@ -862,12 +875,21 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
   if (spec.vanillaEntry && (spec.entry || spec.entries?.length)) {
     throw new Error(`卡牌声明式效果校验失败：${spec.cardNumber} 不能同时标记 vanillaEntry=true 与配置 entry`);
   }
+  if (spec.entry && spec.entries?.length) {
+    throw new Error(`卡牌声明式效果校验失败：${spec.cardNumber} 不能同时配置 entry 与 entries`);
+  }
+  if (spec.activate && spec.activates?.length) {
+    throw new Error(`卡牌声明式效果校验失败：${spec.cardNumber} 不能同时配置 activate 与 activates`);
+  }
 
   if (spec.ignoreAttributeCondition) {
     validateCondition(spec.ignoreAttributeCondition, new Set(), `${spec.cardNumber}.ignoreAttributeCondition`);
   }
   if (spec.playFromZones !== undefined) {
     assert(Array.isArray(spec.playFromZones) && spec.playFromZones.length > 0, `${spec.cardNumber}.playFromZones 不能为空`);
+    spec.playFromZones.forEach((z) =>
+      assert(VALID_PLAY_FROM_ZONES.has(z), `${spec.cardNumber}.playFromZones 非法值: ${String(z)}`)
+    );
   }
   if (spec.usableZones !== undefined) {
     assert(Array.isArray(spec.usableZones) && spec.usableZones.length > 0, `${spec.cardNumber}.usableZones 不能为空`);
@@ -925,6 +947,9 @@ export function validateCardEffectSpec(spec: CardEffectSpec, cardDb?: ICardDatab
   }
   if (spec.playSacrificeDiscount) {
     assert(spec.playSacrificeDiscount.zones.length > 0, `${spec.cardNumber}.playSacrificeDiscount.zones 不能为空`);
+    spec.playSacrificeDiscount.zones.forEach((z) =>
+      assert(VALID_PLAY_SACRIFICE_ZONES.has(z), `${spec.cardNumber}.playSacrificeDiscount.zones 非法值: ${String(z)}`)
+    );
     validateFilter(spec.playSacrificeDiscount.filter, `${spec.cardNumber}.playSacrificeDiscount.filter`);
     assert(
       spec.playSacrificeDiscount.setCost !== undefined || spec.playSacrificeDiscount.discount !== undefined,

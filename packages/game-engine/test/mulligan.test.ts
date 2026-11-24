@@ -171,5 +171,19 @@ describe('开局手牌调度阶段 (5.2.1.e Mulligan Phase)', () => {
     });
     expect(resIllegal.success).toBe(false);
     expect(resIllegal.error).toContain('不在手牌中');
+
+    // p1 试图提交重复卡牌 ID 刷牌抽空牌库
+    const p1Hand = engine.zoneMgr.getCardsInZone('p1', 'HAND');
+    const dupId = p1Hand[0]!.instanceId;
+    const resDuplicate = engine.applyAction({
+      type: 'RESOLVE_MULLIGAN',
+      playerId: 'p1',
+      cardInstanceIdsToBottom: [dupId, dupId, dupId],
+    });
+    expect(resDuplicate.success).toBe(false);
+    expect(resDuplicate.error).toContain('重复 ID');
+    expect(engine.zoneMgr.getCardsInZone('p1', 'HAND')).toHaveLength(4);
+    expect(engine.zoneMgr.getCardsInZone('p1', 'DECK')).toHaveLength(46);
+    expect(engine.getState().players.p1!.hasMulliganed).toBe(false);
   });
 });

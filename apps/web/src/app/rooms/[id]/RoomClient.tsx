@@ -57,7 +57,7 @@ function RoomWaitingContent() {
   const roomId = useRouteId();
   const titleParam = searchParams.get('title') || '';
 
-  const { user } = useAuth();
+  const { user, isLoading: authLoading = false } = useAuth();
 
   const [room, setRoom] = useState<PublicRoomState | null>(null);
   const [availableDecks, setAvailableDecks] = useState<DeckOption[]>(DEFAULT_DECKS);
@@ -101,6 +101,7 @@ function RoomWaitingContent() {
   }, []);
 
   useEffect(() => {
+    if (authLoading) return;
     const currentUserId = user?.id || getSocketUserId();
     const currentUsername = user?.nickname || user?.username || getSocketUsername();
     const socket = getSocket(currentUserId, currentUsername);
@@ -202,7 +203,7 @@ function RoomWaitingContent() {
       socket.off('game:sync_state', handleSyncState);
       socket.off('game:error', handleError);
     };
-  }, [roomId, titleParam, router]);
+  }, [roomId, titleParam, router, authLoading]);
 
   function handleSubmitPassword(e: React.FormEvent) {
     e.preventDefault();

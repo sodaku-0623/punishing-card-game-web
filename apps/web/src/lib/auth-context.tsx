@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { resetSocket } from './socket';
+import { ensureGuestSession, resetSocket } from './socket';
 import { apiUrl } from './api';
 
 export interface User {
@@ -34,8 +34,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // 初始化从 localStorage 读取凭据并静默验证有效性
+  // 初始化从 localStorage 读取凭据并静默验证有效性；未登录时签发签名游客凭据
   useEffect(() => {
+    let cancelled = false;
     try {
       const storedToken = localStorage.getItem(TOKEN_KEY);
       const storedUser = localStorage.getItem(USER_KEY);
@@ -43,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const parsedUser = JSON.parse(storedUser);
         setToken(storedToken);
         setUser(parsedUser);
+        setIsLoading(false);
 
         // 后台静默校验 token 是否仍然有效
         fetch(apiUrl('/api/auth/me'), {
@@ -63,12 +65,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .catch(() => {
             // 网络离线时保留缓存凭证
           });
+        return () => {
+          cancelled = true;
+        };
       }
     } catch (e) {
       console.error('Failed to load auth state from localStorage:', e);
-    } finally {
-      setIsLoading(false);
     }
+
+    ensureGuestSession()
+      .catch(() => null)
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const login = async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
@@ -170,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem(USER_KEY);
     } catch {}
     resetSocket();
+    ensureGuestSession().catch(() => null);
   }, []);
 
   const authFetch = useCallback(

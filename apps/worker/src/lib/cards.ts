@@ -14,6 +14,11 @@ export function findOfficialCard(idOrNumber?: string): CardVersionData | undefin
   if (!idOrNumber || typeof idOrNumber !== 'string') return undefined;
   const direct = OFFICIAL_CARD_DB.getCard(idOrNumber);
   if (direct) return direct;
+  const championMatch = idOrNumber.match(/([A-Z]{2,}\d*-\d+)(?:【冠军】|-champion)/i);
+  if (championMatch) {
+    const champCard = OFFICIAL_CARD_DB.getCard(`${championMatch[1]!.toUpperCase()}【冠军】`);
+    if (champCard) return champCard;
+  }
   const match = idOrNumber.match(/([A-Z]{2,}\d*-\d+)/i);
   return match ? OFFICIAL_CARD_DB.getCard(match[1]!.toUpperCase()) : undefined;
 }

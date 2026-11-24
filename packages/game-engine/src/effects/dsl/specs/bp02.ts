@@ -1250,10 +1250,10 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // BP02-028 拉弥亚·深谣  强压层流 (6费 升变；官方数据卡名含两个空格)
+  // BP02-028 拉弥亚·深谣 强压层流 (6费 升变)
   {
     cardNumber: 'BP02-028',
-    name: '拉弥亚·深谣  强压层流',
+    name: '拉弥亚·深谣 强压层流',
     entry: {
       steps: [
         { op: 'REVEAL_TOP', count: 4, saveToVar: 'revealed' },

@@ -130,45 +130,49 @@ function calculatePercentiles(latencies) {
   return { min, max, mean, p50, p90, p95, p99 };
 }
 
+async function issueGuestSession(nickname) {
+  const res = await fetch(`${SERVER_URL}/api/auth/guest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data?.token || !data?.user?.id) throw new Error('游客签发失败');
+  return { userId: data.user.id, token: data.token };
+}
+
 async function runSingleRoom(roomIndex, stats) {
-  const p1Id = `stress_p1_${roomIndex}_${Date.now()}`;
-  const p2Id = `stress_p2_${roomIndex}_${Date.now()}`;
   const roomId = `stress_rm_${roomIndex}_${Date.now()}`;
   const roomTitle = `压测房间_${roomIndex}`;
 
+  let g1;
+  let g2;
   try {
-    const res = await fetch(`${SERVER_URL}/api/rooms`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        roomId,
-        title: roomTitle,
-        creatorId: p1Id,
-        creatorName: `灰鸦测试员1_${roomIndex}`,
-      }),
-    });
-    if (!res.ok) {
-      stats.failedRooms++;
-      return false;
-    }
+    [g1, g2] = await Promise.all([
+      issueGuestSession(`灰鸦测试员1_${roomIndex}`),
+      issueGuestSession(`升格测试员2_${roomIndex}`),
+    ]);
   } catch {
     stats.failedRooms++;
     return false;
   }
+  const p1Id = g1.userId;
+  const p2Id = g2.userId;
 
   const socketOptions1 = {
     transports: ['websocket'],
     reconnection: false,
     timeout: 10000,
-    query: { userId: p1Id, username: `灰鸦测试员1_${roomIndex}` },
-    auth: { userId: p1Id, username: `灰鸦测试员1_${roomIndex}` },
+    query: { username: `灰鸦测试员1_${roomIndex}` },
+    auth: { token: g1.token },
   };
   const socketOptions2 = {
     transports: ['websocket'],
     reconnection: false,
     timeout: 10000,
-    query: { userId: p2Id, username: `升格测试员2_${roomIndex}` },
-    auth: { userId: p2Id, username: `升格测试员2_${roomIndex}` },
+    query: { username: `升格测试员2_${roomIndex}` },
+    auth: { token: g2.token },
   };
 
   const sock1 = io(SERVER_URL, socketOptions1);
@@ -206,8 +210,8 @@ async function runSingleRoom(roomIndex, stats) {
 
     const onConnected = () => {
       if (sock1.connected && sock2.connected) {
-        sock1.emit('room:join', { roomId, userId: p1Id, username: `灰鸦测试员1_${roomIndex}` });
-        sock2.emit('room:join', { roomId, userId: p2Id, username: `升格测试员2_${roomIndex}` });
+        sock1.emit('room:join', { roomId, title: roomTitle, username: `灰鸦测试员1_${roomIndex}` });
+        sock2.emit('room:join', { roomId, username: `升格测试员2_${roomIndex}` });
       }
     };
 

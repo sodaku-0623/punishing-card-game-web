@@ -60,7 +60,7 @@ export default function GameTabletopPage() {
   const router = useRouter();
   // 真实对局 ID (已解码；静态导出部署时从地址栏读取，见 src/lib/route-id.tsx)
   const gameId = useRouteId();
-  const { user } = useAuth();
+  const { user, isLoading: authLoading = false } = useAuth();
 
   const {
     gameState,
@@ -194,6 +194,7 @@ export default function GameTabletopPage() {
 
   // 初始化 Socket 连接并同步重连状态
   useEffect(() => {
+    if (authLoading) return;
     useGameStore.getState().reset();
     setIsOpponentDisconnected(false);
     setSelectedBattlefieldCardId(null);
@@ -278,7 +279,7 @@ export default function GameTabletopPage() {
       socket.off('game:error');
       socket.off('game:ended');
     };
-  }, [gameId, user, setMyUserId, updateGameState, setPendingChoice, appendEvents, setLastError, setGameOverResult]);
+  }, [gameId, user, authLoading, setMyUserId, updateGameState, setPendingChoice, appendEvents, setLastError, setGameOverResult]);
 
   const handleExitGame = (isSurrender = false) => {
     const authId = user?.id || getSocketUserId();

@@ -207,10 +207,14 @@ export const EXACT_IMPLEMENTED_CARD_LIST: readonly string[] = [
 
 export const EXACT_IMPLEMENTED_CARDS: ReadonlySet<string> = new Set(EXACT_IMPLEMENTED_CARD_LIST);
 
-/** 去除同编号异画末尾小写字母 (2.7.3)，如 ST01-001a → ST01-001 */
+/** 去除同编号异画末尾小写字母或【冠军】等标识 (2.7.3)，如 ST01-001a → ST01-001、BP02-022【冠军】 → BP02-022 */
 function normalizeCardNumber(cardNumber: string | undefined): string {
   if (!cardNumber) return '';
-  return cardNumber.trim().replace(/[a-z]+$/, '');
+  return cardNumber
+    .trim()
+    .replace(/【[^】]+】$/g, '')
+    .replace(/[a-z]+$/, '')
+    .trim();
 }
 
 /**
