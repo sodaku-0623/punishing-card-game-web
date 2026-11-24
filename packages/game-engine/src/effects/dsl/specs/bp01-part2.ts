@@ -1213,7 +1213,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
             yesLabel: '查看牌组顶 2 张',
             noLabel: '不查看',
             onYes: [
-              { op: 'REVEAL_TOP', count: 2, saveToVar: 'topCards' },
+              { op: 'PEEK_TOP', count: 2, saveToVar: 'topCards' },
               {
                 op: 'CHOOSE_FROM_VAR',
                 varName: 'topCards',

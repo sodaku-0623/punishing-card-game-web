@@ -66,14 +66,26 @@ function assertNoHiddenInfoLeak(engine: GameEngine): void {
     const opponentId = playerIds.find((id) => id !== viewerId)!;
     const pub: PublicGameState = engine.getPublicState(viewerId);
 
-    // 1. publicCards 绝不包含对手的 HAND / DECK 卡牌
-    for (const card of Object.values(pub.publicCards)) {
+    // 1. publicCards 绝不包含对手的 HAND / DECK 卡牌，也不包含对手暗费或双方背面信号球的真实 instanceId
+    const secretIds = new Set(
+      Object.values(state.cards)
+        .filter(
+          (c) =>
+            (c.zone === 'COST' && !c.isFaceUp && c.controllerPlayerId === opponentId) ||
+            (c.zone === 'SIGNAL_ORB' && !c.isFaceUp)
+        )
+        .map((c) => c.instanceId)
+    );
+    for (const [key, card] of Object.entries(pub.publicCards)) {
+      expect(secretIds.has(key)).toBe(false);
+      expect(secretIds.has(card.instanceId)).toBe(false);
       if (card.controllerPlayerId === opponentId) {
         expect(card.zone).not.toBe('HAND');
         expect(card.zone).not.toBe('DECK');
 
-        // 2. 对手背面暗费彻底脱敏 (含 cardNumber / cardId / imageUrl / modifiers / effectiveStats)
+        // 2. 对手背面暗费彻底脱敏 (含 instanceId / cardNumber / cardId / imageUrl / modifiers / effectiveStats)
         if (card.zone === 'COST' && !card.isFaceUp) {
+          expect(card.instanceId.startsWith('hidden-cost:')).toBe(true);
           expect(card.cardNumber).toBe('HIDDEN_COST');
           expect(card.cardId).toBe('HIDDEN_COST');
           expect(card.imageUrl).toBeUndefined();
@@ -86,6 +98,7 @@ function assertNoHiddenInfoLeak(engine: GameEngine): void {
 
         // 3. 对手背面信号球彻底脱敏
         if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp) {
+          expect(card.instanceId.startsWith('hidden-orb:')).toBe(true);
           expect(card.cardNumber).toBe('HIDDEN_ORB');
           expect(card.cardId).toBe('HIDDEN_ORB');
           expect(card.imageUrl).toBeUndefined();
@@ -106,6 +119,18 @@ function assertNoHiddenInfoLeak(engine: GameEngine): void {
     // 5. 待处理决策若属于对手，则不暴露给己方
     if (state.currentPendingChoice && state.currentPendingChoice.playerId !== viewerId) {
       expect(pub.currentPendingChoice).toBeUndefined();
+    }
+
+    // 6. 事件脱敏绝不泄露 PRNG seed、对手 drawnCardIds 或对手私有 CHOICE_REQUIRED
+    const sanitizedEvents = engine.getSanitizedEvents(engine.getEvents(), viewerId);
+    for (const evt of sanitizedEvents) {
+      if (evt.type === 'GAME_STARTED') {
+        expect(evt.seed).toBe(0);
+      } else if (evt.type === 'CARDS_DRAWN' && evt.playerId === opponentId) {
+        expect(evt.drawnCardIds).toBeUndefined();
+      } else if (evt.type === 'CHOICE_REQUIRED') {
+        expect(evt.pendingChoice.playerId).toBe(viewerId);
+      }
     }
   }
 }

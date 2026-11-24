@@ -410,4 +410,89 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     expect(def?.assistConfig?.partnerFilter?.traits).toContain('塞西莉');
     expect(def?.imageUrl).toBe('/cards/ST06-001.png');
   });
+
+  it('Socket 联机 game:events 按玩家视角脱敏，不泄露对手 drawnCardIds 与私有 CHOICE_REQUIRED', async () => {
+    const regA = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'ev-san-alice', password: 'password123' },
+    });
+    const regB = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'ev-san-bob', password: 'password123' },
+    });
+    const alice = JSON.parse(regA.body);
+    const bob = JSON.parse(regB.body);
+
+    const decksRes = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/decks',
+      headers: { authorization: `Bearer ${alice.token}` },
+    });
+    const sysDeckId = JSON.parse(decksRes.body).data[0].id as string;
+
+    const s1 = await connect({ token: alice.token });
+    const s2 = await connect({ token: bob.token });
+
+    const s1Events: any[] = [];
+    const s2Events: any[] = [];
+    let s1State: any;
+    let s2State: any;
+    s1.on('game:events', (evts) => s1Events.push(...evts));
+    s2.on('game:events', (evts) => s2Events.push(...evts));
+    s1.on('game:sync_state', (st) => { s1State = st; });
+    s2.on('game:sync_state', (st) => { s2State = st; });
+
+    const roomId = 'sec-event-sanitization-room';
+    s1.emit('room:join', { roomId });
+    await wait(80);
+    s2.emit('room:join', { roomId });
+    await wait(80);
+
+    s1.emit('room:ready', { roomId, isReady: true, deckId: sysDeckId });
+    s2.emit('room:ready', { roomId, isReady: true, deckId: sysDeckId });
+    await wait(80);
+
+    s1.emit('room:start', { roomId });
+    await wait(250);
+
+    const gameId = s1State.gameId as string;
+    expect(gameId).toBeDefined();
+    expect(s2State?.gameId).toBe(gameId);
+
+    // 双方提交调度 (分别放回 1 张手牌触发 MULLIGAN 抽牌 + 进入回合 1 抽牌)
+    s1.emit('game:action', {
+      gameId,
+      action: { type: 'RESOLVE_MULLIGAN', playerId: alice.user.id, cardInstanceIdsToBottom: [s1State.myHandCards[0].instanceId] },
+    });
+    await wait(60);
+    s2.emit('game:action', {
+      gameId,
+      action: { type: 'RESOLVE_MULLIGAN', playerId: bob.user.id, cardInstanceIdsToBottom: [s2State.myHandCards[0].instanceId] },
+    });
+    await wait(250);
+
+    const aliceDrawsOnS1 = s1Events.filter((e) => e.type === 'CARDS_DRAWN' && e.playerId === alice.user.id);
+    const bobDrawsOnS1 = s1Events.filter((e) => e.type === 'CARDS_DRAWN' && e.playerId === bob.user.id);
+    const bobDrawsOnS2 = s2Events.filter((e) => e.type === 'CARDS_DRAWN' && e.playerId === bob.user.id);
+    const aliceDrawsOnS2 = s2Events.filter((e) => e.type === 'CARDS_DRAWN' && e.playerId === alice.user.id);
+
+    expect(aliceDrawsOnS1.length).toBeGreaterThanOrEqual(1);
+    expect(bobDrawsOnS1.length).toBeGreaterThanOrEqual(1);
+    expect(bobDrawsOnS2.length).toBeGreaterThanOrEqual(1);
+    expect(aliceDrawsOnS2.length).toBeGreaterThanOrEqual(1);
+
+    for (const e of aliceDrawsOnS1) expect(Array.isArray(e.drawnCardIds) && e.drawnCardIds.length > 0).toBe(true);
+    for (const e of bobDrawsOnS1) expect('drawnCardIds' in e).toBe(false);
+    for (const e of bobDrawsOnS2) expect(Array.isArray(e.drawnCardIds) && e.drawnCardIds.length > 0).toBe(true);
+    for (const e of aliceDrawsOnS2) expect('drawnCardIds' in e).toBe(false);
+
+    for (const e of s1Events) {
+      if (e.type === 'CHOICE_REQUIRED') expect(e.pendingChoice.playerId).toBe(alice.user.id);
+    }
+    for (const e of s2Events) {
+      if (e.type === 'CHOICE_REQUIRED') expect(e.pendingChoice.playerId).toBe(bob.user.id);
+    }
+  });
 });

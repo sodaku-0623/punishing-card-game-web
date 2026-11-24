@@ -1668,7 +1668,7 @@ describe('BP03 核心卡牌机制扩展测试', () => {
     expect(engine.dispatchAction({ type: 'PLAY_CARD', playerId: 'p1', cardInstanceId: bp03063.instanceId }).success).toBe(true);
     // 第 1 个【出】查看顶1张(BP03-066)选择不送墓放回牌组顶；第 2 个【出】拼点声明 BP03-066 为 7 (> 2) -> p1 抽 1 张
     expect(engine.getState().currentPendingChoice?.effectType).toBe('DSL_BP03-063_PEEK_MILL');
-    pickChoice(engine, 'p1', ['opt_no']);
+    pickChoice(engine, 'p1', []);
     expect(engine.getState().currentPendingChoice?.effectType).toBe('DSL_LILITH_DECLARE_BP03-066');
     pickChoice(engine, 'p1', ['7']);
     expect(engine.zoneMgr.getCardsInZone('p1', 'HAND')).toHaveLength(handBefore + 1);

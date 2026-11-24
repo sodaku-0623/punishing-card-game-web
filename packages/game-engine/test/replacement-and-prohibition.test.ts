@@ -831,7 +831,16 @@ describe('「视为」持续效果 (信号球颜色 / 等效数量 / 卡牌名�
     engine.zoneMgr.moveCard(redOrb.instanceId, 'SIGNAL_ORB', { isFaceUp: false });
 
     expect(engine.continuousEffects.getEffectiveOrbInfo(redOrb.instanceId).isOrb).toBe(false);
-    expect(sanitizeGameStateForPlayer(state, active).publicCards[redOrb.instanceId]!.cardNumber).toBe('HIDDEN_ORB');
-    expect(sanitizeGameStateForPlayer(state, opp).publicCards[redOrb.instanceId]!.cardNumber).toBe('HIDDEN_ORB');
+    for (const viewer of [active, opp]) {
+      const pub = sanitizeGameStateForPlayer(state, viewer);
+      expect(pub.publicCards[redOrb.instanceId]).toBeUndefined();
+      const hiddenOrbs = Object.values(pub.publicCards).filter(
+        (c) => c.zone === 'SIGNAL_ORB' && !c.isFaceUp
+      );
+      expect(hiddenOrbs.length).toBeGreaterThanOrEqual(1);
+      expect(hiddenOrbs.every((c) => c.cardNumber === 'HIDDEN_ORB' && c.instanceId.startsWith('hidden-orb:'))).toBe(
+        true
+      );
+    }
   });
 });
