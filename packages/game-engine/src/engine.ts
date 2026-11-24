@@ -129,6 +129,7 @@ export class GameEngine {
     this.replacementEngine.setSendCardToGraveyardHandler((cid, sentByEffectOrCost) => {
       this.zoneMgr.moveCard(cid, 'GRAVEYARD', { isFaceUp: true, sentByEffectOrCost });
     });
+    this.replacementEngine.setChoiceEnqueuer((ch) => enqueuePendingChoice(this.state, ch));
     this.zoneMgr.setWanshimingChargeHandler((playerId, cardInstanceId, attackerCardId) => {
       const card = this.state.cards[cardInstanceId];
       const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
@@ -477,18 +478,23 @@ export class GameEngine {
             success = res.success;
             error = res.error;
           } else if (targetCard && targetDef) {
-            const res = this.effectEngine.handleUseNonTacticsInstant(
-              action.playerId,
-              targetCard,
-              targetDef,
-              action.costCardInstanceIds
-            );
-            success = res.success;
-            error = res.error;
-            if (success && this.state.timingWindow) {
-              this.state.timingWindow.consecutivePasses = 0;
-              this.state.timingWindow.priorityPlayerId = this.getOpponentId(action.playerId);
-              this.state.priorityPlayerId = this.state.timingWindow.priorityPlayerId;
+            if (!this.state.timingWindow || this.state.timingWindow.priorityPlayerId !== action.playerId) {
+              success = false;
+              error = '当前不在您的【瞬时】优先权时机 (7.3.1.b / 10.8)';
+            } else {
+              const res = this.effectEngine.handleUseNonTacticsInstant(
+                action.playerId,
+                targetCard,
+                targetDef,
+                action.costCardInstanceIds
+              );
+              success = res.success;
+              error = res.error;
+              if (success && this.state.timingWindow) {
+                this.state.timingWindow.consecutivePasses = 0;
+                this.state.timingWindow.priorityPlayerId = this.getOpponentId(action.playerId);
+                this.state.priorityPlayerId = this.state.timingWindow.priorityPlayerId;
+              }
             }
           } else {
             success = false;
@@ -1510,6 +1516,95 @@ export class GameEngine {
       this.state.endPhaseStep = 'CLEANUP';
       this.state.currentPendingChoice = undefined;
       advancePendingChoice(this.state);
+      return { success: true };
+    }
+
+    // BP01-017 露西亚·深红囚影：可选离场置换（送墓<小太刀>和<大太刀>改为不离场，或放弃置换让其离场）
+    if (choice.effectType === 'BP01_017_OPTIONAL_LEAVE_REPLACEMENT') {
+      const meta = (choice.metadata ?? {}) as {
+        cardInstanceId?: string;
+        smallId?: string;
+        largeId?: string;
+        originalEvent?:
+          | {
+              type: 'DESTROY_ROLE';
+              reason: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+              attackerCardId?: string;
+              combatCannotDealDamage?: boolean;
+            }
+          | {
+              type: 'MOVE_CARD';
+              toZone: CardInstance['zone'];
+              isFaceUp?: boolean;
+              isReady?: boolean;
+              toBottom?: boolean;
+              sentByEffectOrCost?: boolean;
+            };
+      };
+      this.state.currentPendingChoice = undefined;
+      const picked = action.selectedIds[0];
+      const card = meta.cardInstanceId ? this.state.cards[meta.cardInstanceId] : undefined;
+      if (card && card.zone === 'BATTLEFIELD') {
+        if (picked === 'replace' && meta.smallId && meta.largeId) {
+          const eqIds = getAttachedEquipmentIds(card);
+          if (eqIds.includes(meta.smallId) && eqIds.includes(meta.largeId)) {
+            const remain = eqIds.filter((id) => id !== meta.smallId && id !== meta.largeId);
+            card.attachedEquipmentId = remain[0];
+            card.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;
+            this.zoneMgr.moveCard(meta.smallId, 'GRAVEYARD', { isFaceUp: true });
+            this.zoneMgr.moveCard(meta.largeId, 'GRAVEYARD', { isFaceUp: true });
+          }
+        } else if (meta.originalEvent) {
+          const skipSelf = new Set<string>(['builtin:BP01-017_LEAVE_REPLACEMENT']);
+          if (meta.originalEvent.type === 'DESTROY_ROLE') {
+            const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
+            const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
+              isFaceUp: true,
+              appliedReplacementIds: skipSelf,
+            });
+            if (moved) {
+              this.events.push({
+                type: 'CARD_DESTROYED',
+                cardInstanceId: card.instanceId,
+                reason: meta.originalEvent.reason,
+              });
+              this.triggerMgr.emit({
+                type: 'CARD_DESTROYED',
+                playerId: card.controllerPlayerId,
+                cardInstanceId: card.instanceId,
+                destroyReason: meta.originalEvent.reason,
+                subjectSnapshot: snapshot,
+              });
+              if (
+                meta.originalEvent.reason === 'BATTLE' &&
+                meta.originalEvent.attackerCardId &&
+                !meta.originalEvent.combatCannotDealDamage
+              ) {
+                const atkId = meta.originalEvent.attackerCardId;
+                const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
+                if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
+                  this.zoneMgr.applyDamageToPlayer(
+                    card.controllerPlayerId,
+                    RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+                    atkId
+                  );
+                }
+              }
+            }
+          } else {
+            this.zoneMgr.moveCard(card.instanceId, meta.originalEvent.toZone, {
+              isFaceUp: meta.originalEvent.isFaceUp,
+              isReady: meta.originalEvent.isReady,
+              toBottom: meta.originalEvent.toBottom,
+              sentByEffectOrCost: meta.originalEvent.sentByEffectOrCost,
+              appliedReplacementIds: skipSelf,
+            });
+          }
+        }
+      }
+      if (!this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
       return { success: true };
     }
 

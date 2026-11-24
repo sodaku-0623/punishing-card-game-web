@@ -772,6 +772,8 @@ export interface DeclarativeStaticEffectSpec {
   setDP?: NumberExpr;
   setBaseDP?: NumberExpr;
   charge?: NumberExpr;
+  /** true 表示以「获得【充能+X】能力」形式赋予 (Q&A·1 BP01-050：宿主失去能力时该【充能+1】一并失去) */
+  chargeIsAbility?: boolean;
   setCharge?: NumberExpr;
   keywords?: string[];
   addTraits?: string[];

@@ -66,14 +66,14 @@
 
 ### 2.4 全表关键卡牌致命失效、作弊与暗区泄密止血（建议 2 个 PR）
 
-- [ ] **PR #33 新增越权与暗区泄密止血**：
-  - `engine.ts:479-493` 与 `card-effects.ts:3046-3049` 为 `USE_INSTANT` 补齐 `timingWindow.priorityPlayerId === action.playerId` 校验，禁止跨优先权抢发非战术瞬时；
-  - `BP01-028/030/039`（`bp01-part2.ts`）与 `BP02_048`（`custom-handlers.ts:187-190`）检索 `COST` 区强制加 `isFaceUp: true`，严禁暴露或牺牲背面暗费（3.6.3.b.2）；
-  - `interpreter.ts:2381-2420,2762-2771,2803-2818,3908-3914` 修复 `SIGNAL_ORB` 背面球在 `CHOOSE_ZONE_CARDS` / `REORDER_ZONE` / `PLACE_ORB_AT_POSITION` / `signalOrbColor` 中的明文泄漏，以及 `BP03_059` 公开手牌不移入公开区且不洗回牌组的问题。
+- [x] **PR #33 新增越权与暗区泄密止血**（已在 `fix/stage1b-instant-hidden-and-bp01-st04` 完成）：
+  - `engine.ts` 与 `card-effects.ts` 为 `USE_INSTANT` 补齐 `timingWindow.priorityPlayerId === action.playerId` 校验，禁止跨优先权抢发非战术瞬时；
+  - `BP01-028/030/039`（`bp01-part2.ts`）与 `BP02_048`（`custom-handlers.ts`）检索 `COST` 区强制加 `isFaceUp: true`，严禁暴露或牺牲背面暗费（3.6.3.b.2）；
+  - `interpreter.ts` 修复 `SIGNAL_ORB` 背面球在 `CHOOSE_ZONE_CARDS` / `REORDER_ZONE` / `PLACE_ORB_AT_POSITION` / `signalOrbColor` 中的明文泄漏，以及 `BP03_059` 公开手牌移入公开区并与牌组顶公开牌一并洗回牌组。
 - [ ] **修复既有与新迁移卡的关键白嫖/空壳/必败 Bug**：
-  - `BP01-057/058`：保存并校验 `requiredMin`，禁止 2 张可选弃牌代价只丢 1 张白嫖（`interpreter.ts:1510-1525,2604-2609`）；
-  - 修复全表 **白板/空桩/死分支/必败卡**：`BP03-002` & `BP04-071`（支持手牌【起】直接浮空至 `PROCESSING`）、`BP03-004`（第 1 项从处理区拉出浮空誓焰）、`BP03-010`（补全战术 steps）、`BP03-042`（第 2 项清下方全破横置 & 第 1 项排除自身）、`BP03-075`（蓝球送墓减费）、`BP03-057`/`060`/`062`、`BP04-012`（修复虚构选项并改为标准红球【充能自】派发 `SIGNATURE_MOVE_EFFECT`）、`BP04-015`（补全【回合2】自伤抽牌触发器）、`BP04-035`（补全攻击结束拉搭档与墓地赋速攻）、`BP04-047`（补全墓地【游戏1】替身抗攻）、`BP04-059`（补全墓地回底叠牌触发器与统计过滤）、`PR-015`（补全下方赋予宿主离场【自】）、`PR-020`（补齐第 2 项从《杼菱》下方拉出升变角色）、`PR-028`（补全第 2 项回手并过滤 `isAirborne`）；
-  - 修复 `ST04-001/002`（多张《荣光护盾》独立追踪 Q&A·7 & `deferOncePerTurnUntilCostPaid` 10.1.2.b）、`ST04-003`（限定在战场才置底）、`BP01-007`（Q&A·7）、`BP01-049~052`（Q&A·2）、`BP01-017`（可选离场）、`BP01-025/050`（Q&A·1）、`BP04-040`（禁止自身消球代价计入卡列尼娜次数）、`PR-041`（辅助机变角色卡槽防误杀与入露娜下方同步转移原下方牌）。
+  - [x] `BP01-057/058`：保存并校验 `requiredMin`，禁止 2 张可选弃牌代价只丢 1 张白嫖（`interpreter.ts`，已在 `fix/stage1b-instant-hidden-and-bp01-st04` 完成）；
+  - [x] `ST04-001/002`（多张《荣光护盾》独立追踪 Q&A·7 & `deferOncePerTurnUntilCostPaid` 10.1.2.b）、`ST04-003`（限定在战场才置底）、`BP01-007`（Q&A·7）、`BP01-049~052`（Q&A·2）、`BP01-017`（可选离场）、`BP01-025/050`（Q&A·1）（已在 `fix/stage1b-instant-hidden-and-bp01-st04` 完成）；
+  - [ ] 修复全表 **白板/空桩/死分支/必败卡**（Stage 1B-2）：`BP03-002` & `BP04-071`（支持手牌【起】直接浮空至 `PROCESSING`）、`BP03-004`（第 1 项从处理区拉出浮空誓焰）、`BP03-010`（补全战术 steps）、`BP03-042`（第 2 项清下方全破横置 & 第 1 项排除自身）、`BP03-075`（蓝球送墓减费）、`BP03-057`/`060`/`062`、`BP04-012`（修复虚构选项并改为标准红球【充能自】派发 `SIGNATURE_MOVE_EFFECT`）、`BP04-015`（补全【回合2】自伤抽牌触发器）、`BP04-035`（补全攻击结束拉搭档与墓地赋速攻）、`BP04-040`（禁止自身消球代价计入卡列尼娜次数）、`BP04-047`（补全墓地【游戏1】替身抗攻）、`BP04-059`（补全墓地回底叠牌触发器与统计过滤）、`PR-015`（补全下方赋予宿主离场【自】）、`PR-020`（补齐第 2 项从《杼菱》下方拉出升变角色）、`PR-028`（补全第 2 项回手并过滤 `isAirborne`）、`PR-041`（辅助机变角色卡槽防误杀与入露娜下方同步转移原下方牌）。
 
 ---
 

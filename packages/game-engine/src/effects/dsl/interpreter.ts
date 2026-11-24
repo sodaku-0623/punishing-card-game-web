@@ -36,7 +36,7 @@ type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 type PendingDslAction =
-  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
+  | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; requiredMin?: number; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
   | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
   | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string }
   | { kind: 'COST_PAY_COST'; amount: number; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string }
@@ -1090,20 +1090,27 @@ export class DeclarativeEffectInterpreter {
                 if (!blockerId) return [];
                 const blocker = state.cards[blockerId];
                 if (!blocker || !fieldMgr.isSlotRole(blocker.controllerPlayerId, blockerId)) return [];
-                if (!continuousEffects.hasGrantedTrigger(blockerId, trig.abilityId)) return [];
+                const grantKeys = continuousEffects.getGrantedTriggerKeys(blockerId, trig.abilityId);
+                if (grantKeys.length === 0) return [];
                 if (!condOk(blocker.controllerPlayerId, blockerId)) return [];
-                return [
-                  {
+                // Q&A·7 (ST04-001 荣光护盾)：多张《荣光护盾》对同一角色赋予的能力各自独立，分别拥有独立的【回合1】计次
+                return grantKeys.map((grantKey, idx) => {
+                  const onceKey = `${blocker.instanceId}:${trig.abilityId}:${grantKey}`;
+                  return {
                     sourceCardInstanceId: blocker.instanceId,
                     sourceCardNumber: blocker.cardNumber,
                     controllerPlayerId: blocker.controllerPlayerId,
-                    label: trig.label,
+                    label: grantKeys.length > 1 ? `${trig.label} (#${idx + 1})` : trig.label,
+                    oncePerTurnKey: onceKey,
                     triggerContext: {
                       blockerCardId: blocker.instanceId,
                       attackerCardId: event.cardInstanceId,
+                      oncePerTurnKey: onceKey,
+                      // 仅当赋予位于 loseAbilities 之后才会保留于 grantKeys 中 (Q&A·3)
+                      sourceAbilitiesLostAtTrigger: false,
                     },
-                  },
-                ];
+                  };
+                });
               }
               case 'FRIENDLY_ROLE_BLOCKING': {
                 const blockerId = event.cardInstanceId;
@@ -1480,6 +1487,7 @@ export class DeclarativeEffectInterpreter {
                 ...(setDP !== undefined ? { setDP } : {}),
                 ...(setBaseDP !== undefined ? { setBaseDP } : {}),
                 ...(charge !== undefined ? { charge } : {}),
+                ...(eff.chargeIsAbility ? { chargeIsAbility: true } : {}),
                 ...(setCharge !== undefined ? { setCharge } : {}),
                 appliedByPlayerId: source.controllerPlayerId,
               };
@@ -1515,6 +1523,9 @@ export class DeclarativeEffectInterpreter {
             return { success: true };
           }
           return { success: false, error: '必须支付丢弃手牌代价' };
+        }
+        if (pending.requiredMin !== undefined && selected.length < pending.requiredMin) {
+          return { success: false, error: `支付丢弃代价至少需要选择 ${pending.requiredMin} 张手牌 (8.4.2.b)` };
         }
         for (const id of selected) {
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
@@ -1810,6 +1821,7 @@ export class DeclarativeEffectInterpreter {
               kind: 'COST_DISCARD',
               onPaid: [...steps],
               optional: false,
+              requiredMin: cost.count,
               markUsed,
               markUsedKey: effectiveUsageKey,
             },
@@ -2062,6 +2074,7 @@ export class DeclarativeEffectInterpreter {
               kind: 'COST_DISCARD',
               onPaid: [...steps],
               optional,
+              requiredMin: cost.count,
               markUsed,
               markUsedKey: effectiveUsageKey,
             },
@@ -2415,8 +2428,13 @@ export class DeclarativeEffectInterpreter {
                     id: c.instanceId,
                     label: `对方手牌 #${idx + 1}`,
                   }))
-                : candidates.map((c) =>
-                    this.effects.createGeneralCardChoiceOption(c, { ineligibleReason: step.ineligibleReason })
+                : candidates.map((c, idx) =>
+                    !c.isFaceUp && (c.zone === 'SIGNAL_ORB' || c.zone === 'COST')
+                      ? {
+                          id: c.instanceId,
+                          label: c.zone === 'SIGNAL_ORB' ? `背面信号球 #${idx + 1}` : `背面暗费 #${idx + 1}`,
+                        }
+                      : this.effects.createGeneralCardChoiceOption(c, { ineligibleReason: step.ineligibleReason })
                   ),
               effectType,
               sourceCardInstanceId: sourceId,
@@ -2631,6 +2649,7 @@ export class DeclarativeEffectInterpreter {
                 kind: 'COST_DISCARD',
                 onPaid: [...step.onPaid],
                 optional,
+                requiredMin,
                 savePaidToVar: step.savePaidToVar,
               },
             }
@@ -2761,12 +2780,18 @@ export class DeclarativeEffectInterpreter {
           }
           const options: { id: string; label: string }[] = [];
           for (let pos = 0; pos <= orbZone.length; pos++) {
+            const belowCard = pos > 0 ? orbZone[pos - 1] : undefined;
+            const belowLabel = belowCard
+              ? belowCard.isFaceUp
+                ? `【${this.def(belowCard)?.name ?? pos}】`
+                : `背面信号球 #${pos}`
+              : String(pos);
             const label =
               pos === 0
                 ? '放置到信号球区最下方 (位置 1)'
                 : pos === orbZone.length
                   ? `放置到信号球区最上方 (位置 ${pos + 1})`
-                  : `放置到第 ${pos + 1} 位 (在【${this.def(orbZone[pos - 1]!)?.name ?? pos}】上方)`;
+                  : `放置到第 ${pos + 1} 位 (在${belowLabel}上方)`;
             options.push({ id: String(pos), label });
           }
           const effectType = step.choiceEffectType ?? `DSL_PLACE_ORB_POS_${cardNumber}`;
@@ -2810,7 +2835,14 @@ export class DeclarativeEffectInterpreter {
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: this.formatPrompt(step.prompt, playerId, { orbCount: cards.length }),
-              options: cards.map((c) => this.effects.createGeneralCardChoiceOption(c)),
+              options: cards.map((c, idx) =>
+                !c.isFaceUp && (c.zone === 'SIGNAL_ORB' || c.zone === 'COST')
+                  ? {
+                      id: c.instanceId,
+                      label: c.zone === 'SIGNAL_ORB' ? `背面信号球 #${idx + 1}` : `背面暗费 #${idx + 1}`,
+                    }
+                  : this.effects.createGeneralCardChoiceOption(c)
+              ),
               effectType,
               sourceCardInstanceId: sourceId,
               minSelections: cards.length,
@@ -3906,10 +3938,13 @@ export class DeclarativeEffectInterpreter {
     }
     if (filter.isSignalOrb !== undefined && this.isOrb(card) !== filter.isSignalOrb) return false;
     if (filter.signalOrbColor !== undefined) {
+      // 背面信号球属于非公开信息，不得按印刷颜色匹配 (3.5.3 / 12)
+      if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp) return false;
       const orbColorMatch =
-        def?.signalOrb === filter.signalOrbColor ||
-        (card.zone === 'SIGNAL_ORB' &&
-          Boolean(this.ctx.continuousEffects?.getEffectiveOrbInfo(card.instanceId).colors.includes(filter.signalOrbColor)));
+        card.zone === 'SIGNAL_ORB'
+          ? Boolean(this.ctx.continuousEffects?.getEffectiveOrbInfo(card.instanceId).colors.includes(filter.signalOrbColor)) ||
+            (!this.ctx.continuousEffects && def?.signalOrb === filter.signalOrbColor)
+          : def?.signalOrb === filter.signalOrbColor;
       if (!orbColorMatch) return false;
     }
     if (filter.isFaceUp !== undefined && card.isFaceUp !== filter.isFaceUp) return false;
