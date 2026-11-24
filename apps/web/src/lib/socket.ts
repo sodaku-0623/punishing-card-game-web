@@ -21,6 +21,8 @@ export class NativeWebSocketClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private isManuallyClosed = false;
+  /** 记录当前底层连接是否成功进入过 OPEN，避免 onclose 时 readyState 已变 CLOSED 导致永不触发 disconnect */
+  private hasOpened = false;
   private url: string | null;
   /** 当前连接对应的房间路由键 (同一房间的 /ws/rooms 与 /ws/game 共用一个 Durable Object) */
   private routeKey: string | null = null;
@@ -53,6 +55,7 @@ export class NativeWebSocketClient {
     if (this.ws) {
       const old = this.ws;
       this.ws = null;
+      this.hasOpened = false;
       old.onclose = null;
       old.onmessage = null;
       try {
@@ -150,6 +153,7 @@ export class NativeWebSocketClient {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
+        this.hasOpened = true;
         this.reconnectAttempts = 0;
         this.emitLocal('connect');
 
@@ -195,7 +199,8 @@ export class NativeWebSocketClient {
       };
 
       this.ws.onclose = () => {
-        const wasConnected = this.connected;
+        const wasConnected = this.hasOpened;
+        this.hasOpened = false;
         this.ws = null;
         if (wasConnected) {
           this.emitLocal('disconnect', 'io server disconnect');
@@ -227,13 +232,17 @@ export class NativeWebSocketClient {
 
   disconnect(): this {
     this.isManuallyClosed = true;
+    this.hasOpened = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      const old = this.ws;
       this.ws = null;
+      old.onclose = null;
+      old.onmessage = null;
+      old.close();
     }
     this.emitLocal('disconnect', 'io client disconnect');
     return this;

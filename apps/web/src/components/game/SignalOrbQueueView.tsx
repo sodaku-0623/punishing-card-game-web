@@ -1,28 +1,25 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { CardInstance, SignalOrbType } from '@zhanshuang/shared';
-import { Layers, Zap } from 'lucide-react';
-import { findCardByNumberOrId } from '@/lib/cards-data';
+import { CardInstance } from '@zhanshuang/shared';
+import { Layers, Zap, Lock } from 'lucide-react';
+import {
+  OrbColorType,
+  OrbDisplayInfo,
+  resolveOrbDisplayInfo,
+  validateOrbElimination,
+  findAvailableOrbTriple,
+} from '@/lib/signal-orbs';
+
+export type { OrbColorType, OrbDisplayInfo };
 
 interface SignalOrbQueueViewProps {
   orbs: CardInstance[];
   selectedOrbIds: string[];
   onToggleSelectOrb?: (orbId: string) => void;
-  onEliminate?: (orbIds: [string, string, string]) => void;
+  onEliminate?: (orbIds: string[]) => void;
   isOpponent?: boolean;
   compact?: boolean;
-}
-
-export type OrbColorType = 'RED' | 'BLUE' | 'YELLOW' | 'UNKNOWN';
-
-export interface OrbDisplayInfo {
-  instanceId: string;
-  cardNumber: string;
-  color: OrbColorType;
-  label: string;
-  name: string;
-  index: number;
 }
 
 const ORB_HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y'] as const;
@@ -35,159 +32,45 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
   isOpponent = false,
   compact = false,
 }) => {
-  // 解析信号球颜色与定义信息
+  // 解析信号球颜色、等效球数、禁止状态与正背面信息
   const orbList: OrbDisplayInfo[] = useMemo(() => {
-    return orbs.map((orb, index) => {
-      const def = findCardByNumberOrId(orb.cardNumber || orb.cardId);
-      const num = (orb.cardNumber || '').toUpperCase();
-      const name = def?.name || '';
-      const traits = def?.traits || [];
-      const signalOrb = def?.signalOrb;
-
-      let color: OrbColorType = 'UNKNOWN';
-      let label = '球';
-
-      // 1. 优先使用卡牌定义中的权威 signalOrb 字段
-      if (signalOrb === SignalOrbType.RED) {
-        color = 'RED';
-        label = '红';
-      } else if (signalOrb === SignalOrbType.BLUE) {
-        color = 'BLUE';
-        label = '蓝';
-      } else if (signalOrb === SignalOrbType.YELLOW) {
-        color = 'YELLOW';
-        label = '黄';
-      } else if (
-        traits.some((t) => t === '信号球·红' || t.includes('球·红')) ||
-        num.includes('ORB-RED') ||
-        num.endsWith('-RED') ||
-        name.includes('信号球·红') ||
-        name.includes('红球')
-      ) {
-        color = 'RED';
-        label = '红';
-      } else if (
-        traits.some((t) => t === '信号球·蓝' || t.includes('球·蓝')) ||
-        num.includes('ORB-BLUE') ||
-        num.endsWith('-BLUE') ||
-        name.includes('信号球·蓝') ||
-        name.includes('蓝球')
-      ) {
-        color = 'BLUE';
-        label = '蓝';
-      } else if (
-        traits.some((t) => t === '信号球·黄' || t.includes('球·黄')) ||
-        num.includes('ORB-YELLOW') ||
-        num.endsWith('-YELLOW') ||
-        name.includes('信号球·黄') ||
-        name.includes('黄球')
-      ) {
-        color = 'YELLOW';
-        label = '黄';
-      }
-
-      return {
-        instanceId: orb.instanceId,
-        cardNumber: orb.cardNumber,
-        color,
-        label,
-        name: name || `信号球·${label}`,
-        index,
-      };
-    });
+    return orbs.map((orb, index) => resolveOrbDisplayInfo(orb, index));
   }, [orbs]);
 
-  // 各颜色信号球统计
+  // 各颜色有效正面信号球统计（按等效球数累加，支持多色「视为」与单卡 3 球）
   const counts = useMemo(() => {
     let red = 0;
     let blue = 0;
     let yellow = 0;
     for (const item of orbList) {
-      if (item.color === 'RED') red++;
-      else if (item.color === 'BLUE') blue++;
-      else if (item.color === 'YELLOW') yellow++;
+      if (!item.isFaceUp || item.orbValue <= 0) continue;
+      if (item.colors.includes('RED')) red += item.orbValue;
+      if (item.colors.includes('BLUE')) blue += item.orbValue;
+      if (item.colors.includes('YELLOW')) yellow += item.orbValue;
     }
     return { red, blue, yellow };
   }, [orbList]);
 
-  // 检测是否存在可一键触发的三消组合 (同色三消优先，其次物理相邻三消)
-  const availableTriple = useMemo<{
-    type: 'RED' | 'BLUE' | 'YELLOW' | 'ADJACENT';
-    label: string;
-    orbIds: [string, string, string];
-  } | null>(() => {
-    const redOrbs = orbList.filter((o) => o.color === 'RED');
-    if (redOrbs.length >= 3) {
-      return {
-        type: 'RED',
-        label: '红球三消',
-        orbIds: [redOrbs[0]!.instanceId, redOrbs[1]!.instanceId, redOrbs[2]!.instanceId],
-      };
+  // 检测物理相邻且可消除的一键三消组合 (4.16.2 + Q&A·1)
+  const availableTriple = useMemo(() => findAvailableOrbTriple(orbs), [orbs]);
+
+  // 严格校验当前已选信号球是否满足 4.16.2 物理相邻 + 等效 3 球 + 可消除
+  const selectionCheck = useMemo(
+    () => validateOrbElimination(orbs, selectedOrbIds),
+    [orbs, selectedOrbIds]
+  );
+
+  const canEliminateSelected = Boolean(onEliminate && selectionCheck.valid);
+  const sortedSelectedIds = selectionCheck.valid ? selectionCheck.sortedIds : null;
+
+  function getOrbStyle(orb: OrbDisplayInfo) {
+    if (!orb.isFaceUp) {
+      return 'bg-ink-950 border-steel-500/70 text-steel-300 border-dashed';
     }
-    const blueOrbs = orbList.filter((o) => o.color === 'BLUE');
-    if (blueOrbs.length >= 3) {
-      return {
-        type: 'BLUE',
-        label: '蓝球三消',
-        orbIds: [blueOrbs[0]!.instanceId, blueOrbs[1]!.instanceId, blueOrbs[2]!.instanceId],
-      };
+    if (orb.cannotEliminate) {
+      return 'bg-ink-850 border-line-strong text-fg-muted opacity-65';
     }
-    const yellowOrbs = orbList.filter((o) => o.color === 'YELLOW');
-    if (yellowOrbs.length >= 3) {
-      return {
-        type: 'YELLOW',
-        label: '黄球三消',
-        orbIds: [yellowOrbs[0]!.instanceId, yellowOrbs[1]!.instanceId, yellowOrbs[2]!.instanceId],
-      };
-    }
-
-    if (orbList.length >= 3) {
-      return {
-        type: 'ADJACENT',
-        label: '三球连消',
-        orbIds: [orbList[0]!.instanceId, orbList[1]!.instanceId, orbList[2]!.instanceId],
-      };
-    }
-
-    return null;
-  }, [orbList]);
-
-  // 校验当前选中的 3 颗球是否合法 (按位置排序后相邻，或者颜色相同)
-  const canEliminateSelected = useMemo(() => {
-    if (selectedOrbIds.length !== 3 || !onEliminate) return false;
-
-    const orbIds = orbs.map((o) => o.instanceId);
-    const sorted = [...selectedOrbIds].sort(
-      (a, b) => orbIds.indexOf(a) - orbIds.indexOf(b)
-    );
-    const idx0 = orbIds.indexOf(sorted[0]!);
-    const idx1 = orbIds.indexOf(sorted[1]!);
-    const idx2 = orbIds.indexOf(sorted[2]!);
-
-    if (idx0 === -1 || idx1 === -1 || idx2 === -1) return false;
-
-    const isAdjacent = idx1 === idx0 + 1 && idx2 === idx1 + 1;
-
-    const color0 = orbList.find((o) => o.instanceId === sorted[0])?.color;
-    const color1 = orbList.find((o) => o.instanceId === sorted[1])?.color;
-    const color2 = orbList.find((o) => o.instanceId === sorted[2])?.color;
-    const isSameColor =
-      color0 && color0 !== 'UNKNOWN' && color0 === color1 && color1 === color2;
-
-    return isAdjacent || isSameColor;
-  }, [selectedOrbIds, onEliminate, orbs, orbList]);
-
-  const sortedSelectedIds = useMemo<[string, string, string] | null>(() => {
-    if (selectedOrbIds.length !== 3) return null;
-    const orbIds = orbs.map((o) => o.instanceId);
-    const sorted = [...selectedOrbIds].sort(
-      (a, b) => orbIds.indexOf(a) - orbIds.indexOf(b)
-    );
-    return [sorted[0]!, sorted[1]!, sorted[2]!];
-  }, [selectedOrbIds, orbs]);
-
-  function getOrbStyle(color: OrbColorType) {
-    switch (color) {
+    switch (orb.color) {
       case 'RED':
         return 'bg-orb-red border-fg/40 text-fg';
       case 'BLUE':
@@ -199,10 +82,23 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
     }
   }
 
-  function handleOrbClick(clickedId: string) {
-    if (onToggleSelectOrb) {
-      onToggleSelectOrb(clickedId);
+  function buildOrbTitle(orb: OrbDisplayInfo): string {
+    if (!orb.isFaceUp) {
+      return `第 ${orb.index + 1} 位: 背面信号球（不可消除）`;
     }
+    const parts = [`第 ${orb.index + 1} 球: ${orb.name}`];
+    if (orb.orbValue > 1) parts.push(`视为 ${orb.orbValue} 球`);
+    if (orb.cannotEliminate) parts.push('当前不能被消除');
+    else if (!orb.isEliminatable) parts.push('无信号球标记，不可消除');
+    if (!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length) {
+      parts.push(`快捷键: ${ORB_HOTKEYS[orb.index]}`);
+    }
+    return parts.join(' · ');
+  }
+
+  function handleOrbClick(orb: OrbDisplayInfo) {
+    if (isOpponent || !orb.isEliminatable) return;
+    onToggleSelectOrb?.(orb.instanceId);
   }
 
   if (compact) {
@@ -256,26 +152,38 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 <button
                   key={orb.instanceId}
                   type="button"
-                  disabled={isOpponent}
-                  onClick={() => handleOrbClick(orb.instanceId)}
-                  className={`relative w-7 h-7 rounded-full border transition-all duration-fast flex items-center justify-center font-bold text-hud font-sans select-none shrink-0 cursor-pointer disabled:cursor-default ${getOrbStyle(
-                    orb.color
+                  disabled={isOpponent || !orb.isEliminatable}
+                  onClick={() => handleOrbClick(orb)}
+                  className={`relative w-7 h-7 rounded-full border transition-all duration-fast flex items-center justify-center font-bold text-hud font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
+                    orb
                   )} ${
                     isSelected
                       ? 'ring-2 ring-fg scale-110 z-10'
                       : isPartOfAvailableTriple
                       ? 'ring-1 ring-gold-300/80 hover:scale-105'
-                      : 'opacity-90 hover:opacity-100 hover:scale-105'
+                      : orb.isEliminatable
+                      ? 'opacity-90 hover:opacity-100 hover:scale-105'
+                      : ''
                   }`}
-                  title={`${orb.name} (第${orb.index + 1}球${orb.index < ORB_HOTKEYS.length ? `，快捷键: ${ORB_HOTKEYS[orb.index]}` : ''})`}
+                  title={buildOrbTitle(orb)}
                 >
                   <span className="leading-none">{orb.label}</span>
-                  {!isOpponent && orb.index < ORB_HOTKEYS.length && (
+                  {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
                     <span className="absolute -bottom-1 -left-1 px-0.5 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
                       {ORB_HOTKEYS[orb.index]}
                     </span>
                   )}
-                  {isPartOfAvailableTriple && !isSelected && (
+                  {orb.orbValue > 1 && orb.isFaceUp && (
+                    <span className="absolute -top-1 -right-1 px-1 bg-ink-950 border border-gold-300 text-gold-300 font-num text-hud font-bold leading-none pointer-events-none scale-75 origin-top-right">
+                      x{orb.orbValue}
+                    </span>
+                  )}
+                  {orb.isFaceUp && orb.cannotEliminate && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
+                      <Lock className="w-2 h-2 text-crimson-400" />
+                    </span>
+                  )}
+                  {isPartOfAvailableTriple && !isSelected && orb.orbValue <= 1 && (
                     <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-gold-300 border border-ink-950" />
                   )}
                 </button>
@@ -292,7 +200,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
                 className="pgr-sweep px-2.5 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer"
-                title="消除所选的 3 张信号球并抽 1 张牌 (快捷键: X)"
+                title="消除所选的相邻信号球 (等效3球) 并抽 1 张牌 (快捷键: X)"
               >
                 <Layers className="w-3 h-3" />
                 <span>三消抽牌 [X]</span>
@@ -303,10 +211,10 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 type="button"
                 onClick={() => onEliminate(availableTriple.orbIds)}
                 className="pgr-sweep px-2.5 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer"
-                title="一键发动可用三消组合并抽牌"
+                title={`一键发动【${availableTriple.label}】并抽 1 张牌`}
               >
                 <Zap className="w-3 h-3 fill-current" />
-                <span>一键三消</span>
+                <span>{availableTriple.orbIds.length === 1 ? '单卡三消' : '一键三消'}</span>
               </button>
             )}
           </div>
@@ -335,11 +243,10 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 ? 'bg-orb-red/20 border-orb-red text-fg font-bold'
                 : 'bg-ink-950 border-line text-fg-muted'
             }`}
-            title="红球数量 (达到3球可触发红球三消抽卡与对应红球被动)"
+            title="正面红球等效数量"
           >
             <span className="w-2 h-2 rounded-full bg-orb-red" />
             <span>红 {counts.red}</span>
-            {counts.red >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
           <span
@@ -348,11 +255,10 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 ? 'bg-orb-blue/20 border-orb-blue text-fg font-bold'
                 : 'bg-ink-950 border-line text-fg-muted'
             }`}
-            title="蓝球数量"
+            title="正面蓝球等效数量"
           >
             <span className="w-2 h-2 rounded-full bg-orb-blue" />
             <span>蓝 {counts.blue}</span>
-            {counts.blue >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
           <span
@@ -361,15 +267,14 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 ? 'bg-orb-yellow/20 border-orb-yellow text-fg font-bold'
                 : 'bg-ink-950 border-line text-fg-muted'
             }`}
-            title="黄球数量"
+            title="正面黄球等效数量"
           >
             <span className="w-2 h-2 rounded-full bg-orb-yellow" />
             <span>黄 {counts.yellow}</span>
-            {counts.yellow >= 3 && <span className="text-gold-300 font-sans">可消</span>}
           </span>
 
           <span className="text-fg-muted">
-            共 {orbs.length} 球
+            共 {orbs.length} 张
           </span>
         </div>
       </div>
@@ -390,33 +295,41 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
               <button
                 key={orb.instanceId}
                 type="button"
-                disabled={isOpponent}
-                onClick={() => handleOrbClick(orb.instanceId)}
-                className={`relative w-9 h-9 rounded-full border-2 transition-all duration-fast flex flex-col items-center justify-center font-bold text-caption font-sans select-none shrink-0 cursor-pointer disabled:cursor-default ${getOrbStyle(
-                  orb.color
+                disabled={isOpponent || !orb.isEliminatable}
+                onClick={() => handleOrbClick(orb)}
+                className={`relative w-9 h-9 rounded-full border-2 transition-all duration-fast flex flex-col items-center justify-center font-bold text-caption font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
+                  orb
                 )} ${
                   isSelected
                     ? 'ring-2 ring-fg scale-110 -translate-y-1 z-10'
                     : isPartOfAvailableTriple
                     ? 'hover:scale-105 ring-1 ring-gold-300/80'
-                    : 'hover:scale-105 opacity-90 hover:opacity-100'
+                    : orb.isEliminatable
+                    ? 'hover:scale-105 opacity-90 hover:opacity-100'
+                    : ''
                 }`}
-                title={`第 ${orb.index + 1} 球: ${orb.name} (${orb.cardNumber})${orb.index < ORB_HOTKEYS.length ? `，快捷键: ${ORB_HOTKEYS[orb.index]}` : ''}`}
+                title={buildOrbTitle(orb)}
               >
                 <span className="text-hud font-bold leading-none">
                   {orb.label}
                 </span>
                 <span className="text-hud font-num opacity-80 leading-none scale-75">
-                  {orb.index + 1}
+                  {orb.orbValue > 1 && orb.isFaceUp ? `x${orb.orbValue}` : orb.index + 1}
                 </span>
 
-                {!isOpponent && orb.index < ORB_HOTKEYS.length && (
+                {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
                   <span className="absolute -bottom-1 -left-1 px-1 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
                     {ORB_HOTKEYS[orb.index]}
                   </span>
                 )}
 
-                {isPartOfAvailableTriple && !isSelected && (
+                {orb.isFaceUp && orb.cannotEliminate && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
+                    <Lock className="w-2.5 h-2.5 text-crimson-400" />
+                  </span>
+                )}
+
+                {isPartOfAvailableTriple && !isSelected && !orb.cannotEliminate && (
                   <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gold-300 border border-ink-950" />
                 )}
               </button>
@@ -432,7 +345,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
                 className="pgr-sweep px-3.5 py-1.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-caption font-sans flex items-center gap-1.5 transition-all duration-fast active:scale-95 cursor-pointer"
-                title="消除所选的 3 张信号球并抽 1 张牌 (快捷键: X)"
+                title="消除所选相邻信号球 (等效3球) 并抽 1 张牌 (快捷键: X)"
               >
                 <Layers className="w-3.5 h-3.5" />
                 <span>三消抽牌 [X]</span>
@@ -452,7 +365,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                     ? 'bg-orb-yellow hover:bg-orb-yellow/90 text-ink-950 border-ink-950/20'
                     : 'bg-teal-400 hover:bg-teal-400/90 text-ink-950 border-ink-950/20'
                 }`}
-                title={`一键触发【${availableTriple.label}】并抽 1 张牌 (6.4.1.b.5)`}
+                title={`一键触发【${availableTriple.label}】并抽 1 张牌 (4.16.2 / 6.4.1.b.5)`}
               >
                 <Zap className="w-3.5 h-3.5 fill-current" />
                 <span>{availableTriple.label}（抽 1 张牌）</span>

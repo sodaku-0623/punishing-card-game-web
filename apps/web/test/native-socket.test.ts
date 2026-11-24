@@ -145,7 +145,7 @@ describe('NativeWebSocketClient 原生 WebSocket 兼容客户端测试', () => {
     resetSocket();
   });
 
-  it('5. 断线触发 disconnect 事件', async () => {
+  it('5. 主动断开触发 disconnect 事件且仅触发一次', async () => {
     const client = new NativeWebSocketClient('wss://test.worker/ws/rooms/room-1', 'user-1');
     const disconnectSpy = vi.fn();
     client.on('disconnect', disconnectSpy);
@@ -153,7 +153,40 @@ describe('NativeWebSocketClient 原生 WebSocket 兼容客户端测试', () => {
     await new Promise((r) => setTimeout(r, 15));
     client.disconnect();
 
-    expect(disconnectSpy).toHaveBeenCalled();
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
     expect(client.connected).toBe(false);
+  });
+
+  it('6. 服务端意外断开连接时正常触发 disconnect 事件（hasOpened 追踪）', async () => {
+    const client = new NativeWebSocketClient('wss://test.worker/ws/rooms/room-1', 'user-1');
+    const disconnectSpy = vi.fn();
+    client.on('disconnect', disconnectSpy);
+
+    await new Promise((r) => setTimeout(r, 15));
+    expect(client.connected).toBe(true);
+
+    // 模拟网络中断或服务端主动关闭底层 WebSocket（readyState 先变 CLOSED 再触发 onclose）
+    const ws = MockNativeWebSocket.instances[0]!;
+    ws.close();
+
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+    expect(disconnectSpy).toHaveBeenCalledWith('io server disconnect');
+    expect(client.connected).toBe(false);
+
+    // 清理重连定时器
+    client.disconnect();
+  });
+
+  it('7. 尚未握手成功前即关闭连接不误报 disconnect', () => {
+    const client = new NativeWebSocketClient('wss://test.worker/ws/rooms/room-1', 'user-1');
+    const disconnectSpy = vi.fn();
+    client.on('disconnect', disconnectSpy);
+
+    const ws = MockNativeWebSocket.instances[0]!;
+    // 在 onopen 之前直接关闭
+    ws.close();
+
+    expect(disconnectSpy).not.toHaveBeenCalled();
+    client.disconnect();
   });
 });

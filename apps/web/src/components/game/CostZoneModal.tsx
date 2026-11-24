@@ -15,6 +15,8 @@ interface CostZoneModalProps {
   totalCount: number;
   hiddenCount: number;
   isOpponent?: boolean;
+  usableInstantCardIds?: Set<string>;
+  onUseInstant?: (cardInstanceId: string) => void;
   onInspectCard?: (card: CardInstance) => void;
 }
 
@@ -26,6 +28,8 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
   totalCount,
   hiddenCount,
   isOpponent = false,
+  usableInstantCardIds,
+  onUseInstant,
   onInspectCard,
 }) => {
   return (
@@ -146,6 +150,19 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
                         <div className="text-hud text-fg-muted font-num">
                           {formatCardType(def?.cardType, def?.isInstant)} · 原费 {def?.cost ?? 0}
                         </div>
+                        {!isOpponent && onUseInstant && usableInstantCardIds?.has(card.instanceId) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onUseInstant(card.instanceId);
+                              onClose();
+                            }}
+                            className="mt-1.5 w-full px-2 py-1 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <Zap className="w-3 h-3 fill-current" />
+                            <span>发动【瞬时】</span>
+                          </button>
+                        )}
                       </>
                     )}
                   </div>

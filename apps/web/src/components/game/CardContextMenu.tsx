@@ -10,10 +10,13 @@ import {
   X,
   Play,
   ArrowUpRight,
+  Users,
+  Cpu,
 } from 'lucide-react';
 import { CardInstance, CardType, GamePhase } from '@zhanshuang/shared';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { getDisplayStats } from '@/lib/card-stats';
+import type { NonTacticsInstantOption } from '@/lib/battle-actions';
 
 export interface ContextMenuAction {
   id: string;
@@ -37,11 +40,17 @@ interface CardContextMenuProps {
   effectiveCost?: number;
   isFriendlyRole: boolean;
   isOpponentRole: boolean;
+  isStandaloneEquipment?: boolean;
   isHandCard: boolean;
   canActivateAbility: boolean;
   canAttack: boolean;
   canBlock: boolean;
+  canPerformAssist?: boolean;
+  canEquipStandalone?: boolean;
+  canUseHandInstant?: boolean;
+  underneathInstants?: NonTacticsInstantOption[];
   hasEmptySlot: boolean;
+  hasAssistSlot?: boolean;
   hasSelectedAttacker: boolean;
   onPlayCard?: (card: CardInstance) => void;
   onAscendCard?: (card: CardInstance) => void;
@@ -49,6 +58,9 @@ interface CardContextMenuProps {
   onAttackPlayer?: (card: CardInstance) => void;
   onAttackRole?: (card: CardInstance) => void;
   onBlock?: (card: CardInstance) => void;
+  onPerformAssist?: (card: CardInstance) => void;
+  onStartEquipStandalone?: (card: CardInstance) => void;
+  onUseInstant?: (cardInstanceId: string) => void;
   onChargeCost?: (card: CardInstance) => void;
   onInspectCard?: (card: CardInstance) => void;
   onClose: () => void;
@@ -65,11 +77,17 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   effectiveCost,
   isFriendlyRole,
   isOpponentRole,
+  isStandaloneEquipment = false,
   isHandCard,
   canActivateAbility,
   canAttack,
   canBlock,
+  canPerformAssist = false,
+  canEquipStandalone = false,
+  canUseHandInstant = false,
+  underneathInstants = [],
   hasEmptySlot,
+  hasAssistSlot = hasEmptySlot,
   hasSelectedAttacker,
   onPlayCard,
   onAscendCard,
@@ -77,6 +95,9 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   onAttackPlayer,
   onAttackRole,
   onBlock,
+  onPerformAssist,
+  onStartEquipStandalone,
+  onUseInstant,
   onChargeCost,
   onInspectCard,
   onClose,
@@ -178,6 +199,33 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
           onClose();
         },
       });
+    } else if (cardDef?.cardType === CardType.ASSIST) {
+      actions.push({
+        id: 'play_assist',
+        label: '部署辅助机',
+        subLabel: costLabel,
+        icon: <Cpu className="w-3.5 h-3.5" />,
+        variant: 'primary',
+        disabled: !isMyTurn || phase !== 'MAIN_PHASE' || !hasAssistSlot || myAvailableCost < currentCost,
+        onClick: () => {
+          onPlayCard?.(card);
+          onClose();
+        },
+      });
+    }
+
+    if (canUseHandInstant && onUseInstant) {
+      actions.push({
+        id: 'use_hand_instant',
+        label: '发动非战术【瞬时】',
+        subLabel: '10.8',
+        icon: <Zap className="w-3.5 h-3.5 fill-current" />,
+        variant: 'warning',
+        onClick: () => {
+          onUseInstant(card.instanceId);
+          onClose();
+        },
+      });
     }
 
     if (isMyTurn && phase === 'DRAW_CHARGE_PHASE') {
@@ -196,6 +244,50 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   }
 
   if (isFriendlyRole) {
+    if (isStandaloneEquipment && canEquipStandalone && onStartEquipStandalone) {
+      actions.push({
+        id: 'equip_standalone',
+        label: '装备给己方角色',
+        subLabel: '6.4.1.b.4',
+        icon: <Shield className="w-3.5 h-3.5" />,
+        variant: 'warning',
+        onClick: () => {
+          onStartEquipStandalone(card);
+          onClose();
+        },
+      });
+    }
+
+    if (canPerformAssist && onPerformAssist) {
+      actions.push({
+        id: 'perform_assist',
+        label: '发动【协战】',
+        subLabel: '8.13',
+        icon: <Users className="w-3.5 h-3.5" />,
+        variant: 'primary',
+        onClick: () => {
+          onPerformAssist(card);
+          onClose();
+        },
+      });
+    }
+
+    if (onUseInstant && underneathInstants.length > 0) {
+      for (const inst of underneathInstants) {
+        actions.push({
+          id: `underneath_instant_${inst.card.instanceId}`,
+          label: `瞬时发动《${inst.name}》`,
+          subLabel: inst.costLabel,
+          icon: <Zap className="w-3.5 h-3.5 fill-current" />,
+          variant: 'warning',
+          onClick: () => {
+            onUseInstant(inst.card.instanceId);
+            onClose();
+          },
+        });
+      }
+    }
+
     if (canActivateAbility) {
       actions.push({
         id: 'activate',

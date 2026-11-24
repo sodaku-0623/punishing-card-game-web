@@ -4,18 +4,23 @@ import React, { useState } from 'react';
 import { CardInstance } from '@zhanshuang/shared';
 import { CardView } from './CardView';
 import { HudBrackets } from '@/components/ui';
-import { Shield, Zap, Swords, Layers, Crosshair } from 'lucide-react';
+import { Shield, Zap, Swords, Layers, Crosshair, Users, Cpu } from 'lucide-react';
 import { sfx } from '@/lib/audio';
+import type { SlotOccupancyKind } from '@/lib/battle-actions';
 
 interface BattlefieldSlotViewProps {
   slotIndex: number;
   roleCard?: CardInstance;
+  slotCardKind?: SlotOccupancyKind;
   isOpponent?: boolean;
   isSelected?: boolean;
   isPlayTargetable?: boolean;
+  isEquipTargetable?: boolean;
   canActivateAbility?: boolean;
   canAttack?: boolean;
   canBlock?: boolean;
+  canEquipStandalone?: boolean;
+  canPerformAssist?: boolean;
   hasAbility?: boolean;
   isLegalAttackTarget?: boolean;
   isAttacking?: boolean;
@@ -31,19 +36,26 @@ interface BattlefieldSlotViewProps {
   onActivateAbility?: (cardId: string) => void;
   onAttackClick?: (cardId: string) => void;
   onBlockClick?: (cardId: string) => void;
+  onEquipStartClick?: (equipmentCardId: string) => void;
+  onPerformAssistClick?: (hostRoleCardId: string) => void;
   onDropCard?: (slotIndex: number, cardInstanceId: string) => void;
   onDropAttackTarget?: (targetCardId: string, attackerCardId: string) => void;
+  onDropEquipToRole?: (targetRoleCardId: string, equipmentCardId: string) => void;
 }
 
 export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.memo(({
   slotIndex,
   roleCard,
+  slotCardKind = roleCard ? 'ROLE' : 'EMPTY',
   isOpponent = false,
   isSelected = false,
   isPlayTargetable = false,
+  isEquipTargetable = false,
   canActivateAbility = false,
   canAttack = false,
   canBlock = false,
+  canEquipStandalone = false,
+  canPerformAssist = false,
   hasAbility = false,
   isLegalAttackTarget = false,
   isAttacking = false,
@@ -59,8 +71,11 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
   onActivateAbility,
   onAttackClick,
   onBlockClick,
+  onEquipStartClick,
+  onPerformAssistClick,
   onDropCard,
   onDropAttackTarget,
+  onDropEquipToRole,
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -80,8 +95,12 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
     setIsDragOver(false);
     const cardInstanceId = e.dataTransfer.getData('text/card-instance-id');
     const attackerInstanceId = e.dataTransfer.getData('text/attacker-instance-id');
+    const standaloneEquipId = e.dataTransfer.getData('text/standalone-equip-id');
 
-    if (attackerInstanceId && roleCard && isOpponent) {
+    if (standaloneEquipId && roleCard && !isOpponent && slotCardKind === 'ROLE') {
+      sfx.playCardPlay();
+      onDropEquipToRole?.(roleCard.instanceId, standaloneEquipId);
+    } else if (attackerInstanceId && roleCard && isOpponent && slotCardKind === 'ROLE') {
       // 攻击方拖拽至敌方角色进行定点进攻 (7.2.1.b.1)
       sfx.playAttack();
       onDropAttackTarget?.(roleCard.instanceId, attackerInstanceId);
@@ -92,17 +111,25 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
     }
   };
 
-  // 攻击方拖拽开始
-  const handleAttackerDragStart = (e: React.DragEvent) => {
-    if (!roleCard || isOpponent || !canAttack) return;
-    e.dataTransfer.setData('text/attacker-instance-id', roleCard.instanceId);
-    e.dataTransfer.effectAllowed = 'move';
-    sfx.playClick();
+  // 攻击方或独立装备拖拽开始
+  const handleCardDragStart = (e: React.DragEvent) => {
+    if (!roleCard || isOpponent) return;
+    if (slotCardKind === 'STANDALONE_EQUIPMENT' && canEquipStandalone) {
+      e.dataTransfer.setData('text/standalone-equip-id', roleCard.instanceId);
+      e.dataTransfer.effectAllowed = 'move';
+      sfx.playClick();
+      return;
+    }
+    if (slotCardKind === 'ROLE' && canAttack) {
+      e.dataTransfer.setData('text/attacker-instance-id', roleCard.instanceId);
+      e.dataTransfer.effectAllowed = 'move';
+      sfx.playClick();
+    }
   };
 
   const bracketColor: 'crimson' | 'teal' | 'steel' = isLegalAttackTarget
     ? 'crimson'
-    : isPlayTargetable || isSelected || isDragOver
+    : isPlayTargetable || isEquipTargetable || isSelected || isDragOver
     ? 'teal'
     : 'steel';
 
@@ -158,6 +185,8 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
           ? 'drag-valid-slot'
           : isLegalAttackTarget
           ? 'border-crimson-500 bg-crimson-500/15 shadow-glow-crimson ring-1 ring-crimson-400 cursor-crosshair'
+          : isEquipTargetable
+          ? 'border-gold-300 bg-gold-300/15 ring-1 ring-gold-300 cursor-pointer'
           : isPlayTargetable
           ? 'border-teal-400/80 bg-teal-400/10 shadow-glow-teal cursor-pointer'
           : isSelected
@@ -168,25 +197,40 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
       }`}
     >
       {/* 四角准星角标 */}
-      <HudBrackets size="sm" color={bracketColor} interactive={!!roleCard || isPlayTargetable} />
+      <HudBrackets size="sm" color={bracketColor} interactive={!!roleCard || isPlayTargetable || isEquipTargetable} />
 
-      {/* 角色卡实体 */}
+      {/* 战场卡位实体 (角色 / 辅助机 / 单独占位装备) */}
       {roleCard ? (
         <div
           data-card-instance-id={roleCard.instanceId}
-          {...(isOpponent ? { 'data-opponent-role-id': roleCard.instanceId } : {})}
-          draggable={!isOpponent && canAttack}
-          onDragStart={handleAttackerDragStart}
+          data-slot-card-kind={slotCardKind}
+          {...(isOpponent && slotCardKind === 'ROLE' ? { 'data-opponent-role-id': roleCard.instanceId } : {})}
+          draggable={!isOpponent && ((slotCardKind === 'ROLE' && canAttack) || (slotCardKind === 'STANDALONE_EQUIPMENT' && canEquipStandalone))}
+          onDragStart={handleCardDragStart}
           className="relative w-full h-full flex items-center justify-center"
         >
           <CardView
             card={roleCard}
             isSelected={isSelected}
-            isTargetable={isLegalAttackTarget}
+            isTargetable={isLegalAttackTarget || isEquipTargetable}
             isRested={!roleCard.isReady || isAttacking}
             size="full"
             onLongPress={roleCard && onRoleLongPress ? () => onRoleLongPress(roleCard) : undefined}
           />
+
+          {/* 辅助机 / 独立装备占位标识 */}
+          {slotCardKind === 'ASSIST' && (
+            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-semibold whitespace-nowrap">
+              <Cpu className="w-2.5 h-2.5" />
+              <span>辅助机</span>
+            </div>
+          )}
+          {slotCardKind === 'STANDALONE_EQUIPMENT' && (
+            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-gold-300/80 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-semibold whitespace-nowrap">
+              <Shield className="w-2.5 h-2.5" />
+              <span>独立装备</span>
+            </div>
+          )}
 
           {/* 横置与冰冻 (10.15) 状态水平正向指示牌 (绝对水平正向，不随卡面旋转倾倒) */}
           {(!roleCard.isReady || isAttacking || roleCard.isFrozen) && (
@@ -239,10 +283,10 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             </div>
           )}
 
-          {/* 角色卡行动按钮 (发动【起】效果 / 宣告攻击 / 宣告阻挡) - 向下延伸触控桥防止悬停丢失 */}
-          {!isOpponent && (canActivateAbility || canAttack || canBlock) && (
+          {/* 角色/辅助机/独立装备行动按钮 */}
+          {!isOpponent && (canActivateAbility || canAttack || canBlock || canEquipStandalone || canPerformAssist) && (
             <div
-              className={`absolute -top-8.5 inset-x-0 pb-3 flex items-center justify-center gap-1.5 z-40 transition-transform duration-fast ease-enter pointer-events-auto ${
+              className={`absolute -top-8 inset-x-0 pb-3 flex items-center justify-center gap-1 z-40 transition-transform duration-fast ease-enter pointer-events-auto ${
                 isSelected ? 'scale-105' : 'hover:scale-105'
               }`}
             >
@@ -254,11 +298,43 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
                     sfx.playClick();
                     onActivateAbility?.(roleCard.instanceId);
                   }}
-                  className="px-2.5 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 text-hud font-sans font-semibold active:scale-95 flex items-center gap-1 border border-fg/20 cursor-pointer transition-all duration-fast"
+                  className="px-2 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 text-hud font-sans font-semibold active:scale-95 flex items-center gap-1 border border-fg/20 cursor-pointer transition-all duration-fast whitespace-nowrap"
                   title="发动卡牌【起】动能力"
                 >
                   <Zap className="w-3 h-3 fill-current" />
                   <span>发动效果</span>
+                </button>
+              )}
+
+              {canEquipStandalone && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    sfx.playClick();
+                    onEquipStartClick?.(roleCard.instanceId);
+                  }}
+                  className="px-2 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 text-hud font-sans font-semibold active:scale-95 flex items-center gap-1 border border-fg/20 cursor-pointer transition-all duration-fast whitespace-nowrap"
+                  title="点击选择或拖拽至我方角色完成装备 (6.4.1.b.4)"
+                >
+                  <Shield className="w-3 h-3" />
+                  <span>装备角色</span>
+                </button>
+              )}
+
+              {canPerformAssist && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    sfx.playClick();
+                    onPerformAssistClick?.(roleCard.instanceId);
+                  }}
+                  className="px-2 py-1 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 text-hud font-sans font-semibold shadow-glow-teal active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast whitespace-nowrap"
+                  title="自由时点发动【协战】获得协战搭档 (8.13)"
+                >
+                  <Users className="w-3 h-3" />
+                  <span>协战</span>
                 </button>
               )}
 
@@ -270,7 +346,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
                     sfx.playAttack();
                     onAttackClick?.(roleCard.instanceId);
                   }}
-                  className="pgr-sweep px-2.5 py-1 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg text-hud font-sans font-semibold shadow-glow-crimson active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast"
+                  className="pgr-sweep px-2 py-1 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg text-hud font-sans font-semibold shadow-glow-crimson active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast whitespace-nowrap"
                   title="宣告攻击对方玩家 (或拖拽至敌方角色)"
                 >
                   <Swords className="w-3 h-3" />
@@ -286,7 +362,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
                     sfx.playClick();
                     onBlockClick?.(roleCard.instanceId);
                   }}
-                  className="px-2.5 py-1 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 text-hud font-sans font-semibold shadow-glow-teal active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast"
+                  className="px-2 py-1 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 text-hud font-sans font-semibold shadow-glow-teal active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast whitespace-nowrap"
                   title="宣告该角色进行阻挡 (7.3.1.c)"
                 >
                   <Shield className="w-3 h-3 fill-current" />

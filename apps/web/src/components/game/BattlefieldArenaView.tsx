@@ -5,14 +5,21 @@ import { getTimingStatus } from '@/lib/timing';
 import {
   PublicGameState,
   CardInstance,
+  CardType,
 } from '@zhanshuang/shared';
 import { BattlefieldSlotView } from './BattlefieldSlotView';
 import { ProcessingZoneView } from './ProcessingZoneView';
 import { DeckZoneView } from './DeckZoneView';
 import { GraveyardZoneView } from './GraveyardZoneView';
-import { Swords, Clock, Shield } from 'lucide-react';
+import { Swords, Clock, Shield, Zap } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
+import {
+  getSlotOccupancy,
+  isBattlefieldSlotEmpty,
+  canRolePerformAssist,
+  NonTacticsInstantOption,
+} from '@/lib/battle-actions';
 
 export interface AttackAnimInfo {
   attackerCardId: string;
@@ -34,6 +41,7 @@ interface BattlefieldArenaViewProps {
   attackAnim: AttackAnimInfo | null;
   myGraveyardCards: CardInstance[];
   opponentGraveyardCards: CardInstance[];
+  usableNonTacticsInstants?: NonTacticsInstantOption[];
   onRoleClick: (cardId: string) => void;
   onRoleDoubleClick: (cardId: string) => void;
   onRoleContextMenu: (e: React.MouseEvent, card: CardInstance) => void;
@@ -43,9 +51,13 @@ interface BattlefieldArenaViewProps {
   onActivateAbility: (cardId: string) => void;
   onAttackClick: (cardId: string) => void;
   onBlockClick: (cardId: string) => void;
+  onEquipStartClick?: (equipmentCardId: string) => void;
+  onPerformAssistClick?: (hostRoleCardId: string) => void;
+  onUseInstant?: (cardInstanceId: string) => void;
   onPassTiming: () => void;
   onDropCardToSlot: (slotIndex: number, cardInstanceId: string) => void;
   onDropAttackTarget: (targetCardId: string, attackerCardId: string) => void;
+  onDropEquipToRole?: (targetRoleCardId: string, equipmentCardId: string) => void;
   onInspectCard: (card: CardInstance) => void;
   onOpenGraveyard: (cards: CardInstance[], title: string) => void;
 }
@@ -78,6 +90,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   attackAnim,
   myGraveyardCards,
   opponentGraveyardCards,
+  usableNonTacticsInstants = [],
   onRoleClick,
   onRoleDoubleClick,
   onRoleContextMenu,
@@ -87,15 +100,30 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   onActivateAbility,
   onAttackClick,
   onBlockClick,
+  onEquipStartClick,
+  onPerformAssistClick,
+  onUseInstant,
   onPassTiming,
   onDropCardToSlot,
   onDropAttackTarget,
+  onDropEquipToRole,
   onInspectCard,
   onOpenGraveyard,
 }) => {
   const timing = getTimingStatus(gameState, resolvedMyUserId);
   const mySlots = gameState.battlefields?.[resolvedMyUserId] || [];
   const opponentSlots = gameState.battlefields?.[opponentUserId] || [];
+  const selectedHandCard = selectedHandCardId
+    ? gameState.myHandCards?.find((c) => c.instanceId === selectedHandCardId)
+    : undefined;
+  const selectedHandDef = selectedHandCard
+    ? findCardByNumberOrId(selectedHandCard.cardNumber || selectedHandCard.cardId)
+    : null;
+  const hasFriendlyRole = mySlots.some((s) => Boolean(s.roleCardId));
+  const isSelectedStandaloneEquip = Boolean(
+    selectedBattlefieldCardId &&
+      mySlots.some((s) => s.standaloneEquipmentId === selectedBattlefieldCardId)
+  );
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [arenaStyle, setArenaStyle] = useState<React.CSSProperties>({
@@ -162,15 +190,24 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
       {/* ================= 敌方战场 5 个绝对卡位 ================= */}
       {opponentSlots.slice(0, 5).map((slot, index) => {
         const pos = OPPONENT_SLOT_POSITIONS[index] || OPPONENT_SLOT_POSITIONS[0];
-        const roleCard = slot.roleCardId ? gameState.publicCards?.[slot.roleCardId] : undefined;
+        const occupancy = getSlotOccupancy(slot, gameState.publicCards);
+        const slotCard = occupancy.card;
         const isLegalAttackTarget =
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&
           !!selectedBattlefieldCardId &&
-          !!roleCard;
+          !isSelectedStandaloneEquip &&
+          occupancy.kind === 'ROLE' &&
+          !!slotCard;
 
-        const isAttacking = !!attackAnim && !!roleCard && attackAnim.attackerCardId === roleCard.instanceId;
-        const isHit = !!attackAnim && !!roleCard && attackAnim.targetCardId === roleCard.instanceId && attackAnim.isClashing;
+        const isAttacking =
+          !!attackAnim && occupancy.kind === 'ROLE' && !!slotCard && attackAnim.attackerCardId === slotCard.instanceId;
+        const isHit =
+          !!attackAnim &&
+          occupancy.kind === 'ROLE' &&
+          !!slotCard &&
+          attackAnim.targetCardId === slotCard.instanceId &&
+          attackAnim.isClashing;
 
         return (
           <div
@@ -185,9 +222,10 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           >
             <BattlefieldSlotView
               slotIndex={slot.slotIndex}
-              roleCard={roleCard}
+              roleCard={slotCard}
+              slotCardKind={occupancy.kind}
               isOpponent
-              isSelected={selectedBattlefieldCardId === roleCard?.instanceId}
+              isSelected={selectedBattlefieldCardId === slotCard?.instanceId}
               isLegalAttackTarget={isLegalAttackTarget}
               isAttacking={isAttacking}
               attackDirection={attackAnim?.direction}
@@ -205,7 +243,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
 
       {/* ================= 战术交战中线与对决状态指示 (MIDFIELD) ================= */}
       <div
-        className="absolute z-15 flex items-center justify-between px-3"
+        className="absolute z-20 flex items-center justify-between px-3"
         style={{
           left: '14.0%',
           right: '17.0%',
@@ -215,7 +253,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
       >
         <div
           className={`w-full flex items-center justify-center gap-2 border-y bg-ink-950/80 backdrop-blur-sm py-1 text-caption font-sans text-fg-secondary transition-colors duration-fast ${
-            gameState.currentCombat ? 'border-crimson-500/60' : 'border-line'
+            gameState.currentCombat || timing.hasInstantPriority ? 'border-crimson-500/60' : 'border-line'
           }`}
         >
           <div className="h-px bg-line flex-1" />
@@ -229,34 +267,55 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
             </span>
 
             {gameState.currentCombat && (
-              <>
-                <span className="ml-1 px-2 py-0.5 bg-crimson-500/20 text-crimson-400 border border-crimson-500/60 font-semibold text-hud">
-                  交战中 · 目标：{gameState.currentCombat.targetType === 'PLAYER' ? '对方玩家' : '角色卡'}
-                </span>
+              <span className="ml-1 px-2 py-0.5 bg-crimson-500/20 text-crimson-400 border border-crimson-500/60 font-semibold text-hud">
+                交战中 · 目标：{gameState.currentCombat.targetType === 'PLAYER' ? '对方玩家' : '角色卡'}
+              </span>
+            )}
 
-                {timing.waitingHint && gameState.phase === 'COMBAT_FREE_TIMING' && (
-                  <span className="px-2 py-0.5 bg-gold-300/15 text-gold-300 border border-gold-300/40 text-hud font-medium flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-gold-300" />
-                    <span>{timing.waitingHint}</span>
+            {timing.waitingHint && (gameState.phase === 'COMBAT_FREE_TIMING' || gameState.phase === 'END_PHASE') && (
+              <span className="px-2 py-0.5 bg-gold-300/15 text-gold-300 border border-gold-300/40 text-hud font-medium flex items-center gap-1">
+                <Clock className="w-3 h-3 text-gold-300" />
+                <span>{timing.waitingHint}</span>
+              </span>
+            )}
+
+            {(timing.canDeclareBlock || timing.hasInstantPriority) && (
+              <div className="flex items-center gap-1.5 ml-1 flex-wrap justify-center">
+                <span className="px-2 py-0.5 bg-crimson-500/20 text-fg border border-crimson-500/60 text-hud font-medium flex items-center gap-1">
+                  <Shield className="w-3 h-3 text-gold-300" />
+                  <span>
+                    {timing.canDeclareBlock
+                      ? '请选择角色【阻挡】，或：'
+                      : gameState.phase === 'END_PHASE'
+                      ? '结束阶段【瞬时】窗口：'
+                      : '自由时点可使用【瞬时】/【协战】：'}
                   </span>
-                )}
-                {(timing.canDeclareBlock || (timing.hasInstantPriority && gameState.phase === 'COMBAT_FREE_TIMING')) && (
-                  <div className="flex items-center gap-2 ml-1">
-                    <span className="px-2 py-0.5 bg-crimson-500/20 text-fg border border-crimson-500/60 text-hud font-medium flex items-center gap-1">
-                      <Shield className="w-3 h-3 text-gold-300" />
-                      <span>{timing.canDeclareBlock ? '请选择角色【阻挡】，或：' : '可以使用【瞬时】，或：'}</span>
-                    </span>
+                </span>
+                {timing.hasInstantPriority &&
+                  onUseInstant &&
+                  usableNonTacticsInstants.map((inst) => (
                     <button
+                      key={inst.card.instanceId}
                       type="button"
-                      onClick={onPassTiming}
-                      className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans active:scale-95 transition-all duration-fast cursor-pointer"
-                      title="快捷键: Space"
+                      onClick={() => onUseInstant(inst.card.instanceId)}
+                      className="px-2 py-0.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer"
+                      title={`从${inst.sourceLabel}发动非战术【瞬时】(${inst.costLabel})`}
                     >
-                      {timing.passLabel} [Space]
+                      <Zap className="w-3 h-3 fill-current" />
+                      <span>
+                        {inst.sourceLabel}·{inst.name}
+                      </span>
                     </button>
-                  </div>
-                )}
-              </>
+                  ))}
+                <button
+                  type="button"
+                  onClick={onPassTiming}
+                  className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud font-sans active:scale-95 transition-all duration-fast cursor-pointer"
+                  title="快捷键: Space"
+                >
+                  {timing.passLabel} [Space]
+                </button>
+              </div>
             )}
           </div>
           <div className="h-px bg-line flex-1" />
@@ -266,29 +325,63 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
       {/* ================= 己方战场 5 个绝对卡位 ================= */}
       {mySlots.slice(0, 5).map((slot, index) => {
         const pos = MY_SLOT_POSITIONS[index] || MY_SLOT_POSITIONS[0];
-        const roleCard = slot.roleCardId ? gameState.publicCards?.[slot.roleCardId] : undefined;
-        const isPlayTargetable = !!selectedHandCardId && !slot.roleCardId;
+        const occupancy = getSlotOccupancy(slot, gameState.publicCards);
+        const slotCard = occupancy.card;
+        const isEmptySlot = isBattlefieldSlotEmpty(slot);
 
-        const roleDef = roleCard ? findCardByNumberOrId(roleCard.cardNumber || roleCard.cardId) : null;
-        const hasAbility = !!(
-          roleDef?.rulesText?.includes('【起】') ||
-          roleDef?.rulesText?.includes('起动')
+        const isPlayTargetable = Boolean(
+          selectedHandCardId &&
+            (selectedHandDef?.cardType === CardType.ASSIST
+              ? !slot.roleCardId && !slot.standaloneEquipmentId
+              : selectedHandDef?.cardType === CardType.EQUIPMENT
+              ? isEmptySlot || occupancy.kind === 'ROLE'
+              : isEmptySlot)
         );
-        const canActivateAbility = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
-        const hasRush = canRoleAttackOnEnterTurn(roleCard, roleDef);
-        const canAttack =
+        const isEquipTargetable = isSelectedStandaloneEquip && occupancy.kind === 'ROLE';
+
+        const cardDef = slotCard ? findCardByNumberOrId(slotCard.cardNumber || slotCard.cardId) : null;
+        const hasAbility = !!(
+          cardDef?.rulesText?.includes('【起】') ||
+          cardDef?.rulesText?.includes('起动')
+        );
+        const canActivateAbility =
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&
-          !!roleCard?.isReady &&
-          !hasCardProhibition(roleCard, 'CANNOT_ATTACK') &&
-          (roleCard.turnEnteredZone < gameState.turnNumber || hasRush);
-        const canBlock =
-          timing.canDeclareBlock &&
-          !!roleCard?.isReady &&
-          !hasCardProhibition(roleCard, 'CANNOT_BLOCK');
+          !gameState.currentCombat &&
+          (occupancy.kind === 'ROLE' || occupancy.kind === 'ASSIST') &&
+          hasAbility;
+        const canEquipStandalone =
+          isMyTurn &&
+          gameState.phase === 'MAIN_PHASE' &&
+          !gameState.currentCombat &&
+          occupancy.kind === 'STANDALONE_EQUIPMENT' &&
+          hasFriendlyRole;
+        const canPerformAssist =
+          occupancy.kind === 'ROLE' && canRolePerformAssist(gameState, resolvedMyUserId, slotCard);
 
-        const isAttacking = !!attackAnim && !!roleCard && attackAnim.attackerCardId === roleCard.instanceId;
-        const isHit = !!attackAnim && !!roleCard && attackAnim.targetCardId === roleCard.instanceId && attackAnim.isClashing;
+        const hasRush = occupancy.kind === 'ROLE' ? canRoleAttackOnEnterTurn(slotCard, cardDef) : false;
+        const canAttack =
+          occupancy.kind === 'ROLE' &&
+          isMyTurn &&
+          gameState.phase === 'MAIN_PHASE' &&
+          !gameState.currentCombat &&
+          !!slotCard?.isReady &&
+          !hasCardProhibition(slotCard, 'CANNOT_ATTACK') &&
+          (slotCard.turnEnteredZone < gameState.turnNumber || hasRush);
+        const canBlock =
+          occupancy.kind === 'ROLE' &&
+          timing.canDeclareBlock &&
+          !!slotCard?.isReady &&
+          !hasCardProhibition(slotCard, 'CANNOT_BLOCK');
+
+        const isAttacking =
+          !!attackAnim && occupancy.kind === 'ROLE' && !!slotCard && attackAnim.attackerCardId === slotCard.instanceId;
+        const isHit =
+          !!attackAnim &&
+          occupancy.kind === 'ROLE' &&
+          !!slotCard &&
+          attackAnim.targetCardId === slotCard.instanceId &&
+          attackAnim.isClashing;
 
         return (
           <div
@@ -303,12 +396,16 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
           >
             <BattlefieldSlotView
               slotIndex={slot.slotIndex}
-              roleCard={roleCard}
-              isSelected={selectedBattlefieldCardId === roleCard?.instanceId}
+              roleCard={slotCard}
+              slotCardKind={occupancy.kind}
+              isSelected={selectedBattlefieldCardId === slotCard?.instanceId}
               isPlayTargetable={isPlayTargetable}
+              isEquipTargetable={isEquipTargetable}
               canActivateAbility={canActivateAbility}
               canAttack={canAttack}
               canBlock={canBlock}
+              canEquipStandalone={canEquipStandalone}
+              canPerformAssist={canPerformAssist}
               hasAbility={hasAbility}
               isAttacking={isAttacking}
               attackDirection={attackAnim?.direction}
@@ -322,7 +419,10 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               onActivateAbility={onActivateAbility}
               onAttackClick={onAttackClick}
               onBlockClick={onBlockClick}
+              onEquipStartClick={onEquipStartClick}
+              onPerformAssistClick={onPerformAssistClick}
               onDropCard={onDropCardToSlot}
+              onDropEquipToRole={onDropEquipToRole}
             />
           </div>
         );

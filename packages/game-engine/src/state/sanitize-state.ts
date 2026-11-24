@@ -21,6 +21,7 @@ function redactHiddenCard(card: CardInstance, maskedNumber: string): CardInstanc
     effectiveTraits: undefined,
     effectiveProhibitions: undefined,
     effectiveOrbColors: undefined,
+    effectiveOrbValue: undefined,
   };
 }
 

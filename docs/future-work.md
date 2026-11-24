@@ -58,11 +58,11 @@
 
 ### 2.3 前端致命交互断链与弹窗死锁修复（建议 2~3 个 PR）
 
-- [ ] **修复 `PendingChoiceModal` 三大卡死/裁切 Bug 与层级遮挡**（`apps/web/src/components/game/PendingChoiceModal.tsx`、`GameClient.tsx:998,1764`）：传 `key={activePendingChoice.id}` 并监听重置 `selectedIds`；遵循 8.6.3 `minRequired = Math.min(minSelections, eligibleOptions.length)`；横向画廊改 `justify-start` 消除全牌组检索左侧裁切；错误横幅从 `z-50` 提至 `z-toast` (60)。
-- [ ] **接入 `PERFORM_ASSIST`（8.13 协战）与 `USE_INSTANT`（10.8 非战术瞬时）**（`GameClient.tsx`、`CardContextMenu.tsx`、`BattlefieldArenaView.tsx`）：恢复 ST06/BP04 协战与 `BP03-054`/`BP04-004`/`007`/`028` 的网页端可操作性。
-- [ ] **渲染战场辅助机 (`assistCardId`) 与单独占位装备 (`standaloneEquipmentId`) 并接入 `EQUIP_ITEM`**（`BattlefieldArenaView.tsx`、`GameClient.tsx`、`CardContextMenu.tsx`）。
-- [ ] **重构信号球区 `SignalOrbQueueView` 交互与规则**：严格校验物理相邻（4.16.2）；支持 Q&A·1 `orbValue === 3` 单张《万世铭》三消；读取 `effectiveOrbColors`、`effectiveProhibitions` (`CANNOT_ELIMINATE`) 并排除背面信号球 (`!isFaceUp`)。
-- [ ] **修复 `NativeWebSocketClient` 断线事件永不触发与卡组保存无鉴权**（`apps/web/src/lib/socket.ts:65-67,196-205`、`apps/web/src/app/decks/[id]/DeckDetailClient.tsx:855-877`）：引入 `hasOpened` 布尔字段恢复 Cloudflare 版断网重连提示；卡组保存改走 `authFetch`。
+- [x] **修复 `PendingChoiceModal` 三大卡死/裁切 Bug 与层级遮挡**（`apps/web/src/components/game/PendingChoiceModal.tsx`、`GameClient.tsx`）：传 `key={activePendingChoice.id}` 并监听重置 `selectedIds`；遵循 8.6.3 `minRequired = Math.min(minSelections, eligibleOptions.length)`；横向画廊改 `justify-start` 消除全牌组检索左侧裁切；错误横幅从 `z-50` 提至 `z-toast` (60)。（已在 `fix/stage1-frontend-interactive-bugs` 完成）
+- [x] **接入 `PERFORM_ASSIST`（8.13 协战）与 `USE_INSTANT`（10.8 非战术瞬时）**（`GameClient.tsx`、`CardContextMenu.tsx`、`BattlefieldArenaView.tsx`、`AssistModal.tsx`、`CostZoneModal.tsx`、`battle-actions.ts`）：恢复 ST06/BP04 协战与 `BP03-054`/`BP04-004`/`007`/`028` 的网页端可操作性。（已在 `fix/stage1-frontend-interactive-bugs` 完成）
+- [x] **渲染战场辅助机 (`assistCardId`) 与单独占位装备 (`standaloneEquipmentId`) 并接入 `EQUIP_ITEM`**（`BattlefieldArenaView.tsx`、`BattlefieldSlotView.tsx`、`GameClient.tsx`、`CardContextMenu.tsx`）。（已在 `fix/stage1-frontend-interactive-bugs` 完成）
+- [x] **重构信号球区 `SignalOrbQueueView` 交互与规则**：严格校验物理相邻（4.16.2）；同步 `effectiveOrbValue` 并支持 Q&A·1 `orbValue === 3` 单张《万世铭》三消；读取 `effectiveOrbColors`、`effectiveProhibitions` (`CANNOT_ELIMINATE`) 并排除背面信号球 (`!isFaceUp`)。（已在 `fix/stage1-frontend-interactive-bugs` 完成）
+- [x] **修复 `NativeWebSocketClient` 断线事件永不触发与卡组保存无鉴权**（`apps/web/src/lib/socket.ts`、`apps/web/src/app/decks/[id]/DeckDetailClient.tsx`）：引入 `hasOpened` 布尔字段恢复 Cloudflare 版断网重连提示；卡组保存改走 `authFetch`（已于 PR #34 与 `fix/stage1-frontend-interactive-bugs` 完成）。
 
 ### 2.4 全表关键卡牌致命失效、作弊与暗区泄密止血（建议 2 个 PR）
 
