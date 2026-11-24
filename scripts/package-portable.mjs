@@ -61,14 +61,8 @@ fs.copyFileSync(
 // 复制前端 Standalone
 fs.cpSync(path.join(ROOT_DIR, 'apps/web/.next/standalone'), path.join(TARGET_DIR, 'web'), { recursive: true });
 
-// 复制环境配置文件
-const rootEnvPath = path.join(ROOT_DIR, '.env');
+// 复制环境配置模板（严禁将开发者本机 .env 中的真实密钥与密码打包进公开分发包）
 const rootEnvExamplePath = path.join(ROOT_DIR, '.env.example');
-if (fs.existsSync(rootEnvPath)) {
-  fs.copyFileSync(rootEnvPath, path.join(TARGET_DIR, '.env'));
-} else if (fs.existsSync(rootEnvExamplePath)) {
-  fs.copyFileSync(rootEnvExamplePath, path.join(TARGET_DIR, '.env'));
-}
 if (fs.existsSync(rootEnvExamplePath)) {
   fs.copyFileSync(rootEnvExamplePath, path.join(TARGET_DIR, '.env.example'));
 }
@@ -124,7 +118,7 @@ if (fs.existsSync(envFile)) {
   } catch (e) {}
 }
 
-// 确保 JWT_SECRET 存在且有效，若未配置则自动生成随机密钥并持久化保存
+// 确保 JWT_SECRET / ADMIN_PASSWORD 存在且有效，若未配置则各自随机生成并持久化保存
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '') {
   const generatedSecret = crypto.randomBytes(32).toString('hex');
   process.env.JWT_SECRET = generatedSecret;
@@ -139,6 +133,22 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '') {
       fs.writeFileSync(envFile, content, 'utf8');
     } catch (e) {}
   }
+}
+if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.trim() === '') {
+  const generatedAdminPwd = crypto.randomBytes(9).toString('base64url');
+  process.env.ADMIN_PASSWORD = generatedAdminPwd;
+  if (fs.existsSync(envFile)) {
+    try {
+      let content = fs.readFileSync(envFile, 'utf8');
+      if (/^ADMIN_PASSWORD=.*$/m.test(content)) {
+        content = content.replace(/^ADMIN_PASSWORD=.*$/m, 'ADMIN_PASSWORD="' + generatedAdminPwd + '"');
+      } else {
+        content += '\\nADMIN_PASSWORD="' + generatedAdminPwd + '"\\n';
+      }
+      fs.writeFileSync(envFile, content, 'utf8');
+    } catch (e) {}
+  }
+  console.log('\\x1b[33m%s\\x1b[0m', '🔑 已为本便携实例生成随机管理员密码 (见 .env 中的 ADMIN_PASSWORD): ' + generatedAdminPwd);
 }
 
 // 统一对外网关端口 (默认 3000，所有外网穿透、局域网、本机访问均连接此单一端口)

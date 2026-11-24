@@ -82,10 +82,24 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     return c;
   };
 
+  const issueGuest = async (nickname?: string) => {
+    const res = await api('/api/auth/guest', {
+      method: 'POST',
+      body: JSON.stringify(nickname ? { nickname } : {}),
+    });
+    expect(res.status).toBe(200);
+    return {
+      userId: res.body.user.id as string,
+      token: res.body.token as string,
+    };
+  };
+
   /** 两名游客进入同一房间并以指定卡组准备，房主开局 */
   async function startGame(roomId: string, deckIndex = 0) {
-    const a = await connect(`/ws/rooms/${roomId}?guestId=guest_a_${roomId}&nickname=A`);
-    const b = await connect(`/ws/rooms/${roomId}?guestId=guest_b_${roomId}&nickname=B`);
+    const ga = await issueGuest('A');
+    const gb = await issueGuest('B');
+    const a = await connect(`/ws/rooms/${roomId}?token=${encodeURIComponent(ga.token)}&nickname=A`);
+    const b = await connect(`/ws/rooms/${roomId}?token=${encodeURIComponent(gb.token)}&nickname=B`);
     a.send('room:join', { roomId, title: `测试房 ${roomId}` });
     await a.next('room:state_updated');
     b.send('room:join', { roomId });
@@ -190,11 +204,18 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     expect((await api('/api/admin/monitor', { token: admin.body.token })).body.data.recentErrors).toEqual([]);
   });
 
-  it('系统预组只读，卡组写入需要登录且只能写本人名下', async () => {
+  it('系统预组只读，卡组写入需要登录且只能写本人名下（游客 JWT 被拒）', async () => {
     const del = await api('/api/decks/deck-st02', { method: 'DELETE' });
     expect(del.status).toBe(403);
     const anon = await api('/api/decks', { method: 'POST', body: JSON.stringify({ name: 'x', cards: [] }) });
     expect(anon.status).toBe(401);
+    const guestCred = await issueGuest('游客');
+    const guestDeckWrite = await api('/api/decks', {
+      method: 'POST',
+      token: guestCred.token,
+      body: JSON.stringify({ name: 'guest-deck', cards: [] }),
+    });
+    expect(guestDeckWrite.status).toBe(401);
 
     const bob = (await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ username: 'bob', password: 'bob-pass' }) })).body.token;
     const eve = (await api('/api/auth/register', { method: 'POST', body: JSON.stringify({ username: 'eve', password: 'eve-pass' }) })).body.token;
@@ -215,7 +236,8 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
   });
 
   it('密码房：未带密码与错误密码被拒，正确密码可加入；大厅列表与房间代码可查到该房间', async () => {
-    const host = await connect('/ws/rooms/700001?guestId=guest_host_1&nickname=房主');
+    const hostCred = await issueGuest('房主');
+    const host = await connect(`/ws/rooms/700001?token=${encodeURIComponent(hostCred.token)}&nickname=房主`);
     host.send('room:join', { roomId: '700001', title: '密码房', password: 'open-sesame' });
     const room = await host.next('room:state_updated');
     expect(room.hasPassword).toBe(true);
@@ -228,7 +250,8 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     expect((await api(`/api/rooms/${room.roomCode}`)).body.data.roomId).toBe('700001');
 
     // 通过房间代码连接也会被路由到同一个房间
-    const guest = await connect(`/ws/rooms/${room.roomCode}?guestId=guest_pw_1&nickname=来宾`);
+    const guestCred = await issueGuest('来宾');
+    const guest = await connect(`/ws/rooms/${room.roomCode}?token=${encodeURIComponent(guestCred.token)}&nickname=来宾`);
     guest.send('room:join', { roomId: room.roomCode });
     expect((await guest.next('game:error')).code).toBe('ROOM_PASSWORD_REQUIRED');
     guest.send('room:join', { roomId: room.roomCode, password: 'wrong' });
@@ -238,15 +261,21 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     expect(joined.roomId).toBe('700001');
   });
 
-  it('游客不能冒用注册账号 ID；握手携带 JWT 时以令牌身份为准', async () => {
+  it('游客不能冒用注册账号或他人游客 ID；握手携带 JWT 时以令牌身份为准', async () => {
     const login = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: 'alice', password: 'alice-pass' }) });
     const aliceId = login.body.user.id;
+    const victim = await issueGuest('受害者');
 
     const spoof = await connect(`/ws/rooms/700002?guestId=${aliceId}&nickname=冒名者`);
     spoof.send('room:join', { roomId: '700002' });
     const r1 = await spoof.next('room:state_updated');
     expect(r1.players[0].userId).not.toBe(aliceId);
     expect(r1.players[0].userId.startsWith('guest_')).toBe(true);
+
+    const spoofGuest = await connect(`/ws/rooms/700002?guestId=${victim.userId}&nickname=假游客`);
+    spoofGuest.send('room:join', { roomId: '700002' });
+    const rSpoofGuest = await spoofGuest.next('room:state_updated');
+    expect(rSpoofGuest.players.some((p: any) => p.userId === victim.userId)).toBe(false);
 
     const real = await connect(`/ws/rooms/700003?guestId=mallory&token=${login.body.token}`);
     real.send('room:join', { roomId: '700003' });
@@ -317,12 +346,30 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     expect(replay.body.data.events.length).toBeGreaterThan(0);
   });
 
-  it('对局中刷新页面：通过 /ws/game/:gameId 新连接重连并取回自己的状态', async () => {
-    const { a, gameId } = await startGame('730001', 2);
+  it('对局中刷新页面：携带本人游客 JWT 通过 /ws/game/:gameId 新连接重连并取回自己的状态', async () => {
+    const ga = await issueGuest('A');
+    const gb = await issueGuest('B');
+    const a = await connect(`/ws/rooms/730001?token=${encodeURIComponent(ga.token)}&nickname=A`);
+    const b = await connect(`/ws/rooms/730001?token=${encodeURIComponent(gb.token)}&nickname=B`);
+    a.send('room:join', { roomId: '730001', title: '重连测试房' });
+    await a.next('room:state_updated');
+    b.send('room:join', { roomId: '730001' });
+    await b.next('room:state_updated', (r) => r.players.length === 2);
+    const deck = OFFICIAL_STARTER_DECKS[2]!;
+    for (const c of [a, b]) {
+      c.send('room:ready', { roomId: '730001', isReady: true, deckId: deck.id, customDeck: deck });
+    }
+    await a.next('room:state_updated', (r) => r.status === 'READY');
+    const [ma, mb] = [a.mark(), b.mark()];
+    a.send('room:start', { roomId: '730001' });
+    const room = await a.next('room:state_updated', (r) => r.status === 'PLAYING', 5000, ma);
+    const gameId = room.currentGameId as string;
+    await a.next('game:bundle', () => true, 5000, ma);
+    await b.next('game:bundle', () => true, 5000, mb);
+
     const hand = a.latestState().myHandCards.map((c: any) => c.instanceId);
     a.close();
-    const userId = a.latestState().myHandCards[0].controllerPlayerId;
-    const again = await connect(`/ws/game/${encodeURIComponent(gameId)}?guestId=${userId}`);
+    const again = await connect(`/ws/game/${encodeURIComponent(gameId)}?token=${encodeURIComponent(ga.token)}`);
     again.send('game:reconnect', { gameId });
     const bundle = await again.next('game:bundle');
     expect(bundle.state.gameId).toBe(gameId);

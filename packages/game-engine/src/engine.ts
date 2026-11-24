@@ -2404,6 +2404,12 @@ export class GameEngine {
     }
 
     const toBottom = action.cardInstanceIdsToBottom ?? [];
+    if (!Array.isArray(toBottom)) {
+      return { success: false, error: '调度参数格式非法 (5.2.1.e)' };
+    }
+    if (new Set(toBottom).size !== toBottom.length) {
+      return { success: false, error: '调度放回的卡牌存在重复 ID，操作非法 (5.2.1.e)' };
+    }
 
     // 验证所有待放回的卡牌是否均在手牌中且属于该玩家
     for (const cardId of toBottom) {

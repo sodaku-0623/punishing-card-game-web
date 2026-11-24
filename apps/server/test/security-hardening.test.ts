@@ -101,7 +101,11 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     expect(created.data!.hasPassword).toBe(true);
     expect(JSON.stringify(created.data)).not.toContain('open-sesame');
 
-    const guest = await connect({ query: { userId: 'pw-guest' } });
+    const guestRes = await app.fastify.inject({ method: 'POST', url: '/api/auth/guest', payload: { nickname: '密码房来宾' } });
+    expect(guestRes.statusCode).toBe(200);
+    const { token: guestToken, user: guestUser } = JSON.parse(guestRes.body);
+    const guestId = guestUser.id as string;
+    const guest = await connect({ token: guestToken });
 
     let err = nextError(guest);
     guest.emit('room:join', { roomId: 'sec-pw-room' });
@@ -114,7 +118,7 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     const statePromise = nextRoomState(guest);
     guest.emit('room:join', { roomId: 'sec-pw-room', password: 'open-sesame' });
     const room = await statePromise;
-    expect(room.players.map((p) => p.userId)).toContain('pw-guest');
+    expect(room.players.map((p) => p.userId)).toContain(guestId);
   });
 
   it('房间关闭后重新开启仍保留密码校验，且仓储中不保存明文密码', async () => {
@@ -199,16 +203,211 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
   });
 
   it('系统预组不可通过 REST 接口删除或修改', async () => {
-    const del = await app.fastify.inject({ method: 'DELETE', url: '/api/decks/deck-st01' });
+    const unauthDel = await app.fastify.inject({ method: 'DELETE', url: '/api/decks/deck-st01' });
+    expect(unauthDel.statusCode).toBe(401);
+    const unauthPut = await app.fastify.inject({ method: 'PUT', url: '/api/decks/deck-st01', payload: { name: 'hacked' } });
+    expect(unauthPut.statusCode).toBe(401);
+    const unauthPost = await app.fastify.inject({ method: 'POST', url: '/api/decks', payload: { id: 'deck-st01', name: 'hacked' } });
+    expect(unauthPost.statusCode).toBe(401);
+
+    const reg = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'sys-deck-tester', password: 'password123' },
+    });
+    const { token } = JSON.parse(reg.body);
+    const headers = { authorization: `Bearer ${token}` };
+
+    const del = await app.fastify.inject({ method: 'DELETE', url: '/api/decks/deck-st01', headers });
     expect(del.statusCode).toBe(403);
-    const put = await app.fastify.inject({ method: 'PUT', url: '/api/decks/deck-st01', payload: { name: 'hacked' } });
+    const put = await app.fastify.inject({ method: 'PUT', url: '/api/decks/deck-st01', headers, payload: { name: 'hacked' } });
     expect(put.statusCode).toBe(403);
-    const post = await app.fastify.inject({ method: 'POST', url: '/api/decks', payload: { id: 'deck-st01', name: 'hacked' } });
+    const post = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers,
+      payload: { id: 'deck-st01', userId: 'system', name: 'hacked', cards: [{ cardNumber: 'ST01-012', count: 4 }] },
+    });
     expect(post.statusCode).toBe(403);
   });
 
   it('运维监控接口需要管理员身份', async () => {
     const res = await app.fastify.inject({ method: 'GET', url: '/api/admin/monitor' });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('游客不得冒充其他游客 ID 重连、代投降或提交操作', async () => {
+    const victimRes = await app.fastify.inject({ method: 'POST', url: '/api/auth/guest', payload: { nickname: '真实游客' } });
+    expect(victimRes.statusCode).toBe(200);
+    const victimId = JSON.parse(victimRes.body).user.id as string;
+
+    const session = await app.gameSessionMgr.startGameSession('sec-spoof-room', victimId, 'deck-st01', 'p-bob', 'deck-st02', 5252);
+    const spoofer = await connect({ query: { userId: victimId, username: '冒充者' } });
+
+    const joinState = nextRoomState(spoofer);
+    spoofer.emit('room:join', { roomId: 'sec-spoof-join-check' });
+    const room = await joinState;
+    expect(room.players[0]!.userId).not.toBe(victimId);
+    expect(room.players[0]!.userId.startsWith('guest_')).toBe(true);
+
+    const reconnErr = nextError(spoofer);
+    spoofer.emit('game:reconnect', { gameId: session.gameId });
+    expect((await reconnErr).code).toBe(ErrorCode.UNAUTHORIZED);
+
+    const actionErr = nextError(spoofer);
+    spoofer.emit('game:action', { gameId: session.gameId, action: { type: 'SURRENDER', playerId: victimId } as any });
+    expect((await actionErr).code).toBe(ErrorCode.UNAUTHORIZED);
+    expect(session.engine.getState().status).toBe('PLAYING');
+  });
+
+  it('游客 JWT 不可用于登录用户及管理员 REST 接口', async () => {
+    const guestRes = await app.fastify.inject({ method: 'POST', url: '/api/auth/guest', payload: { nickname: '普通游客' } });
+    expect(guestRes.statusCode).toBe(200);
+    const { token: guestToken } = JSON.parse(guestRes.body);
+    const headers = { authorization: `Bearer ${guestToken}` };
+
+    expect((await app.fastify.inject({ method: 'GET', url: '/api/auth/me', headers })).statusCode).toBe(401);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers, payload: { name: 'g', cards: [] } })).statusCode).toBe(401);
+    expect((await app.fastify.inject({ method: 'GET', url: '/api/admin/monitor', headers })).statusCode).toBe(403);
+  });
+
+  it('普通登录用户不得篡改或删除他人卡组，且小数量卡表被拒绝', async () => {
+    const ownerReg = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'deck-owner', password: 'password123' },
+    });
+    const attackerReg = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'deck-attacker-2', password: 'password123' },
+    });
+    const { token: ownerToken } = JSON.parse(ownerReg.body);
+    const { token: attackerToken } = JSON.parse(attackerReg.body);
+
+    const createRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: {
+        name: '合法自建卡组',
+        cards: [
+          { cardNumber: 'ST01-012', count: 4 },
+          { cardNumber: 'ST01-013', count: 4 },
+          { cardNumber: 'ST01-014', count: 4 },
+          { cardNumber: 'BP01-001', count: 4 },
+          { cardNumber: 'BP01-002', count: 4 },
+          { cardNumber: 'BP01-003', count: 4 },
+          { cardNumber: 'BP01-004', count: 4 },
+          { cardNumber: 'BP01-005', count: 4 },
+          { cardNumber: 'BP01-006', count: 4 },
+          { cardNumber: 'BP01-007', count: 4 },
+          { cardNumber: 'BP01-008', count: 4 },
+          { cardNumber: 'BP01-010', count: 4 },
+          { cardNumber: 'BP01-012', count: 2 },
+        ],
+      },
+    });
+    expect(createRes.statusCode).toBe(200);
+    const deckId = JSON.parse(createRes.body).data.id;
+
+    const putRes = await app.fastify.inject({
+      method: 'PUT',
+      url: `/api/decks/${deckId}`,
+      headers: { authorization: `Bearer ${attackerToken}` },
+      payload: { name: '恶意改名' },
+    });
+    expect(putRes.statusCode).toBe(403);
+
+    const delRes = await app.fastify.inject({
+      method: 'DELETE',
+      url: `/api/decks/${deckId}`,
+      headers: { authorization: `Bearer ${attackerToken}` },
+    });
+    expect(delRes.statusCode).toBe(403);
+
+    const floatRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      payload: { name: '小数漏洞卡组', cards: [{ cardNumber: 'ST01-012', count: 2.5 }] },
+    });
+    expect(floatRes.statusCode).toBe(400);
+  });
+
+  it('REST 房间创建与删除接口仅限管理员调用', async () => {
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/rooms', payload: { name: 'r' } })).statusCode).toBe(401);
+    expect((await app.fastify.inject({ method: 'DELETE', url: '/api/rooms/r1' })).statusCode).toBe(401);
+
+    const reg = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'room-rest-user', password: 'password123' },
+    });
+    const { token } = JSON.parse(reg.body);
+    const headers = { authorization: `Bearer ${token}` };
+
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/rooms', headers, payload: { name: 'r' } })).statusCode).toBe(403);
+    expect((await app.fastify.inject({ method: 'DELETE', url: '/api/rooms/r1', headers })).statusCode).toBe(403);
+  });
+
+  it('Socket 入口收到 null 或畸形负载时不崩溃并安全拦截', async () => {
+    const s = await connect({});
+    s.emit('room:join', null as any);
+    s.emit('room:ready', undefined as any);
+    s.emit('room:select_deck', 'bad-payload' as any);
+    s.emit('game:action', null as any);
+    s.emit('game:choice', null as any);
+    await wait(120);
+
+    expect(s.connected).toBe(true);
+    const statePromise = nextRoomState(s);
+    s.emit('room:join', { roomId: 'sec-malformed-recovery' });
+    const room = await statePromise;
+    expect(room.roomId).toBe('sec-malformed-recovery');
+  });
+
+  it('Node 版 GameSessionManager 为 ST06 角色装配协战配置 (8.13)', async () => {
+    const reg = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'assist-deck-owner', password: 'password123' },
+    });
+    const { token } = JSON.parse(reg.body);
+    const createRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        name: 'ST06协战测试',
+        cards: [
+          { cardNumber: 'ST06-001', count: 4 },
+          { cardNumber: 'ST06-002', count: 4 },
+          { cardNumber: 'ST06-003', count: 4 },
+          { cardNumber: 'ST06-004', count: 4 },
+          { cardNumber: 'ST06-005', count: 4 },
+          { cardNumber: 'ST06-006', count: 4 },
+          { cardNumber: 'ST06-007', count: 4 },
+          { cardNumber: 'ST06-008', count: 4 },
+          { cardNumber: 'ST06-009', count: 4 },
+          { cardNumber: 'ST06-010', count: 4 },
+          { cardNumber: 'ST06-011', count: 4 },
+          { cardNumber: 'ST06-012', count: 4 },
+          { cardNumber: 'ST06-013', count: 2 },
+        ],
+      },
+    });
+    expect(createRes.statusCode).toBe(200);
+    const deckId = JSON.parse(createRes.body).data.id;
+
+    const session = await app.gameSessionMgr.startGameSession('sec-assist-room', 'assist-p1', deckId, 'assist-p2', 'deck-st01', 9001);
+    const state = session.engine.getState();
+    const p1Cards = Object.values(state.cards).filter((inst) => inst.ownerPlayerId === 'assist-p1');
+    const st06001 = p1Cards.find((inst) => inst.cardNumber === 'ST06-001');
+    expect(st06001).toBeDefined();
+    const def = (app.gameSessionMgr as any).cardDb.getCard(st06001!.cardId);
+    expect(def?.assistConfig).toBeDefined();
+    expect(def?.assistConfig?.partnerFilter?.traits).toContain('塞西莉');
+    expect(def?.imageUrl).toBe('/cards/ST06-001.png');
   });
 });

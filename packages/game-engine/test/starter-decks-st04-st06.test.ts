@@ -393,6 +393,38 @@ describe('ST04 突击鹰小队官方预组 (14 张声明式效果)', () => {
     // ST04-004 的「直到下个回合结束」buff 在自己回合结束后仍应保留
     expect(engine.fieldMgr.calculateRoleEffectivePP(kamui.instanceId)).toBe(4000);
   });
+
+  it('ST04-003 回合末可以从墓地拉出 8 费 ST04-002 (补全突击鹰小队特征后可用)', () => {
+    const engine = createEngine(
+      expandDeck('ST01', ['ST04-002', 'ST04-003']),
+      expandDeck('ST02')
+    );
+    const state = engine.getState();
+    const active = state.activePlayerId;
+
+    const st04002 = findCard(engine, active, 'ST04-002');
+    engine.zoneMgr.moveCard(st04002.instanceId, 'GRAVEYARD', { isFaceUp: true });
+    const st04003 = placeRole(engine, active, 'ST04-003', 0);
+
+    expect(engine.dispatchAction({ type: 'PASS_ACTION_TIMING', playerId: active }).success).toBe(true);
+    passInstantWindows(engine);
+
+    expect(state.currentPendingChoice?.effectType).toBe('PRESET_ST04_003_REVIVE');
+    const hasSt04002Option = state.currentPendingChoice!.options.some((o) => o.id === st04002.instanceId);
+    expect(hasSt04002Option).toBe(true);
+
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: state.currentPendingChoice!.id,
+        selectedIds: [st04002.instanceId],
+      }).success
+    ).toBe(true);
+
+    expect(state.cards[st04003.instanceId]!.zone).toBe('DECK');
+    expect(state.cards[st04002.instanceId]!.zone).toBe('BATTLEFIELD');
+  });
 });
 
 describe('ST05 清洁部队官方预组 (13 张 晖/暮形态声明式效果)', () => {

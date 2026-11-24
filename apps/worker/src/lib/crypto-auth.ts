@@ -123,7 +123,8 @@ export interface JwtPayload {
   sub: string; // userId
   username: string;
   nickname: string;
-  role: 'USER' | 'ADMIN';
+  role: 'USER' | 'ADMIN' | 'GUEST';
+  isGuest?: boolean;
   iat?: number;
   exp?: number;
 }
@@ -212,10 +213,13 @@ export async function verifyJwt(token: string, secret: string): Promise<JwtPaylo
     const isValid = await crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(data));
     if (!isValid) return null;
 
+    const header = JSON.parse(base64UrlToUtf8(headerB64!)) as { alg?: unknown };
+    if (header?.alg !== 'HS256') return null;
+
     const payload = JSON.parse(base64UrlToUtf8(payloadB64!)) as JwtPayload;
     const now = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < now) {
-      return null; // Token 过期
+    if (payload.exp !== undefined && (typeof payload.exp !== 'number' || payload.exp < now)) {
+      return null; // Token 过期或字段非法
     }
 
     return payload;

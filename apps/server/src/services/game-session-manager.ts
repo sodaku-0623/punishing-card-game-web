@@ -4,7 +4,13 @@ import {
   PublicGameState,
   ErrorCode,
 } from '@zhanshuang/shared';
-import { GameEngine, PlayerInitConfig, MemoryCardDatabase, parseAscensionConfig } from '@zhanshuang/game-engine';
+import {
+  GameEngine,
+  PlayerInitConfig,
+  MemoryCardDatabase,
+  parseAscensionConfig,
+  parseAssistConfig,
+} from '@zhanshuang/game-engine';
 import { IGameRepository, IDeckRepository, ICardRepository } from '@zhanshuang/database';
 import { MetricsService } from './metrics-service.js';
 
@@ -58,7 +64,9 @@ export class GameSessionManager {
       signalOrb: card.signalOrb ?? undefined,
       traits: card.traits || [],
       isInstant: !!card.isInstant,
-      ascensionConfig: parseAscensionConfig(card.rulesText || ''),
+      ascensionConfig: card.ascensionConfig ?? parseAscensionConfig(card.rulesText || ''),
+      assistConfig: card.assistConfig ?? parseAssistConfig(card.rulesText || ''),
+      imageUrl: card.imageUrl ?? undefined,
       abilities: [],
       rulesText: card.rulesText || '',
       flavorText: card.flavorText ?? undefined,

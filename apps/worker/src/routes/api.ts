@@ -28,12 +28,14 @@ function userSummary(user: Pick<DbUser, 'id' | 'username' | 'nickname' | 'role'>
   return { id: user.id, username: user.username, nickname: user.nickname, role: user.role };
 }
 
-/** 解析 Authorization 头中的 JWT，未登录或无效时返回 null */
+/** 解析 Authorization 头中的已登录用户 JWT；游客凭据或无效凭据一律返回 null */
 async function readAuth(c: AppContext): Promise<JwtPayload | null> {
   const secret = getJwtSecret(c.env);
   const header = c.req.header('Authorization');
   if (!secret || !header?.startsWith('Bearer ')) return null;
-  return verifyJwt(header.substring(7), secret);
+  const payload = await verifyJwt(header.substring(7), secret);
+  if (!payload || payload.role === 'GUEST' || payload.isGuest) return null;
+  return payload;
 }
 
 async function issueToken(c: AppContext, user: Pick<DbUser, 'id' | 'username' | 'nickname' | 'role'>) {
@@ -177,6 +179,62 @@ export function createApiApp() {
 
     const token = await issueToken(c, user);
     return authResponse(c, token!, userSummary(user));
+  });
+
+  /**
+   * 签发或刷新签名游客凭据：防止客户端自报伪造他人 guestId
+   */
+  app.post('/api/auth/guest', async (c) => {
+    const secret = getJwtSecret(c.env);
+    if (!secret) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法签发游客凭据');
+    const body = await c.req.json().catch(() => ({}));
+    const rawBody = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+
+    const header = c.req.header('Authorization');
+    const candidateToken =
+      (header?.startsWith('Bearer ') ? header.substring(7).trim() : '') ||
+      (typeof rawBody.token === 'string' ? rawBody.token.trim() : '');
+
+    let guestId: string | null = null;
+    let existingNickname = '';
+    if (candidateToken) {
+      const payload = await verifyJwt(candidateToken, secret);
+      if (
+        payload?.sub &&
+        payload.sub.startsWith('guest_') &&
+        (payload.role === 'GUEST' || payload.isGuest)
+      ) {
+        const collision = c.env?.DB
+          ? await c.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(payload.sub).first()
+          : null;
+        if (!collision) {
+          guestId = payload.sub;
+          existingNickname = payload.nickname || '';
+        }
+      }
+    }
+
+    if (!guestId) {
+      guestId = `guest_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    }
+    const requestedNickname =
+      typeof rawBody.nickname === 'string' ? rawBody.nickname.trim().slice(0, 32) : '';
+    const nickname = requestedNickname || existingNickname || `指挥官_${guestId.slice(0, 8)}`;
+
+    const token = await signJwt(
+      { sub: guestId, username: guestId, nickname, role: 'GUEST', isGuest: true },
+      secret
+    );
+    const guestSummary = { id: guestId, username: guestId, nickname, role: 'GUEST' as const };
+    return c.json({
+      success: true,
+      token,
+      user: guestSummary,
+      data: {
+        token,
+        guest: { id: guestId, nickname },
+      },
+    });
   });
 
   app.get('/api/auth/me', async (c) => {

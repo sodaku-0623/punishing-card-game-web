@@ -33,7 +33,6 @@ const WAITING_DISCONNECT_GRACE_MS = 15_000;
 const PLAYING_DISCONNECT_FORFEIT_MS = 3 * 60_000;
 /** 对战中双方均掉线超过该时长，关闭房间并结束对局 (不计战绩) */
 const PLAYING_ALL_OFFLINE_CLOSE_MS = 60_000;
-const GUEST_ID_PATTERN = /^[A-Za-z0-9_\-.:]{1,64}$/;
 
 interface PlayerRow {
   userId: string;
@@ -142,28 +141,39 @@ export class RoomDO extends DurableObject<Env> {
     if (token && secret) {
       const payload = await verifyJwt(token, secret);
       if (payload?.sub) {
-        return {
-          userId: payload.sub,
-          username: payload.username,
-          nickname: clip(payload.nickname, 32) || payload.username,
-          isGuest: false,
-        };
+        if (payload.role === 'GUEST' || payload.isGuest) {
+          if (payload.sub.startsWith('guest_')) {
+            let isRegistered = false;
+            if (this.env.DB) {
+              try {
+                await initializeDatabase(this.env.DB, this.env.ADMIN_PASSWORD);
+                isRegistered = Boolean(
+                  await this.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(payload.sub).first()
+                );
+              } catch {
+                isRegistered = true;
+              }
+            }
+            if (!isRegistered) {
+              const nickname =
+                clip(url.searchParams.get('nickname') || payload.nickname, 32) ||
+                `指挥官_${payload.sub.slice(0, 8)}`;
+              return { userId: payload.sub, username: payload.sub, nickname, isGuest: true };
+            }
+          }
+        } else {
+          return {
+            userId: payload.sub,
+            username: payload.username,
+            nickname: clip(payload.nickname, 32) || payload.username,
+            isGuest: false,
+          };
+        }
       }
     }
 
-    const fallbackId = `guest_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
-    const rawGuestId = url.searchParams.get('guestId') || '';
-    let guestId = GUEST_ID_PATTERN.test(rawGuestId) ? rawGuestId : fallbackId;
-    // 游客不得冒用已注册账号的 userId (否则可读取其手牌等隐藏信息)
-    if (guestId !== fallbackId && this.env.DB) {
-      try {
-        await initializeDatabase(this.env.DB, this.env.ADMIN_PASSWORD);
-        const found = await this.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(guestId).first();
-        if (found) guestId = fallbackId;
-      } catch {
-        guestId = fallbackId;
-      }
-    }
+    // 彻底废弃未签名的 query.guestId，无有效签名凭据时一律由服务端分配随机游客 ID
+    const guestId = `guest_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const nickname = clip(url.searchParams.get('nickname'), 32) || `指挥官_${guestId.slice(0, 8)}`;
     return { userId: guestId, username: guestId, nickname, isGuest: true };
   }
@@ -176,15 +186,22 @@ export class RoomDO extends DurableObject<Env> {
     const me = ws.deserializeAttachment() as WsClientAttachment | null;
     if (!me?.userId || typeof message !== 'string') return;
 
-    let parsed: { event?: string; payload?: any };
+    let parsed: { event?: unknown; payload?: unknown };
     try {
-      parsed = JSON.parse(message);
+      const raw = JSON.parse(message);
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return this.sendError(ws, ErrorCode.INVALID_ACTION, '非法的数据格式');
+      }
+      parsed = raw as { event?: unknown; payload?: unknown };
     } catch {
       return this.sendError(ws, ErrorCode.INVALID_ACTION, '非法的数据格式');
     }
-    const payload = parsed.payload ?? {};
 
     try {
+      const payload: any =
+        parsed.payload && typeof parsed.payload === 'object' && !Array.isArray(parsed.payload)
+          ? parsed.payload
+          : {};
       switch (parsed.event) {
         case 'room:join':
           return await this.onRoomJoin(ws, me, payload);

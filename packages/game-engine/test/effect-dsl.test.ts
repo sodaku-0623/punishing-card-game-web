@@ -293,4 +293,30 @@ describe('声明式卡牌效果描述与严格类型/结构校验 (docs/future-w
       })
     ).toThrow(/未定义变量 "wrongVar"/);
   });
+
+  it('官方全卡表数据卫生校验：ST04 突击鹰特征完整、URL 安全 ID、无 icon 残留且 BP02-028 无双空格', () => {
+    for (const num of ['ST04-002', 'ST04-005', 'ST04-006', 'ST04-009']) {
+      const def = db.getCard(num);
+      expect(def).toBeDefined();
+      expect(def!.traits).toContain('突击鹰小队');
+    }
+
+    const bp028 = db.getCard('BP02-028');
+    expect(bp028?.name).toBe('拉弥亚·深谣 强压层流');
+
+    for (const card of OFFICIAL_CARDS_DATA) {
+      expect(card.id).toMatch(/^[a-z0-9_-]+$/i);
+      expect(card.rulesText).not.toMatch(/icon[】\]]/);
+    }
+
+    // 校验 entry/entries 与 activate/activates 互斥校验
+    expect(() =>
+      validateCardEffectSpec({
+        cardNumber: 'TEST-MUTEX',
+        name: '互斥检查',
+        entry: { steps: [{ op: 'DRAW', count: 1 }] },
+        entries: [{ steps: [{ op: 'DRAW', count: 1 }] }],
+      })
+    ).toThrow(/不能同时配置 entry 与 entries/);
+  });
 });

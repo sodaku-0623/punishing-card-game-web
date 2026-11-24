@@ -9,9 +9,9 @@ import {
 import { ICardDatabase } from '../database/card-registry.js';
 import { parseInherentChargeCount, parseInherentKeywords } from '../rules/keywords.js';
 
-/** 规范化官方卡表名称中 `· ` 与 `·` 的排版空格差异（如「卡列尼娜· 辉晓」≡「卡列尼娜·辉晓」） */
+/** 规范化官方卡表名称中 `· ` 与 `·` 的排版空格及连续多空格差异（如「卡列尼娜· 辉晓」≡「卡列尼娜·辉晓」） */
 export function normalizeCardName(name: string): string {
-  return name.replace(/·\s+/g, '·');
+  return name.replace(/·\s+/g, '·').replace(/\s+/g, ' ').trim();
 }
 
 /** 展开官方卡表与卡面规则文本之间的同义特征名称 (异聚体<->神寂启示录、火花<->机械教会、太刀类->封刃太刀) */

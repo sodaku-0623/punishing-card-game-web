@@ -3,10 +3,12 @@ import { SignalOrbType } from '@zhanshuang/shared';
 import { validateDeck, extractCoreCardNumber, DeckCardInput } from '../src/validators/deck.js';
 
 describe('Deck Validation Rules (5.1 牌组的准备)', () => {
-  it('正确解析卡牌编号并剥除异画小写后缀 (2.7.3)', () => {
+  it('正确解析卡牌编号并剥除异画小写后缀与【冠军】后缀 (2.7.3)', () => {
     expect(extractCoreCardNumber('BP01-001')).toBe('BP01-001');
     expect(extractCoreCardNumber('BP01-001a')).toBe('BP01-001');
     expect(extractCoreCardNumber('BP01-001b')).toBe('BP01-001');
+    expect(extractCoreCardNumber('BP02-022【冠军】')).toBe('BP02-022');
+    expect(extractCoreCardNumber('BP03-003【冠军】')).toBe('BP03-003');
   });
 
   function createLegalDeck(): DeckCardInput[] {
@@ -83,5 +85,29 @@ describe('Deck Validation Rules (5.1 牌组的准备)', () => {
     expect(result.isValid).toBe(false);
     expect(result.errors.some((e) => e.includes('<信号球·红>'))).toBe(true);
     expect(result.errors.some((e) => e.includes('<信号球·蓝>'))).toBe(true);
+  });
+
+  it('普通版与【冠军】异画合并超过4张或非整数数量时判定非法 (2.7.3 & 5.1.2.b)', () => {
+    const deck = createLegalDeck();
+    deck.find((c) => c.cardNumber === 'BP01-001')!.count = 2;
+    deck.find((c) => c.cardNumber === 'BP01-010')!.count = 0;
+    const cleaned = deck.filter((c) => c.count > 0);
+    cleaned.push(
+      { cardId: 'c-bp02-022', cardNumber: 'BP02-022', name: '比安卡·晖暮', count: 3 },
+      { cardId: 'c-bp02-022-champion', cardNumber: 'BP02-022【冠军】', name: '比安卡·晖暮', count: 2 }
+    );
+    // 调整 002 保持总计 50 张 (原有 50 - 2 - 2 + 3 + 2 = 51 -> 减 1 张 002)
+    cleaned.find((c) => c.cardNumber === 'BP01-002')!.count = 3;
+    const champResult = validateDeck(cleaned);
+    expect(champResult.isValid).toBe(false);
+    expect(champResult.errors.some((e) => e.includes('[BP02-022]'))).toBe(true);
+
+    const fracDeck = createLegalDeck();
+    fracDeck.find((c) => c.cardNumber === 'BP01-001')!.count = 2.5;
+    fracDeck.find((c) => c.cardNumber === 'BP01-002')!.count = 2.5;
+    fracDeck.push({ cardId: 'c-bp01-011', cardNumber: 'BP01-011', name: '补充', count: 3 });
+    const fracResult = validateDeck(fracDeck);
+    expect(fracResult.isValid).toBe(false);
+    expect(fracResult.errors.some((e) => e.includes('数量非法'))).toBe(true);
   });
 });
