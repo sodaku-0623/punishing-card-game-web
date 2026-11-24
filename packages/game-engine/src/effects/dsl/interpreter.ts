@@ -2296,6 +2296,12 @@ export class DeclarativeEffectInterpreter {
           break;
         }
 
+        case 'PEEK_TOP': {
+          const targetPlayer = this.resolveSide(playerId, step.side ?? 'SELF');
+          vars[step.saveToVar] = this.peekTop(targetPlayer, step.count);
+          break;
+        }
+
         case 'REVEAL_TOP': {
           const targetPlayer = this.resolveSide(playerId, step.side ?? 'SELF');
           const revealedIds = this.revealTop(targetPlayer, step.count);
@@ -2488,6 +2494,16 @@ export class DeclarativeEffectInterpreter {
                   rawPool.push(c);
                 }
               }
+            } else if (z === 'DECK') {
+              const sortedDeck = [...this.zone(targetPlayer, 'DECK')].sort(
+                (a, b) => a.cardNumber.localeCompare(b.cardNumber) || a.instanceId.localeCompare(b.instanceId)
+              );
+              for (const c of sortedDeck) {
+                if (!seenIds.has(c.instanceId)) {
+                  seenIds.add(c.instanceId);
+                  rawPool.push(c);
+                }
+              }
             } else {
               for (const c of this.zone(targetPlayer, z)) {
                 if (!seenIds.has(c.instanceId)) {
@@ -2575,12 +2591,16 @@ export class DeclarativeEffectInterpreter {
           const min = Math.min(step.min ?? 1, max);
           const effectType = step.choiceEffectType ?? `DSL_CHOOSE_VAR_${cardNumber}`;
           const prompt = this.formatPrompt(step.prompt, playerId);
+          const isPrivatePeek = cards.length > 0 && cards.every((c) => c.zone === 'DECK');
           this.enqueueDslChoice(
             {
               id: this.choiceId(effectType),
               playerId,
               choiceType: 'SELECT_CARDS',
-              prompt: eligibleCount > 0 ? prompt : `${prompt}：公开的牌中没有符合条件的卡牌，请确认`,
+              prompt:
+                eligibleCount > 0
+                  ? prompt
+                  : `${prompt}：${isPrivatePeek ? '没有符合条件的卡牌' : '公开的牌中没有符合条件的卡牌'}，请确认`,
               options: cards.map((c) =>
                 this.effects.createGeneralCardChoiceOption(c, {
                   eligible: isEligible(c),
@@ -2610,7 +2630,7 @@ export class DeclarativeEffectInterpreter {
                 requireEmptySlotCount: Boolean(step.requireEmptySlot && (step.max ?? 1) > 1),
               },
             },
-            { revealed: ids }
+            isPrivatePeek ? undefined : { revealed: ids }
           );
           return;
         }
@@ -2979,25 +2999,24 @@ export class DeclarativeEffectInterpreter {
                 moved.push(id);
               }
             } else if (step.toZone === 'DECK_BOTTOM') {
-              // 公开剩余卡牌只移动仍在处理区的牌
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
               this.ctx.zoneMgr.moveCardToBottomOfDeck(id);
               moved.push(id);
             } else if (step.toZone === 'DECK_TOP') {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
               this.ctx.zoneMgr.moveCardToTopOfDeck(id);
               moved.push(id);
             } else if (step.toZone === 'DECK_SHUFFLE') {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
               this.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
               ownersToShuffle.add(card.ownerPlayerId);
               moved.push(id);
             } else if (step.toZone === 'SIGNAL_ORB_BOTTOM') {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
               this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: step.isFaceUp ?? true, toBottom: true });
               moved.push(id);
             } else if (step.toZone === 'COST') {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'GRAVEYARD') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'GRAVEYARD' && card.zone !== 'DECK') continue;
               this.ctx.zoneMgr.moveCard(id, 'COST', {
                 isFaceUp: step.isFaceUp ?? false,
                 isReady: step.isReady ?? true,
@@ -3094,12 +3113,12 @@ export class DeclarativeEffectInterpreter {
               }
               moved.push(id);
             } else {
-              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING') continue;
+              if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
               if (step.toZone === 'GRAVEYARD') {
                 this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
                   isFaceUp: step.isFaceUp ?? true,
                   sentByEffectOrCost: step.sentByEffectOrCost ?? (card.zone === 'BATTLEFIELD'),
-                  countAsDeckToGy: card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK',
+                  countAsDeckToGy: card.zone === 'DECK' || (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'),
                 });
               } else {
                 this.ctx.zoneMgr.moveCard(id, step.toZone, {
@@ -4427,6 +4446,13 @@ export class DeclarativeEffectInterpreter {
       orbCardIds: ids,
       orbColors,
     });
+  }
+
+  private peekTop(playerId: string, count: number): string[] {
+    if (this.zone(playerId, 'DECK').length === 0) {
+      if (!this.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) return [];
+    }
+    return this.zone(playerId, 'DECK').slice(0, count).map((c) => c.instanceId);
   }
 
   private revealTop(playerId: string, count: number): string[] {

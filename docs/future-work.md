@@ -81,7 +81,7 @@
 
 ### 3.1 规则引擎内核闭环（对应 `2026-11-full-audit.md` 第 3 章）
 
-- [ ] **隐藏信息全链路脱敏**：新增 `sanitizeGameEventsForPlayer`（脱敏 `drawnCardIds`、秘密区 `cardInstanceId`、`CHOICE_RESOLVED.selectedIds`、`GAME_STARTED.seed`）；隐藏区脱敏不保留跨区持久 `instanceId`；`publicPendingTriggers` 隐藏非公开区触发源；扫描 `DECK` 不按物理序下发选项；`REVEAL_TOP` 区分私密查看（`PEEK_TOP`）与公开（如 `BP01-061`、`BP03-014/015/025/061/063`）。
+- [x] **隐藏信息全链路脱敏**（已在 `fix/stage2a-hidden-info-sanitization` 完成）：新增 `sanitizeGameEventsForPlayer`（脱敏 `drawnCardIds`、秘密区 `cardInstanceId`、`CHOICE_RESOLVED.selectedIds`、`GAME_STARTED.seed`、`COST_PAID`、`ABILITY_ACTIVATED` 与对手 `CHOICE_REQUIRED`）并接入 Node/CF 双后端；隐藏区脱敏不保留跨区持久 `instanceId`（`hidden-cost:*`/`hidden-orb:*`）；`publicPendingTriggers` 与 `opponentPendingChoice` 隐藏非公开区触发源；扫描 `DECK` 不按物理序下发选项；新增 `PEEK_TOP` 私密查看原语并迁移 `BP01-061`、`BP03-014/015/025/061/063`。
 - [ ] **状态机安全与置换收口**：
   - `CheckTimingManager` 内层 SBA `do...while` 增加硬性熔断上限；
   - `PhaseMachine` 在竖直/抽牌/结束阶段遇 `currentPendingChoice` 或 `FINISHED` 立即挂起停止，修正 `TURN_STARTED` 至 6.2.1.a 竖直前；

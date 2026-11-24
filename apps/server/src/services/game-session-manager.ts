@@ -280,6 +280,15 @@ export class GameSessionManager {
     };
   }
 
+  /**
+   * 获取针对特定玩家脱敏后的增量游戏事件 (12. 隐藏信息)
+   */
+  getSanitizedGameEvents(gameId: string, events: GameEvent[], forPlayerId: string): GameEvent[] {
+    const session = this.sessions.get(gameId);
+    if (!session || events.length === 0) return [];
+    return session.engine.getSanitizedEvents(events, forPlayerId);
+  }
+
   getSessionByRoomId(roomId: string): GameSession | undefined {
     for (const session of this.sessions.values()) {
       if (session.roomId === roomId) return session;

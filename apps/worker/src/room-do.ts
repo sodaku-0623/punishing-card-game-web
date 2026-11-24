@@ -8,7 +8,7 @@ import {
   RoomPlayerDto,
   RoomStatus,
 } from '@zhanshuang/shared';
-import { GameEngine, GameEngineSnapshot } from '@zhanshuang/game-engine';
+import { GameEngine, GameEngineSnapshot, sanitizeGameEventsForPlayer } from '@zhanshuang/game-engine';
 import { Env, WsClientAttachment } from './types.js';
 import { getJwtSecret, verifyJwt } from './lib/crypto-auth.js';
 import { initializeDatabase } from './lib/db-client.js';
@@ -852,12 +852,13 @@ export class RoomDO extends DurableObject<Env> {
   /** 单条合并消息：事件 + 针对该玩家脱敏后的状态 */
   private sendBundle(ws: WebSocket, userId: string, engine: GameEngine, events: GameEvent[]): void {
     const session = this.getSession();
+    const safeEvents = sanitizeGameEventsForPlayer(events, engine.getState(), userId);
     const state: PublicGameState = {
       ...engine.getPublicState(userId),
       roomId: this.getMeta('roomId'),
       stateVersion: session?.stateVersion ?? 1,
     };
-    this.send(ws, { event: 'game:bundle', payload: { events, state } });
+    this.send(ws, { event: 'game:bundle', payload: { events: safeEvents, state } });
   }
 
   private broadcast(msg: { event: string; payload: unknown }): void {

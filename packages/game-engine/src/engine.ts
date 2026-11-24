@@ -15,7 +15,7 @@ import { SeedRng } from './rng/seed-rng.js';
 import { ICardDatabase, BASE_TEST_CARDS, MemoryCardDatabase } from './database/card-registry.js';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { createInitialGameState, PlayerInitConfig } from './state/create-game.js';
-import { sanitizeGameStateForPlayer } from './state/sanitize-state.js';
+import { sanitizeGameEventsForPlayer, sanitizeGameStateForPlayer } from './state/sanitize-state.js';
 import { ZoneManager } from './zone/zone-manager.js';
 import { BattlefieldManager, getAttachedEquipmentIds } from './zone/battlefield-manager.js';
 import { SbaEngine } from './sba/sba-engine.js';
@@ -273,6 +273,10 @@ export class GameEngine {
 
   getPublicState(playerId: string): PublicGameState {
     return sanitizeGameStateForPlayer(this.state, playerId);
+  }
+
+  getSanitizedEvents(events: GameEvent[], playerId: string): GameEvent[] {
+    return sanitizeGameEventsForPlayer(events, this.state, playerId);
   }
 
   getEvents(): GameEvent[] {

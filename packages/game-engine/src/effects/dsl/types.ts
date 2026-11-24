@@ -262,6 +262,12 @@ export type EffectStep =
       saveToVar: string;
     }
   | {
+      op: 'PEEK_TOP';
+      side?: PlayerSide;
+      count: number;
+      saveToVar: string;
+    }
+  | {
       op: 'DISCARD_OPPONENT_RANDOM_HAND';
       count: number;
     }

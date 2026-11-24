@@ -5,6 +5,7 @@ import {
   ServerToClientEvents,
   ErrorCode,
   GameAction,
+  GameEvent,
   RoomStatus,
 } from '@zhanshuang/shared';
 import { RoomManager } from '../services/room-manager.js';
@@ -78,6 +79,20 @@ export function setupSocketGateway(
     timestamps.push(now);
     userActionTimestamps.set(userId, timestamps);
     return false;
+  }
+
+  /** 为对局频道内每名玩家分别推送脱敏后的增量游戏事件 (12. 隐藏信息) */
+  function broadcastGameEvents(gameId: string, events: GameEvent[]): void {
+    if (events.length === 0) return;
+    for (const s of getSocketsInChannel(io, `game:${gameId}`)) {
+      const targetUserId = socketAuthMap.get(s.id)?.userId;
+      if (!targetUserId) continue;
+      const safeEvents = gameSessionMgr.getSanitizedGameEvents(gameId, events, targetUserId);
+      if (safeEvents.length > 0) {
+        s.emit('game:events', safeEvents);
+        MetricsService.getInstance().recordWebSocketMessage(JSON.stringify(safeEvents).length);
+      }
+    }
   }
 
   /** 为对局频道内每名玩家分别推送脱敏后的公开状态 (12. 隐藏信息) */
@@ -437,9 +452,9 @@ export function setupSocketGateway(
           return;
         }
 
-        // 向对局频道广播增量事件 (驱动前端动画 28. 游戏动画)
+        // 向对局频道内各玩家按视角推送脱敏后的增量事件 (驱动前端动画 28. 游戏动画)
         if (result.events.length > 0) {
-          io.to(`game:${gameId}`).emit('game:events', result.events);
+          broadcastGameEvents(gameId, result.events);
         }
         broadcastGameState(gameId);
         emitGameEndedIfFinished(gameId);
@@ -503,7 +518,7 @@ export function setupSocketGateway(
         }
 
         if (result.events.length > 0) {
-          io.to(`game:${gameId}`).emit('game:events', result.events);
+          broadcastGameEvents(gameId, result.events);
         }
         broadcastGameState(gameId);
         // 检查决策结算后是否触发对局结束

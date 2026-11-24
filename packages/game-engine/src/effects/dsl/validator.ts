@@ -480,6 +480,7 @@ function validateSteps(steps: EffectStep[], parentVars: ReadonlySet<string>, pat
         if (step.saveToVar) vars.add(step.saveToVar);
         break;
       case 'REVEAL_TOP':
+      case 'PEEK_TOP':
         assertPositiveInt(step.count, `${sp}.count`);
         if (step.side !== undefined) assert(VALID_SIDES.has(step.side), `${sp}.side 非法`);
         assert(typeof step.saveToVar === 'string' && step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);

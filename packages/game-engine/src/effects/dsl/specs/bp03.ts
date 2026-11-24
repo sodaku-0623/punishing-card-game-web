@@ -128,15 +128,19 @@ function makeRevealTopPickOneToHandSteps(
  * (注：DSL 暂缺不公开直接移动牌组顶的 MOVE_TOP_DECK，借由 REVEAL_TOP + 背面置底实现)
  */
 function makeDeckTopToOrbBottomSteps(count: number): EffectStep[] {
-  return [
-    { op: 'REVEAL_TOP', count, saveToVar: 'topCards' },
-    {
-      op: 'MOVE_CARDS',
-      target: { kind: 'VAR', varName: 'topCards' },
-      toZone: 'SIGNAL_ORB_BOTTOM',
-      isFaceUp: false,
-    },
-  ];
+  const steps: EffectStep[] = [];
+  for (let i = 0; i < count; i++) {
+    steps.push(
+      { op: 'PEEK_TOP', count: 1, saveToVar: `topCard_${i}` },
+      {
+        op: 'MOVE_CARDS',
+        target: { kind: 'VAR', varName: `topCard_${i}` },
+        toZone: 'SIGNAL_ORB_BOTTOM',
+        isFaceUp: false,
+      }
+    );
+  }
+  return steps;
 }
 
 /**
@@ -323,22 +327,18 @@ function makePeekTopMillEntry(cardNumber: string): DeclarativeEntrySpec {
     id: `${cardNumber}_peek_mill`,
     label: '【出】查看我方牌组顶1张牌，可以将其放置到墓地',
     steps: [
-      { op: 'REVEAL_TOP', count: 1, saveToVar: 'top1' },
+      { op: 'PEEK_TOP', count: 1, saveToVar: 'top1' },
       {
-        op: 'IF',
-        condition: { kind: 'VAR_NON_EMPTY', varName: 'top1' },
-        then: [
-          {
-            op: 'CONFIRM_YES_NO',
-            prompt: '【莉莉丝·谬影】【出】已查看我方牌组顶 1 张牌，是否将其放置到墓地？',
-            yesLabel: '放置到墓地',
-            noLabel: '放回牌组顶',
-            choiceEffectType: `DSL_${cardNumber}_PEEK_MILL`,
-            onYes: [{ op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'top1' }, toZone: 'GRAVEYARD', isFaceUp: true }],
-            onNo: [{ op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'top1' }, toZone: 'DECK_TOP', isFaceUp: false }],
-          },
-        ],
+        op: 'CHOOSE_FROM_VAR',
+        varName: 'top1',
+        prompt: '【莉莉丝·谬影】【出】查看了我方牌组顶 1 张牌，可选择将其放置到墓地（不选则保留在牌组顶）：',
+        alwaysShow: true,
+        min: 0,
+        max: 1,
+        saveToVar: 'millPick',
+        choiceEffectType: `DSL_${cardNumber}_PEEK_MILL`,
       },
+      { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'millPick' }, toZone: 'GRAVEYARD', isFaceUp: true },
     ],
   };
 }
@@ -1576,7 +1576,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
             noLabel: '不查看',
             choiceEffectType: 'DSL_BP03-025_SCRY_CONFIRM',
             onYes: [
-              { op: 'REVEAL_TOP', count: 1, saveToVar: 'top1' },
+              { op: 'PEEK_TOP', count: 1, saveToVar: 'top1' },
               {
                 op: 'CHOOSE_FROM_VAR',
                 varName: 'top1',
