@@ -20,6 +20,14 @@ import {
 import HomePage from '@/app/page';
 import LoginPage from '@/app/login/page';
 import GuidePage from '@/app/guide/page';
+import { RuleGuideModal } from '@/components/game/RuleGuideModal';
+import {
+  GUIDE_CARD_EXAMPLES,
+  GUIDE_DIAGRAMS,
+  GuideCardExampleStrip,
+  GuideDiagramFigure,
+  GuideImagePreviewDialog,
+} from '@/components/guide/GuideMedia';
 import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { CardDetailPanel } from '@/components/game/CardDetailPanel';
@@ -337,5 +345,62 @@ describe('PGR UI Design System Components', () => {
     const assistTags = formatCardModifiers(assistAirborneCard);
     expect(assistTags.some((t) => t.includes('浮空模式'))).toBe(true);
     expect(assistTags.some((t) => t.includes('协战状态'))).toBe(true);
+  });
+
+  it('renders GuideMedia example strips, official diagrams, and zoom preview dialog', () => {
+    const stripHtml = renderToString(
+      <div>
+        <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.role} onPreview={() => {}} />
+        <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.item} onPreview={() => {}} />
+        <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.tactics} onPreview={() => {}} />
+        <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.signalOrbs} onPreview={() => {}} />
+      </div>
+    );
+    expect(stripHtml).toContain('/cards/thumbs/ST01-001.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST04-010.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/BP01-012.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST01-011.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST02-011.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST01-012.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST01-013.jpg');
+    expect(stripHtml).toContain('/cards/thumbs/ST01-014.jpg');
+    expect(stripHtml).toContain('露西亚·红莲');
+    expect(stripHtml).toContain('阿波罗');
+    expect(stripHtml).toContain('沃托');
+    expect(stripHtml).toContain('referrerPolicy="no-referrer"');
+
+    const diagramHtml = renderToString(
+      <div>
+        <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.cardStructure} onPreview={() => {}} />
+        <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.officialPlaymat} onPreview={() => {}} />
+      </div>
+    );
+    expect(diagramHtml).toContain(GUIDE_DIAGRAMS.cardStructure.src);
+    expect(diagramHtml).toContain('战双帕弥什 TCG 官方卡面结构图解');
+    expect(diagramHtml).toContain('/official-playmat.jpg');
+    expect(diagramHtml).toContain('战双帕弥什官方对战垫布局（七大区域划分）');
+    expect(diagramHtml).toContain('referrerPolicy="no-referrer"');
+
+    const previewHtml = renderToString(
+      <GuideImagePreviewDialog
+        media={{
+          title: '露西亚·红莲 (ST01-001)',
+          subtitle: '角色牌示例',
+          src: '/cards/ST01-001.png',
+          alt: '角色牌示例 - 露西亚·红莲',
+          cardNumber: 'ST01-001',
+        }}
+        onClose={() => {}}
+      />
+    );
+    expect(previewHtml).toContain('role="dialog"');
+    expect(previewHtml).toContain('aria-modal="true"');
+    expect(previewHtml).toContain('/cards/ST01-001.png');
+    expect(previewHtml).toContain('href="/cards/ST01-001"');
+    expect(previewHtml).toContain('referrerPolicy="no-referrer"');
+
+    const modalHtml = renderToString(<RuleGuideModal isOpen={true} onClose={() => {}} />);
+    expect(modalHtml).toContain('role="dialog"');
+    expect(modalHtml).toContain('战双帕弥什 卡牌对战 · 官方作战指南');
   });
 });
