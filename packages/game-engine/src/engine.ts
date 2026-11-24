@@ -23,10 +23,15 @@ import { CheckTimingManager } from './priority/check-timing.js';
 import { TriggerManager } from './priority/trigger-system.js';
 import { CombatManager } from './combat/combat-manager.js';
 import { PhaseMachine } from './phases/phase-machine.js';
-import { ContinuousEffectEngine, expandBaseTraits, normalizeCardName } from './effects/continuous-effects.js';
+import {
+  ContinuousEffectEngine,
+  expandBaseTraits,
+  getModifierEffectiveCardType,
+  normalizeCardName,
+} from './effects/continuous-effects.js';
 import { ReplacementEngine } from './effects/replacement-engine.js';
 import { CardEffectEngine } from './effects/card-effects.js';
-import { advancePendingChoice, enqueuePendingChoice } from './state/pending-choice.js';
+import { advancePendingChoice, enqueuePendingChoice, nextChoiceId } from './state/pending-choice.js';
 
 export interface ActionResult {
   success: boolean;
@@ -97,17 +102,14 @@ export class GameEngine {
         this.fieldMgr
           .getSlots(playerId)
           .map((s) => {
-            if (s.roleCardId) {
-              const rc = this.state.cards[s.roleCardId];
-              if (rc && !rc.modifiers?.some((m) => m.setCardType === CardType.ASSIST)) {
-                return rc;
+            for (const id of [s.roleCardId, s.assistCardId]) {
+              if (!id) continue;
+              const c = this.state.cards[id];
+              if (!c) continue;
+              const def = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+              if (getModifierEffectiveCardType(c, def) === CardType.ROLE) {
+                return c;
               }
-            }
-            if (
-              s.assistCardId &&
-              this.state.cards[s.assistCardId]?.modifiers?.some((m) => m.setCardType === CardType.ROLE)
-            ) {
-              return this.state.cards[s.assistCardId];
             }
             return undefined;
           })
@@ -134,7 +136,7 @@ export class GameEngine {
       const card = this.state.cards[cardInstanceId];
       const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
       enqueuePendingChoice(this.state, {
-        id: `choice-wanshiming-charge-${this.state.turnNumber}-${this.events.length}`,
+        id: nextChoiceId(this.state, 'wanshiming-charge'),
         playerId,
         choiceType: 'SELECT_OPTION',
         prompt: `【${def?.name ?? '万世铭'}】因<曲>角色攻击充能进入处理区，是否改为以横置状态放置到费用区（满10张时改放墓地）？`,
@@ -836,6 +838,17 @@ export class GameEngine {
       };
     }
 
+    // Q&A·9 BP04-052 血契者：我方战场已存在《血契者》时不能再出场新的《血契者》
+    if (
+      cardDef.cardType === CardType.ROLE &&
+      this.fieldMgr.wouldViolateUniqueBloodPact(action.playerId, card.instanceId)
+    ) {
+      return {
+        success: false,
+        error: '我方战场已存在《血契者》，不能再出场新的《血契者》(BP04-052)',
+      };
+    }
+
     // 8.6.2.a.1 卡牌属性条件：属性需与自身费用区中任意一张明费属性相同
     // 信号球牌无属性 (4.16.1.a) 或满足「无视属性条件」(ST04-008 / PR-010 / BP02-009 / BP04-059) 时跳过检查
     if (
@@ -941,7 +954,7 @@ export class GameEngine {
           }
           const minSacrifice = avail < costToPay ? 1 : 0;
           enqueuePendingChoice(this.state, {
-            id: `choice-play-sacrifice-${action.cardInstanceId}-${this.events.length}`,
+            id: nextChoiceId(this.state, 'play-sacrifice'),
             playerId: action.playerId,
             choiceType: 'SELECT_CARDS',
             prompt:
@@ -1014,7 +1027,7 @@ export class GameEngine {
           costToPay > avail ? Math.ceil((costToPay - avail) / playDiscardRule.discountPerCard) : 0;
         this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true });
         enqueuePendingChoice(this.state, {
-          id: `choice-play-discard-${action.cardInstanceId}-${this.events.length}`,
+          id: nextChoiceId(this.state, 'play-discard'),
           playerId: action.playerId,
           choiceType: 'SELECT_CARDS',
           prompt:
@@ -1155,7 +1168,7 @@ export class GameEngine {
           return { success: false, error: '装备牌无法进入处理区' };
         }
         enqueuePendingChoice(this.state, {
-          id: `choice-equip-${action.cardInstanceId}-${this.events.length}`,
+          id: nextChoiceId(this.state, 'equip'),
           playerId: action.playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `装备卡【${cardDef.name}】已进入处理区，请选择要装备的角色：`,
@@ -2210,7 +2223,7 @@ export class GameEngine {
         if (overflow > 0) {
           const hand = this.zoneMgr.getCardsInZone(this.state.activePlayerId, 'HAND');
           enqueuePendingChoice(this.state, {
-            id: `choice-end-discard-${this.state.turnNumber}`,
+            id: nextChoiceId(this.state, 'end-discard'),
             playerId: this.state.activePlayerId,
             choiceType: 'SELECT_CARDS',
             prompt: `回合结束：手牌超过上限 ${RULE_CONSTANTS.MAX_HAND_SIZE_END_PHASE} 张，请选择 ${overflow} 张手牌放置到墓地 (6.5.1.c)`,
@@ -2228,6 +2241,8 @@ export class GameEngine {
         return false; // 等待回合玩家选择弃掉的手牌
       case 'CLEANUP':
         return this.phaseMachine.runEndPhaseCleanup();
+      case 'CLEANUP_EXPIRE':
+        return this.phaseMachine.runEndPhaseExpireAndHiddenCost();
       case 'CLEANUP_POST':
         return this.phaseMachine.handoffToNextTurn();
       default:

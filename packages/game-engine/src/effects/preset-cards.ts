@@ -3,6 +3,7 @@ import type { CardEffectContext, CardEffectEngine } from './card-effects.js';
 import type { ContinuousEffectEngine } from './continuous-effects.js';
 import type { TriggerManager } from '../priority/trigger-system.js';
 import { DeclarativeEffectInterpreter, STARTER_DECK_SPEC_MAP } from './dsl/index.js';
+import { nextChoiceId } from '../state/pending-choice.js';
 
 type Result = { success: boolean; error?: string };
 type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
@@ -18,7 +19,6 @@ type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
  */
 export class PresetCardEffects {
   readonly interpreter: DeclarativeEffectInterpreter;
-  private choiceSeq = 0;
 
   constructor(
     private ctx: CardEffectContext,
@@ -145,9 +145,8 @@ export class PresetCardEffects {
         const battledId = trigger.triggerContext.battledCardId as string | undefined;
         const battled = battledId ? ctx.state.cards[battledId] : undefined;
         const battledName = battled ? ctx.cardDb.getCard(battled.cardNumber)?.name ?? battled.cardNumber : undefined;
-        this.choiceSeq += 1;
         ctx.enqueueChoice({
-          id: `choice-mutual-destiny-${ctx.state.turnNumber}-${ctx.events.length}-${this.choiceSeq}`,
+          id: nextChoiceId(ctx.state, 'mutual-destiny'),
           playerId,
           choiceType: 'SELECT_OPTION',
           prompt: battledName

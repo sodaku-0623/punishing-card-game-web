@@ -14,6 +14,7 @@ import { PresetCardEffects } from './preset-cards.js';
 import { ContinuousEffectEngine, addCardModifier } from './continuous-effects.js';
 import { ReplacementEngine } from './replacement-engine.js';
 import type { TriggerManager } from '../priority/trigger-system.js';
+import { nextChoiceId } from '../state/pending-choice.js';
 
 export interface CardEffectContext {
   state: GameState;
@@ -135,19 +136,26 @@ export class CardEffectEngine {
     return true;
   }
 
-  private getFriendlyRoles(playerId: string): CardInstance[] {
+  private collectSlotRolesForPlayer(playerId: string): CardInstance[] {
     const slots = this.ctx.state.battlefields[playerId] || [];
-    return slots
-      .map((s) => (s.roleCardId ? this.ctx.state.cards[s.roleCardId] : null))
-      .filter(Boolean) as CardInstance[];
+    const roles: CardInstance[] = [];
+    for (const s of slots) {
+      for (const id of [s.roleCardId, s.assistCardId]) {
+        if (!id) continue;
+        if (!this.ctx.fieldMgr.isSlotRole(playerId, id)) continue;
+        const c = this.ctx.state.cards[id];
+        if (c) roles.push(c);
+      }
+    }
+    return roles;
+  }
+
+  private getFriendlyRoles(playerId: string): CardInstance[] {
+    return this.collectSlotRolesForPlayer(playerId);
   }
 
   private getOpponentRoles(playerId: string): CardInstance[] {
-    const oppId = this.getOpponentPlayerId(playerId);
-    const slots = this.ctx.state.battlefields[oppId] || [];
-    return slots
-      .map((s) => (s.roleCardId ? this.ctx.state.cards[s.roleCardId] : null))
-      .filter(Boolean) as CardInstance[];
+    return this.collectSlotRolesForPlayer(this.getOpponentPlayerId(playerId));
   }
 
   getCardDef(cardOrId: CardInstance | string): CardVersionData | undefined {
@@ -315,7 +323,7 @@ export class CardEffectEngine {
     if (oppId && oppId !== playerId) {
       const options = topCards.map((c) => this.createGeneralCardChoiceOption(c, { eligible: true }));
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId: oppId,
         choiceType: 'SELECT_CARDS',
         prompt: `【对方公开卡牌展示】对方发动了【${config.cardName}】的效果，公开了以下 ${topCards.length} 张卡牌。请检视确认：`,
@@ -392,7 +400,7 @@ export class CardEffectEngine {
         : `【${config.cardName || '里·异火'}】已翻开牌组顶${topCards.length}张卡牌（未检测到信号球牌）：未能触发【充能+1】效果。请检视确认，翻开的卡牌将全部送入墓地：`;
 
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId: activePlayerId,
         choiceType: 'SELECT_CARDS',
         prompt,
@@ -471,7 +479,7 @@ export class CardEffectEngine {
       : (config.promptNoEligible || `公开卡牌中未检出符合条件的卡牌，请点击确认继续：`);
 
     this.ctx.setPendingChoice({
-      id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextChoiceId(this.ctx.state, 'effect'),
       playerId: activePlayerId,
       choiceType: 'SELECT_CARDS',
       prompt,
@@ -595,7 +603,7 @@ export class CardEffectEngine {
       const orbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
       if (orbs.length >= 2) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】登场效果：可消除2个信号球以公开牌组顶5张召唤角色 (可跳过)：`,
@@ -617,6 +625,7 @@ export class CardEffectEngine {
         untilTurn: this.ctx.state.turnNumber,
         source: cardNum,
         sourceCardInstanceId: roleInstanceId,
+        appliedByPlayerId: playerId,
       });
       this.ctx.events.push({
         type: 'ABILITY_ACTIVATED',
@@ -636,7 +645,7 @@ export class CardEffectEngine {
       });
       if (grayRavenRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】登场：可选择我方战场1张<灰鸦小队>角色返回手牌，以回手战场1张<=5费角色 (可跳过)：`,
@@ -661,7 +670,7 @@ export class CardEffectEngine {
       const hand = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
       if (hand.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】登场：可丢弃1张手牌，从费用区回收1张卡牌 (可跳过)：`,
@@ -701,7 +710,7 @@ export class CardEffectEngine {
       const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
       if (handCards.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场抽牌已完成，请选择1张手牌丢弃到墓地：`,
@@ -754,7 +763,7 @@ export class CardEffectEngine {
       const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
       if (handCards.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】登场能力：可丢弃1张手牌公开牌组顶5张召唤角色 (可跳过)：`,
@@ -839,7 +848,7 @@ export class CardEffectEngine {
         });
       if (gyEquips.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】起动能力：请选择我方墓地1张太刀装备附着：`,
@@ -867,7 +876,7 @@ export class CardEffectEngine {
         return { success: false, error: '墓地没有《帕瓦》卡牌' };
       }
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】起动能力：请选择1张手牌丢弃作为代价：`,
@@ -888,7 +897,7 @@ export class CardEffectEngine {
       });
       if (nanamiRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】起动能力：请选择我方战场1张《七实·遥星之座》将该牌放置到其下方：`,
@@ -913,7 +922,7 @@ export class CardEffectEngine {
       });
       if (gyRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】起动能力：卡穆已回牌组底！请选择墓地1张<突击鹰小队>角色回收至手牌：`,
@@ -970,10 +979,11 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
           } else if (friendlyRoles.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: `【${choice.metadata?.cardName || choice.metadata?.cardNumber || '信号球'}】充能自：请选择我方战场最多1张角色（直到回合结束 DP+1）：`,
@@ -1017,10 +1027,11 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
           } else if (friendlyRoles.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: `【${choice.metadata?.cardName || choice.metadata?.cardNumber || '信号球'}】充能自：请选择我方战场最多1张角色（直到回合结束 PP+2000）：`,
@@ -1062,6 +1073,7 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: (choice.metadata?.cardNumber as string) || 'CHARGE_AUTO',
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
           }
         } else if (option === 'opt_ready_chaoke') {
@@ -1086,6 +1098,7 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: (choice.metadata?.cardNumber as string) || (choice.metadata?.cardName as string) || 'CHARGE_AUTO',
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
             const roleDef = this.getCardDef(role);
             this.ctx.events.push({
@@ -1114,6 +1127,7 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: srcNum,
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
           }
         }
@@ -1137,6 +1151,7 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: srcNum,
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
           }
         }
@@ -1207,6 +1222,7 @@ export class CardEffectEngine {
               untilTurn: this.ctx.state.turnNumber,
               source: 'BUFF_ROLE_CHARGE',
               sourceCardInstanceId: choice.sourceCardInstanceId,
+              appliedByPlayerId: playerId,
             });
             const targetDef = this.getCardDef(targetCard);
             this.ctx.events.push({
@@ -1259,7 +1275,7 @@ export class CardEffectEngine {
           });
           if (friendlyRoles.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: `【${cardName}】已检出信号球！请选择我方战场1张<灰鸦小队>角色赋予【充能+1】(直到回合结束 PP+1000)：`,
@@ -1472,7 +1488,7 @@ export class CardEffectEngine {
           });
           if (gyPawa.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已弃牌！请选择我方墓地1张《帕瓦》放置到该牌下方：',
@@ -1502,6 +1518,7 @@ export class CardEffectEngine {
             untilTurn: this.ctx.state.turnNumber,
             source: 'BP01-007',
             sourceCardInstanceId: choice.sourceCardInstanceId,
+            appliedByPlayerId: playerId,
           });
         }
         if (choice.sourceCardInstanceId) {
@@ -1543,7 +1560,7 @@ export class CardEffectEngine {
           const costCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'COST');
           if (costCards.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已弃牌！请选择我方费用区1张卡牌加入手牌：',
@@ -1562,7 +1579,7 @@ export class CardEffectEngine {
           const gyCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'GRAVEYARD');
           if (gyCards.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已弃牌！请选择我方墓地1张卡牌加入手牌：',
@@ -1583,7 +1600,7 @@ export class CardEffectEngine {
             .filter((c) => this.getCardDef(c)?.cardType === CardType.ROLE);
           if (gyRoles.length > 0 && this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已弃牌！请选择我方墓地1张角色卡牌出场：',
@@ -1610,7 +1627,7 @@ export class CardEffectEngine {
           if (oppRoles.length > 0) {
             const debuff = parseInt(reduceMatch[1], 10);
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: `已弃牌！请选择对方战场1张角色使期PP-${debuff}：`,
@@ -1648,7 +1665,7 @@ export class CardEffectEngine {
           });
           if (eligibleRoles.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已回手<灰鸦小队>角色！请选择战场1张费用<=5的角色返回手牌：',
@@ -1679,7 +1696,7 @@ export class CardEffectEngine {
           const costCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'COST');
           if (costCards.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '已弃牌！请选择我方费用区1张卡牌加入手牌：',
@@ -1802,7 +1819,7 @@ export class CardEffectEngine {
           }
         } else {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_CARDS',
             prompt: '【里·超刻】充能自：请选择要升变的我方费用 9 以下的《里·超刻》：',
@@ -1863,6 +1880,13 @@ export class CardEffectEngine {
         if (!orbId || !chargeCardId) break;
         const chargeCard = this.ctx.state.cards[chargeCardId];
         if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        const orbColors =
+          this.ctx.continuousEffects?.getEffectiveOrbInfo(orbId).colors ??
+          ((): string[] => {
+            const c = this.ctx.state.cards[orbId];
+            const d = c ? this.getCardDef(c) : undefined;
+            return d?.signalOrb ? [d.signalOrb] : [];
+          })();
         this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
         this.ctx.zoneMgr.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
         this.ctx.events.push({
@@ -1870,6 +1894,12 @@ export class CardEffectEngine {
           playerId,
           orbCardIds: [orbId],
           cardDrawnCount: 0,
+        });
+        this.ctx.triggerMgr?.emit({
+          type: 'ORBS_ELIMINATED',
+          playerId,
+          orbCardIds: [orbId],
+          orbColors: orbColors.length > 0 ? orbColors : ['YELLOW'],
         });
         const targetId = choice.metadata?.attackerCardId as string | undefined;
         const target =
@@ -1881,7 +1911,7 @@ export class CardEffectEngine {
           );
         if (target && target.zone === 'BATTLEFIELD') {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_OPTION',
             prompt: '【里·超刻】充能自：请从以下 2 项选择 1 项：',
@@ -1924,6 +1954,7 @@ export class CardEffectEngine {
             untilTurn: this.ctx.state.turnNumber,
             source: 'BP03-028',
             sourceCardInstanceId: choice.sourceCardInstanceId,
+            appliedByPlayerId: playerId,
           });
         }
         break;
@@ -1955,6 +1986,7 @@ export class CardEffectEngine {
             untilTurn: this.ctx.state.turnNumber,
             source: 'BP03-054',
             sourceCardInstanceId: choice.sourceCardInstanceId,
+            appliedByPlayerId: playerId,
           });
         }
         break;
@@ -1969,6 +2001,13 @@ export class CardEffectEngine {
         if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
         const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
         if (slotIdx === undefined) break;
+        const orbColors =
+          this.ctx.continuousEffects?.getEffectiveOrbInfo(orbId).colors ??
+          ((): string[] => {
+            const c = this.ctx.state.cards[orbId];
+            const d = c ? this.getCardDef(c) : undefined;
+            return d?.signalOrb ? [d.signalOrb] : [];
+          })();
         this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
         this.ctx.zoneMgr.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
         this.ctx.events.push({
@@ -1976,6 +2015,12 @@ export class CardEffectEngine {
           playerId,
           orbCardIds: [orbId],
           cardDrawnCount: 0,
+        });
+        this.ctx.triggerMgr?.emit({
+          type: 'ORBS_ELIMINATED',
+          playerId,
+          orbCardIds: [orbId],
+          orbColors: orbColors.length > 0 ? orbColors : ['BLUE'],
         });
         const handLees = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND').filter((c) => {
           const d = this.getCardDef(c);
@@ -1991,7 +2036,7 @@ export class CardEffectEngine {
           this.ctx.fieldMgr.playRoleCard(playerId, targetLee.instanceId, slotIdx);
         } else if (handLees.length > 1) {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_CARDS',
             prompt: '【里·超刻】充能自：请选择我方手牌 1 张费用为3及以下的《里·超刻》出场：',
@@ -2022,7 +2067,7 @@ export class CardEffectEngine {
         if (!chargeCard || !chargeDef || chargeCard.zone !== 'PROCESSING') break;
         if (selectedIds[0] === 'vera_red') {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_OPTION',
             prompt: '【薇拉·灼惘 / 红色信号球】充能自：请从以下 2 项选择 1 项执行：',
@@ -2054,11 +2099,10 @@ export class CardEffectEngine {
             : this.getCardDef(r)?.name === '露娜·终焉'
         );
         if (lunaHosts.length === 1) {
-          this.ctx.zoneMgr.moveCard(pickedHandId, 'BATTLEFIELD', { isFaceUp: true });
-          lunaHosts[0]!.underneathCardIds.push(pickedHandId);
+          this.ctx.fieldMgr.placeCardUnderneath(pickedHandId, lunaHosts[0]!.instanceId, { actorPlayerId: playerId });
         } else if (lunaHosts.length > 1) {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_CARDS',
             prompt: '【BP04-007 露娜·终焉】请选择要将手牌放置到其下方的《露娜·终焉》：',
@@ -2080,8 +2124,7 @@ export class CardEffectEngine {
         if (!host || !picked || picked.zone !== 'HAND' || !this.ctx.fieldMgr.isSlotRole(playerId, host.instanceId)) {
           break;
         }
-        this.ctx.zoneMgr.moveCard(pickedHandId!, 'BATTLEFIELD', { isFaceUp: true });
-        host.underneathCardIds.push(pickedHandId!);
+        this.ctx.fieldMgr.placeCardUnderneath(pickedHandId!, host.instanceId, { actorPlayerId: playerId });
         break;
       }
 
@@ -2095,10 +2138,22 @@ export class CardEffectEngine {
         const idx = orbs.findIndex((o) => o.instanceId === firstOrbId);
         if (idx < 0 || idx + 1 >= orbs.length) break;
         const orbIds = [orbs[idx]!.instanceId, orbs[idx + 1]!.instanceId];
+        const orbColors = orbIds.map(
+          (oid) =>
+            this.ctx.continuousEffects?.getEffectiveOrbInfo(oid).colors[0] ??
+            this.getCardDef(this.ctx.state.cards[oid]!)?.signalOrb ??
+            'UNKNOWN'
+        );
         for (const oid of orbIds) {
           this.ctx.zoneMgr.moveCard(oid, 'GRAVEYARD', { isFaceUp: true });
         }
         this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
+        this.ctx.triggerMgr?.emit({
+          type: 'ORBS_ELIMINATED',
+          playerId,
+          orbCardIds: orbIds,
+          orbColors,
+        });
         const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
         if (slotIdx !== undefined) {
           this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx);
@@ -2127,6 +2182,7 @@ export class CardEffectEngine {
                 pp: -2000,
                 untilTurn: this.ctx.state.turnNumber,
                 sourceCardInstanceId: choice.sourceCardInstanceId,
+                appliedByPlayerId: playerId,
               });
             } else if (choice.prompt.includes('PP+2000') || choice.prompt.includes('PP+1000')) {
               const val = choice.prompt.includes('PP+2000') ? 2000 : 1000;
@@ -2134,6 +2190,7 @@ export class CardEffectEngine {
                 pp: val,
                 untilTurn: this.ctx.state.turnNumber,
                 sourceCardInstanceId: choice.sourceCardInstanceId,
+                appliedByPlayerId: playerId,
               });
             }
           }
@@ -2205,7 +2262,7 @@ export class CardEffectEngine {
       );
       if (veras.length === 0) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】充能自：选择我方战场1张《薇拉·灼惘》，直到回合结束 PP+2000：`,
@@ -2252,7 +2309,7 @@ export class CardEffectEngine {
       });
       if (eligibleTargets.length === 0) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'YES_NO',
         prompt: `【${cardDef.name}】充能自：是否支付 3 费将该牌无视费用上限升变出场并获得【速攻】？`,
@@ -2279,7 +2336,7 @@ export class CardEffectEngine {
         .filter((c) => this.getCardDef(c)?.name === '里·超刻');
       if (handLees.length < 3) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】充能自：可丢弃手牌 3 张《里·超刻》将该牌从处理区出场 (不选则放弃)：`,
@@ -2304,7 +2361,7 @@ export class CardEffectEngine {
       });
       if (yellowOrbs.length === 0) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】充能自：可将其置入墓地并消除 1 张【黄色信号球】，使《里·超刻》获得【速攻】：`,
@@ -2326,7 +2383,7 @@ export class CardEffectEngine {
       const oppRoles = this.getOpponentRoles(playerId);
       if (oppRoles.length === 0) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】充能自：可将其置入墓地并支付 3 费，选择对方战场 1 张角色放置到牌组底：`,
@@ -2366,7 +2423,7 @@ export class CardEffectEngine {
       });
       if (blueOrbs.length === 0 || handLees.length === 0) return false;
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】充能自：可将其置入墓地并消除 1 张【蓝色信号球】，使手牌 1 张费用<=3的《里·超刻》出场：`,
@@ -2394,7 +2451,7 @@ export class CardEffectEngine {
       const segCheck = rules.slice(index).split(/\n(?=【)/)[0]!;
       if (/^【充能自】[:：]\s*从以下2项选择1项/.test(segCheck)) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_OPTION',
           prompt: `【BP04-012 薇拉·灼惘】侵蚀>=6：是否将【${cardDef.name}】视作【红色信号球】处理其【充能自】？`,
@@ -2444,7 +2501,7 @@ export class CardEffectEngine {
     if (options.length === 0) return false;
 
     this.ctx.setPendingChoice({
-      id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: nextChoiceId(this.ctx.state, 'effect'),
       playerId,
       choiceType: 'SELECT_OPTION',
       prompt: `【${cardDef.name}】充能自效果触发！请从以下选项中选择 1 项执行：`,
@@ -2505,7 +2562,7 @@ export class CardEffectEngine {
 
       if (eligible.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择对方战场1张角色破坏：`,
@@ -2533,7 +2590,7 @@ export class CardEffectEngine {
       if (oppRoles.length > 0) {
         const reduction = parseInt(reducePPMatch[1], 10);
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择对方战场1张角色削减PP (-${reduction})：`,
@@ -2555,7 +2612,7 @@ export class CardEffectEngine {
       const bonus = parseInt(buffPPMatch[1], 10);
       if (friendlyRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择我方战场1张角色获得 PP+${bonus}：`,
@@ -2577,7 +2634,7 @@ export class CardEffectEngine {
       const bonus = parseInt(buffDPMatch[1], 10);
       if (friendlyRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择我方战场1张角色获得 DP+${bonus}：`,
@@ -2597,7 +2654,7 @@ export class CardEffectEngine {
       const oppRoles = this.getOpponentRoles(playerId);
       if (oppRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择对方战场1张角色以横置状态放置到对方费用区：`,
@@ -2616,7 +2673,7 @@ export class CardEffectEngine {
       const oppRoles = this.getOpponentRoles(playerId);
       if (oppRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择对方战场1张角色放置到对方牌组底：`,
@@ -2635,7 +2692,7 @@ export class CardEffectEngine {
       const friendlyRoles = this.getFriendlyRoles(playerId);
       if (friendlyRoles.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择我方战场1张角色将其竖直：`,
@@ -2654,7 +2711,7 @@ export class CardEffectEngine {
       const costCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'COST');
       if (costCards.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择我方费用区1张卡牌加入手牌：`,
@@ -2678,7 +2735,7 @@ export class CardEffectEngine {
       });
       if (gyRoles.length > 0 && this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】发动：请选择我方墓地1张角色特殊出场：`,
@@ -2744,7 +2801,7 @@ export class CardEffectEngine {
       const hand = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
       if (hand.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场能力：可选择 ${count} 张手牌丢弃以触发后续效果 (可跳过)：`,
@@ -2768,7 +2825,7 @@ export class CardEffectEngine {
         const hand = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
         if (hand.length > 0) {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_CARDS',
             prompt: `【${cardDef.name}】出场效果：请选择 ${count} 张手牌丢弃到墓地：`,
@@ -2791,6 +2848,7 @@ export class CardEffectEngine {
         untilTurn: this.ctx.state.turnNumber,
         source: roleCard.cardNumber,
         sourceCardInstanceId: roleCard.instanceId,
+        appliedByPlayerId: playerId,
       });
     }
 
@@ -2804,6 +2862,7 @@ export class CardEffectEngine {
           untilTurn: this.ctx.state.turnNumber,
           source: roleCard.cardNumber,
           sourceCardInstanceId: roleCard.instanceId,
+          appliedByPlayerId: playerId,
         });
       }
     }
@@ -2818,7 +2877,7 @@ export class CardEffectEngine {
         : oppRoles;
       if (eligible.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场：请选择对方战场1张角色破坏：`,
@@ -2845,7 +2904,7 @@ export class CardEffectEngine {
       if (oppRoles.length > 0) {
         const reduction = parseInt(reduceMatch[1], 10);
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场：请选择对方战场1张角色削减PP (-${reduction})：`,
@@ -2878,7 +2937,7 @@ export class CardEffectEngine {
       });
       if (gyRoles.length > 0 && this.ctx.fieldMgr.findFirstEmptySlot(playerId) !== undefined) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场：请选择我方墓地1张角色特殊出场：`,
@@ -2893,7 +2952,7 @@ export class CardEffectEngine {
       const gyCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'GRAVEYARD');
       if (gyCards.length > 0) {
         this.ctx.setPendingChoice({
-          id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          id: nextChoiceId(this.ctx.state, 'effect'),
           playerId,
           choiceType: 'SELECT_CARDS',
           prompt: `【${cardDef.name}】出场：请选择我方墓地1张卡牌回收至手牌：`,
@@ -2978,7 +3037,7 @@ export class CardEffectEngine {
       }
       const dmg = parseInt(dmgMatch[1], 10);
       this.ctx.setPendingChoice({
-        id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
         prompt: `【${cardDef.name}】起动能力：请选择对方战场1张角色造成 ${dmg} 点效果伤害：`,
@@ -3183,10 +3242,11 @@ export class CardEffectEngine {
             untilTurn: this.ctx.state.turnNumber,
             source: 'BP03-054',
             sourceCardInstanceId: card.instanceId,
+            appliedByPlayerId: playerId,
           });
         } else if (irisRoles.length > 1) {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_CARDS',
             prompt: '【艾拉·万华】瞬时：选择我方战场1张<艺术协会>角色，直到那次攻击结束 PP+1000：',
@@ -3222,7 +3282,7 @@ export class CardEffectEngine {
           );
           if (handCards.length > 0 && lunaHosts.length > 0) {
             this.ctx.setPendingChoice({
-              id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: nextChoiceId(this.ctx.state, 'effect'),
               playerId,
               choiceType: 'SELECT_CARDS',
               prompt: '【BP04-007 露娜·终焉】可以将我方 1 张手牌放置到我方战场 1 张《露娜·终焉》下方：',
@@ -3245,17 +3305,29 @@ export class CardEffectEngine {
         if (pairStarts.length === 1) {
           const idx = orbs.findIndex((o) => o.instanceId === pairStarts[0]!);
           const orbIds = [orbs[idx]!.instanceId, orbs[idx + 1]!.instanceId];
+          const orbColors = orbIds.map(
+            (oid) =>
+              this.ctx.continuousEffects?.getEffectiveOrbInfo(oid).colors[0] ??
+              this.getCardDef(this.ctx.state.cards[oid]!)?.signalOrb ??
+              'UNKNOWN'
+          );
           for (const oid of orbIds) {
             this.ctx.zoneMgr.moveCard(oid, 'GRAVEYARD', { isFaceUp: true });
           }
           this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
+          this.ctx.triggerMgr?.emit({
+            type: 'ORBS_ELIMINATED',
+            playerId,
+            orbCardIds: orbIds,
+            orbColors,
+          });
           const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
           if (slotIdx !== undefined) {
             this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx);
           }
         } else if (pairStarts.length > 1) {
           this.ctx.setPendingChoice({
-            id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
             choiceType: 'SELECT_OPTION',
             prompt: '【渡边·尘铭】瞬时：请选择要消除的 2 个相邻信号球：',

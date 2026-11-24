@@ -8,8 +8,15 @@ import {
   ZoneId,
 } from '@zhanshuang/shared';
 import type { CardEffectContext, CardEffectEngine } from '../card-effects.js';
-import { addCardModifier, ContinuousEffectEngine, expandBaseTraits, normalizeCardName } from '../continuous-effects.js';
+import {
+  addCardModifier,
+  ContinuousEffectEngine,
+  expandBaseTraits,
+  nextEffectTimestamp,
+  normalizeCardName,
+} from '../continuous-effects.js';
 import type { CardTriggerSnapshot, TriggerManager } from '../../priority/trigger-system.js';
+import { nextChoiceId } from '../../state/pending-choice.js';
 import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
 import {
   CustomHandlerFrameState,
@@ -91,8 +98,6 @@ interface DslExecutionFrame {
  * 战术牌、登场能力【出】、起动能力【起】、自动能力【自】、静态持续能力【永】与手牌静态减费。
  */
 export class DeclarativeEffectInterpreter {
-  private choiceSeq = 0;
-
   constructor(
     private ctx: CardEffectContext,
     private effects: CardEffectEngine,
@@ -214,6 +219,7 @@ export class DeclarativeEffectInterpreter {
   }> {
     const host = this.ctx.state.cards[hostCardId];
     if (!host || host.zone !== 'BATTLEFIELD' || host.controllerPlayerId !== playerId) return [];
+    if (this.ctx.continuousEffects?.hasProhibition(hostCardId, 'CANNOT_GAIN_ABILITIES')) return [];
     const hostDef = this.def(host);
     const results: Array<{
       equipCardId: string;
@@ -418,8 +424,8 @@ export class DeclarativeEffectInterpreter {
       entryId: string,
       act: NonNullable<CardEffectSpec['activate']>
     ) => {
-      if (act.sharedTurnKey) return act.sharedTurnKey;
-      if (act.oncePerTurnByPlayer) return `${def.name}:act:${entryId}`;
+      if (act.sharedTurnKey) return `player:${act.sharedTurnKey}`;
+      if (act.oncePerTurnByPlayer) return `player:${def.name}:act:${entryId}`;
       return entryId === 'self' ? cardId : `${cardId}:${entryId}`;
     };
 
@@ -1373,6 +1379,7 @@ export class DeclarativeEffectInterpreter {
                     oncePerTurnKey: onceKey,
                     triggerContext: {
                       targetCardId: leftId,
+                      grantKey,
                       oncePerTurnKey: onceKey,
                       sourceAbilitiesLostAtTrigger: false,
                     },
@@ -3340,7 +3347,7 @@ export class DeclarativeEffectInterpreter {
             if (!card) continue;
             const mod: CardModifier = {
               ...(step.duration === 'END_OF_COMBAT'
-                ? { id: `combat-${card.instanceId}-${this.ctx.events.length}-${this.choiceSeq++}` }
+                ? { id: `combat-${card.instanceId}-${nextEffectTimestamp(this.ctx.state)}` }
                 : {}),
               ...(step.copyBasePP ? { setBasePP: refDef.basePP ?? 0 } : {}),
               ...(step.copyBaseDP ? { setBaseDP: refDef.baseDP ?? 0 } : {}),
@@ -3391,7 +3398,7 @@ export class DeclarativeEffectInterpreter {
             if (step.target.kind === 'SELF' && !this.ctx.fieldMgr.isSlotRole(playerId, id)) continue;
             const mod: CardModifier = {
               ...(step.duration === 'END_OF_COMBAT'
-                ? { id: `combat-${card.instanceId}-${this.ctx.events.length}-${this.choiceSeq++}` }
+                ? { id: `combat-${card.instanceId}-${nextEffectTimestamp(this.ctx.state)}` }
                 : {}),
               ...(step.pp !== undefined ? { pp: this.evalNumberExpr(step.pp, playerId, sourceId, vars) } : {}),
               ...(step.dp !== undefined ? { dp: this.evalNumberExpr(step.dp, playerId, sourceId, vars) } : {}),
@@ -4699,7 +4706,6 @@ export class DeclarativeEffectInterpreter {
   }
 
   private choiceId(tag: string): string {
-    this.choiceSeq += 1;
-    return `choice-${tag}-${this.ctx.state.turnNumber}-${this.ctx.events.length}-${this.choiceSeq}`;
+    return nextChoiceId(this.ctx.state, tag);
   }
 }

@@ -1,7 +1,12 @@
-import { GameState, GameEvent, CardInstance } from '@zhanshuang/shared';
+import { GameState, GameEvent, CardInstance, CardType } from '@zhanshuang/shared';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
-import { BattlefieldManager } from '../zone/battlefield-manager.js';
+import {
+  BattlefieldManager,
+  getAttachedEquipmentIds,
+  isFengrenTachiEquipmentDef,
+  setAttachedEquipmentIds,
+} from '../zone/battlefield-manager.js';
 import { ReplacementEngine } from '../effects/replacement-engine.js';
 import type { ContinuousEffectEngine } from '../effects/continuous-effects.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
@@ -137,8 +142,66 @@ export class SbaEngine {
       }
     }
 
-    // 3. 9.5 违规卡牌处理 (9.5.5 费用区超过上限；含 BP03-052 动态上限11)
+    // 3. 9.5 违规卡牌处理
     for (const p of [p1, p2]) {
+      // 9.5.2 战场顶层卡位存在角色牌、道具牌、辅助机牌以外的卡牌时 (如违规滞留的战术牌)，移动到墓地
+      for (const s of this.fieldMgr.getSlots(p.playerId)) {
+        for (const topId of [s.roleCardId, s.assistCardId, s.standaloneEquipmentId]) {
+          if (!topId) continue;
+          const topCard = this.state.cards[topId];
+          if (!topCard) continue;
+          const topDef =
+            this.fieldMgr.cardDb.getCard(topCard.cardNumber) ||
+            (topCard.cardId ? this.fieldMgr.cardDb.getCard(topCard.cardId) : undefined);
+          const effectiveType = this.continuousEffects?.getEffectiveCardType(topId) ?? topDef?.cardType;
+          if (
+            effectiveType !== CardType.ROLE &&
+            effectiveType !== CardType.EQUIPMENT &&
+            effectiveType !== CardType.ASSIST
+          ) {
+            this.zoneMgr.moveCard(topId, 'GRAVEYARD', { isFaceUp: true });
+            executedAny = true;
+          }
+        }
+      }
+
+      // 9.5.3 每张角色最多装备 1 张装备；若因失去双持<封刃太刀>能力等导致超过上限，保留首张并将多余装备置入墓地
+      for (const s of this.fieldMgr.getSlots(p.playerId)) {
+        const candidateId =
+          s.roleCardId && this.fieldMgr.isSlotRole(p.playerId, s.roleCardId)
+            ? s.roleCardId
+            : s.assistCardId && this.fieldMgr.isSlotRole(p.playerId, s.assistCardId)
+              ? s.assistCardId
+              : undefined;
+        if (!candidateId) continue;
+        const roleCard = this.state.cards[candidateId];
+        if (!roleCard) continue;
+        const attachedIds = getAttachedEquipmentIds(roleCard);
+        if (attachedIds.length <= 1) continue;
+        const canDual = this.continuousEffects?.evaluateCard(candidateId).canDualEquipFengren ?? false;
+        const allFengren = attachedIds.every((eqId) => {
+          const eq = this.state.cards[eqId];
+          const eqDef = eq
+            ? this.fieldMgr.cardDb.getCard(eq.cardNumber) ||
+              (eq.cardId ? this.fieldMgr.cardDb.getCard(eq.cardId) : undefined)
+            : undefined;
+          return isFengrenTachiEquipmentDef(eqDef);
+        });
+        if (!canDual || !allFengren) {
+          const keepId = attachedIds[0]!;
+          setAttachedEquipmentIds(roleCard, [keepId]);
+          for (const excessEqId of attachedIds.slice(1)) {
+            this.zoneMgr.moveCard(excessEqId, 'GRAVEYARD', {
+              isFaceUp: true,
+              isOrphanCleanup: true,
+              orphanHostCardId: candidateId,
+            });
+          }
+          executedAny = true;
+        }
+      }
+
+      // 9.5.5 费用区超过上限；含 BP03-052 动态上限11
       const maxCap = this.zoneMgr.getMaxCostZoneCapacity(p.playerId);
       const costCards = this.zoneMgr.getCardsInZone(p.playerId, 'COST');
       if (costCards.length > maxCap) {
@@ -161,8 +224,7 @@ export class SbaEngine {
             (this.continuousEffects
               ? this.continuousEffects.hasCardName(c!.instanceId, '血契者')
               : c!.cardNumber === 'BP04-052') &&
-            !this.continuousEffects?.hasLostInherentAbilities(c!.instanceId) &&
-            c!.cardNumber === 'BP04-052'
+            !this.continuousEffects?.hasLostInherentAbilities(c!.instanceId)
         );
       if (bloodPactRoles.length > 1) {
         // 保留最先在场的 1 张 (按 enteredZoneTimestamp 最小优先，其余置入墓地)

@@ -28,6 +28,28 @@ export function expandBaseTraits(rawTraits?: string[]): Set<string> {
 }
 
 /**
+ * 纯无递归读取卡牌经 `CardModifier.setCardType` 覆写后的当前有效卡牌类型
+ * (按时间戳升序取最后生效值；兼容 BP04-001 变为辅助机、PR-041 变为角色)
+ */
+export function getModifierEffectiveCardType(
+  card: CardInstance | undefined,
+  cardDef?: { cardType?: CardType }
+): CardType | undefined {
+  if (!card) return cardDef?.cardType;
+  let effective = cardDef?.cardType;
+  const mods = (card.modifiers ?? []).filter((m) => m.setCardType !== undefined);
+  if (mods.length > 0) {
+    mods.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    for (const m of mods) {
+      if (m.setCardType !== undefined) {
+        effective = m.setCardType;
+      }
+    }
+  }
+  return effective;
+}
+
+/**
  * 8.9.1.e 分配单调递增的持续效果时间戳 (保存在 GameState 中以随快照恢复)
  */
 export function nextEffectTimestamp(state: GameState): number {
@@ -50,6 +72,16 @@ export function addCardModifier(
     id: modifier.id ?? `mod-${card.instanceId}-${ts}`,
     timestamp: ts,
   };
+  if (full.setPP !== undefined && full.baselineRuleCardIds === undefined) {
+    const baselineIds: string[] = [];
+    if (card.attachedEquipmentId) baselineIds.push(card.attachedEquipmentId);
+    if (card.extraAttachedEquipmentIds?.length) baselineIds.push(...card.extraAttachedEquipmentIds);
+    if (card.partnerCardId) baselineIds.push(card.partnerCardId);
+    full.baselineRuleCardIds = baselineIds;
+  }
+  if (full.setDP !== undefined && full.baselinePartnerCardId === undefined) {
+    full.baselinePartnerCardId = card.partnerCardId ?? '';
+  }
   card.modifiers = [...(card.modifiers ?? []), full];
   return full;
 }
@@ -69,6 +101,8 @@ export interface StaticContinuousRule {
   sourceKind?: 'FIELD_ROLE' | 'PARTNER' | 'UNDERNEATH' | 'EQUIPPED';
   /** 8.9.1.d 依赖标注：若会赋予特征，将在同一层内先于依赖特征的规则适用 */
   providesTraits?: boolean;
+  /** 若该规则可能返回 loseAbilities: true，须显式声明以便 8.3.4 失能预筛跳过无关规则 */
+  providesLoseAbilities?: boolean;
   dependsOnTraits?: boolean;
   /** 对目标卡牌计算本次持续效果贡献；返回 undefined 表示不作用于该目标 */
   evaluate: (
@@ -187,8 +221,10 @@ interface TimestampedStat {
   timestamp: number;
   pp?: number;
   setPP?: number;
+  baselineRuleCardIds?: string[];
   dp?: number;
   setDP?: number;
+  baselinePartnerCardId?: string;
   setBaseDP?: number;
   charge?: number;
   chargeIsAbility?: boolean;
@@ -203,6 +239,12 @@ interface TimestampedStat {
  */
 export class ContinuousEffectEngine {
   private staticRules: StaticContinuousRule[] = [];
+  private traitRules: StaticContinuousRule[] = [];
+  private loseAbilitiesRules: StaticContinuousRule[] = [];
+  private layer1StaticRules: StaticContinuousRule[] = [];
+  private layer2StaticRules: StaticContinuousRule[] = [];
+  private activeLoseAbilitiesIds: Set<string> = new Set();
+  private evaluatingCardIds: Set<string> = new Set();
 
   constructor(
     private state: GameState,
@@ -221,6 +263,14 @@ export class ContinuousEffectEngine {
     } else {
       this.staticRules.push(rule);
     }
+    this.rebuildRuleBuckets();
+  }
+
+  private rebuildRuleBuckets(): void {
+    this.traitRules = this.staticRules.filter((r) => r.layer === 'NON_STAT' && r.providesTraits);
+    this.loseAbilitiesRules = this.staticRules.filter((r) => r.layer === 'NON_STAT' && r.providesLoseAbilities);
+    this.layer1StaticRules = this.staticRules.filter((r) => r.layer === 'NON_STAT');
+    this.layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
   }
 
   private getDef(card: CardInstance) {
@@ -239,13 +289,147 @@ export class ContinuousEffectEngine {
     return form === '暮' ? cost % 2 === 0 : cost % 2 === 1;
   }
 
+  /** 获取卡牌自身基本 PP (含 8.9.1.a setBasePP 覆写，供 4.18.2 / 8.13.4.b / Q&A·8 统一使用) */
+  private getCardBasePP(card: CardInstance | undefined): number {
+    if (!card) return 0;
+    const def = this.getDef(card);
+    let basePP = def?.basePP ?? 0;
+    const overrides = (card.modifiers ?? [])
+      .filter((m) => m.setBasePP !== undefined)
+      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    for (const m of overrides) {
+      basePP = m.setBasePP!;
+    }
+    return basePP;
+  }
+
+  /** 获取卡牌自身基本 DP (含 setBaseDP 覆写，供 8.13.4.b / Q&A·8 统一使用) */
+  private getCardBaseDP(card: CardInstance | undefined): number {
+    if (!card) return 0;
+    const def = this.getDef(card);
+    let baseDP = def?.baseDP ?? 0;
+    const overrides = (card.modifiers ?? [])
+      .filter((m) => m.setBaseDP !== undefined)
+      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    for (const m of overrides) {
+      baseDP = m.setBaseDP!;
+    }
+    return baseDP;
+  }
+
+  /** 收集战场各位置上的永久能力来源集合 (含顶层角色/辅助机/独立装备，以及搭档/下方/附着装备) */
+  private collectFieldSources(): {
+    allFieldTopCards: CardInstance[];
+    allActivePartners: CardInstance[];
+    allActiveUnderneath: CardInstance[];
+    allAttachedEquipment: CardInstance[];
+  } {
+    const allFieldTopCards: CardInstance[] = [];
+    const seenTopIds = new Set<string>();
+    for (const pid of [this.state.activePlayerId, this.state.nonActivePlayerId]) {
+      for (const slot of this.state.battlefields[pid] ?? []) {
+        for (const id of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+          if (!id || seenTopIds.has(id)) continue;
+          const c = this.state.cards[id];
+          if (c) {
+            seenTopIds.add(id);
+            allFieldTopCards.push(c);
+          }
+        }
+      }
+    }
+    const allActivePartners = allFieldTopCards
+      .map((r) => (r.partnerCardId ? this.state.cards[r.partnerCardId] : undefined))
+      .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
+    const allActiveUnderneath: CardInstance[] = [];
+    const allAttachedEquipment: CardInstance[] = [];
+    for (const r of allFieldTopCards) {
+      for (const uid of r.underneathCardIds ?? []) {
+        const uCard = this.state.cards[uid];
+        if (uCard) allActiveUnderneath.push(uCard);
+      }
+      if (r.attachedEquipmentId && this.state.cards[r.attachedEquipmentId]) {
+        allAttachedEquipment.push(this.state.cards[r.attachedEquipmentId]!);
+      }
+      for (const extraEqId of r.extraAttachedEquipmentIds ?? []) {
+        if (this.state.cards[extraEqId]) {
+          allAttachedEquipment.push(this.state.cards[extraEqId]!);
+        }
+      }
+    }
+    return {
+      allFieldTopCards,
+      allActivePartners,
+      allActiveUnderneath,
+      allAttachedEquipment,
+    };
+  }
+
   /**
-   * 8.3.4 检查卡牌自身固有能力是否因持续效果而处于「失去能力 / 效果无效」状态
+   * 8.3.4 检查卡牌自身固有能力是否因持续效果而处于「失去能力 / 效果无效」状态 (含静态永久能力导致的失能)
    */
-  hasLostInherentAbilities(cardInstanceId: string): boolean {
+  hasLostInherentAbilities(cardInstanceId: string, visited: Set<string> = new Set()): boolean {
     const card = this.state.cards[cardInstanceId];
     if (!card) return false;
-    return (card.modifiers ?? []).some((m) => m.loseAbilities === true);
+    if ((card.modifiers ?? []).some((m) => m.loseAbilities === true)) {
+      return true;
+    }
+    if (this.loseAbilitiesRules.length === 0) return false;
+    if (visited.has(cardInstanceId) || this.activeLoseAbilitiesIds.has(cardInstanceId)) return false;
+
+    visited.add(cardInstanceId);
+    this.activeLoseAbilitiesIds.add(cardInstanceId);
+    try {
+      const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
+        this.collectFieldSources();
+      const baseCtx: StaticRuleContext = {
+        state: this.state,
+        cardDb: this.cardDb,
+        getCardsInZone: this.getCardsInZone,
+        getFieldRoles: this.getFieldRoles,
+      };
+      let cachedTraits: Set<string> | undefined;
+      const getTargetTraits = (): Set<string> => {
+        if (!cachedTraits) {
+          cachedTraits = this.evaluateLayer1Traits(cardInstanceId, visited);
+        }
+        return cachedTraits;
+      };
+
+      for (const rule of this.loseAbilitiesRules) {
+        const candidateSources = rule.sourceZones
+          ? rule.sourceZones.includes(card.zone)
+            ? [card]
+            : []
+          : rule.sourceKind === 'PARTNER'
+            ? allActivePartners
+            : rule.sourceKind === 'UNDERNEATH'
+              ? allActiveUnderneath
+              : rule.sourceKind === 'EQUIPPED'
+                ? allAttachedEquipment
+                : allFieldTopCards;
+        for (const source of candidateSources) {
+          if (!rule.matchSource(source, baseCtx)) continue;
+          if (source.instanceId !== cardInstanceId && this.hasLostInherentAbilities(source.instanceId, visited)) {
+            continue;
+          }
+          const finalTraits = getTargetTraits();
+          const evalCtx: StaticRuleEvaluationContext = {
+            ...baseCtx,
+            targetTraits: finalTraits,
+            targetKeywords: new Set(),
+            isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+            hasCardTrait: (id, trait) =>
+              id === cardInstanceId ? finalTraits.has(trait) : this.evaluateLayer1Traits(id, visited).has(trait),
+          };
+          const contrib = rule.evaluate(source, card, evalCtx);
+          if (contrib?.loseAbilities) return true;
+        }
+      }
+      return false;
+    } finally {
+      this.activeLoseAbilitiesIds.delete(cardInstanceId);
+    }
   }
 
   /**
@@ -272,42 +456,53 @@ export class ContinuousEffectEngine {
     }
 
     const cardDef = this.getDef(card);
+    if (this.evaluatingCardIds.has(cardInstanceId)) {
+      const parsedFallback = card.zone === 'BATTLEFIELD' ? parseInherentKeywords(cardDef?.rulesText) : [];
+      const fallbackCharge = parseInherentChargeCount(parsedFallback);
+      return {
+        pp: this.getCardBasePP(card),
+        dp: this.getCardBaseDP(card),
+        charge: fallbackCharge ?? 1,
+        keywords: [],
+        traits: Array.from(expandBaseTraits(cardDef?.traits)),
+        abilitiesLost: false,
+        prohibitions: [],
+        treatedAsNames: [],
+        treatedAsOrbColors: cardDef?.signalOrb ? [cardDef.signalOrb as SignalOrbColor] : [],
+        orbValue: cardDef?.signalOrb ? 1 : 0,
+        grantedTriggerIds: [],
+        grantedTriggerEntries: [],
+        canAttackPlayerOnEnterTurn: false,
+        cardType: getModifierEffectiveCardType(card, cardDef),
+      };
+    }
+
+    this.evaluatingCardIds.add(cardInstanceId);
+    try {
 
     // ==================== Layer 0: 8.9.1.a 卡牌基本情报 ====================
-    let pp = cardDef?.basePP ?? 0;
-
-    // 8.9.1.a 基本 PP / 基本 DP 覆盖效果 (基本 DP 覆盖统一在 Layer 2 的 statOps 前按时间戳适用)
-    const basePPOverrides = (card.modifiers ?? [])
-      .filter((m) => m.setBasePP !== undefined)
-      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-    for (const m of basePPOverrides) {
-      pp = m.setBasePP!;
-    }
+    let pp = this.getCardBasePP(card);
     let baseDPValue = cardDef?.baseDP ?? 0;
 
-    // 4.18.2 装备角色的 PP 会增加其全部装备牌的基本 PP 数值 (支持双持装备)
+    // 4.18.2 装备牌基本 PP (支持双持装备) 与 8.13.4.b 协战搭档基本 PP/DP 为规则加成，
+    // 按 Q&A·6 / Q&A·10 在「PP/DP 变为 X」之后按当前附着变化实时净增减
     const eqIds: string[] = [];
     if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
     if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
+    let currentEquipPP = 0;
     for (const eqId of eqIds) {
-      const eqCard = this.state.cards[eqId];
-      if (eqCard) {
-        const eqDef = this.getDef(eqCard);
-        pp += eqDef?.basePP ?? 0;
-      }
+      currentEquipPP += this.getCardBasePP(this.state.cards[eqId]);
     }
-
-    // 8.13.4.b 协战角色的基本 PP、基本 DP 增加其协战搭档对应的印刷基本数值
-    // (8.13.4.b.2 只参考搭档印刷基本数值，不参考搭档自身的持续效果或状态)
-    let partnerBaseDP = 0;
+    let currentPartnerPP = 0;
+    let currentPartnerDP = 0;
     if (card.zone === 'BATTLEFIELD' && card.partnerCardId) {
       const partnerCard = this.state.cards[card.partnerCardId];
       if (partnerCard) {
-        const partnerDef = this.getDef(partnerCard);
-        pp += partnerDef?.basePP ?? 0;
-        partnerBaseDP += partnerDef?.baseDP ?? 0;
+        currentPartnerPP += this.getCardBasePP(partnerCard);
+        currentPartnerDP += this.getCardBaseDP(partnerCard);
       }
     }
+    const currentRulePP = currentEquipPP + currentPartnerPP;
 
     const parsedInherent = card.zone === 'BATTLEFIELD' ? parseInherentKeywords(cardDef?.rulesText) : [];
     const inherentCharge = parseInherentChargeCount(parsedInherent);
@@ -337,9 +532,7 @@ export class ContinuousEffectEngine {
 
     // 固有禁止能力：【永】：该牌不能攻击 (帕瓦、库洛洛；若失去能力 8.3.4 则在下方清除)
     const hasInherentCannotAttack = Boolean(cardDef?.rulesText?.includes('【永】：该牌不能攻击'));
-    if (hasInherentCannotAttack) {
-      prohibitionsSet.add('CANNOT_ATTACK');
-    }
+    let inherentCannotAttackActive = hasInherentCannotAttack;
 
     const baseCtx: StaticRuleContext = {
       state: this.state,
@@ -348,17 +541,69 @@ export class ContinuousEffectEngine {
       getFieldRoles: this.getFieldRoles,
     };
 
-    // ==================== Layer 1: 8.9.1.b 非 PP/DP/充能数的持续效果 ====================
-    // 先收集卡牌上直接挂载的锁定型持续效果 (CardModifier) 与兼容旧快照的 grantedKeywords
-    const nonStatOps: TimestampedNonStat[] = [];
+    const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
+      this.collectFieldSources();
+    const resolveCandidateSources = (rule: StaticContinuousRule): CardInstance[] =>
+      rule.sourceZones
+        ? rule.sourceZones.includes(card.zone)
+          ? [card]
+          : []
+        : rule.sourceKind === 'PARTNER'
+          ? allActivePartners
+          : rule.sourceKind === 'UNDERNEATH'
+            ? allActiveUnderneath
+            : rule.sourceKind === 'EQUIPPED'
+              ? allAttachedEquipment
+              : allFieldTopCards;
 
+    // ==================== Layer 1 (8.9.1.b / 8.9.1.d) 两阶段计算 ====================
+    // Phase 1A：先行结算全部提供/清除特征的效果 (含 modifiers 与 providesTraits 静态规则)，严格按时间戳排序
+    const traitOps: TimestampedNonStat[] = [];
+    for (const m of card.modifiers ?? []) {
+      if (m.addTraits?.length || m.clearBaseTraits) {
+        traitOps.push({
+          timestamp: m.timestamp ?? 0,
+          addTraits: m.addTraits,
+          clearBaseTraits: m.clearBaseTraits,
+        });
+      }
+    }
+    for (const rule of this.traitRules) {
+      for (const source of resolveCandidateSources(rule)) {
+        if (!rule.matchSource(source, baseCtx)) continue;
+        if (this.hasLostInherentAbilities(source.instanceId)) continue;
+        const evalCtx: StaticRuleEvaluationContext = {
+          ...baseCtx,
+          targetTraits: traitsSet,
+          targetKeywords: keywordsSet,
+          isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+          hasCardTrait: (id, trait) =>
+            id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
+        };
+        const contrib = rule.evaluate(source, card, evalCtx);
+        if (!contrib || (!contrib.clearBaseTraits && !contrib.addTraits?.length)) continue;
+        traitOps.push({
+          timestamp: source.enteredZoneTimestamp ?? 0,
+          addTraits: contrib.addTraits,
+          clearBaseTraits: contrib.clearBaseTraits,
+        });
+      }
+    }
+    traitOps.sort((a, b) => a.timestamp - b.timestamp);
+    for (const op of traitOps) {
+      if (op.clearBaseTraits) traitsSet.clear();
+      if (op.addTraits) {
+        for (const t of op.addTraits) traitsSet.add(t);
+      }
+    }
+
+    // Phase 1B：特征最终确定后，再收集并应用所有非特征的 Layer 1 效果，纯粹按时间戳升序 (严格弱序)
+    const nonStatOps: TimestampedNonStat[] = [];
     if (card.grantedKeywords && card.grantedKeywords.length > 0) {
       nonStatOps.push({ timestamp: 0, keywords: card.grantedKeywords });
     }
     for (const m of card.modifiers ?? []) {
       if (
-        m.addTraits?.length ||
-        m.clearBaseTraits ||
         m.keywords?.length ||
         m.removeKeywords?.length ||
         m.loseAbilities ||
@@ -377,9 +622,6 @@ export class ContinuousEffectEngine {
       ) {
         nonStatOps.push({
           timestamp: m.timestamp ?? 0,
-          providesTraits: !!(m.addTraits?.length || m.clearBaseTraits),
-          addTraits: m.addTraits,
-          clearBaseTraits: m.clearBaseTraits,
           keywords: m.keywords,
           removeKeywords: m.removeKeywords,
           loseAbilities: m.loseAbilities,
@@ -400,53 +642,10 @@ export class ContinuousEffectEngine {
       }
     }
 
-    // 收集战场上所有未失去能力的来源卡产生的 Layer 1 永久能力 (8.9.1.b / 8.9.1.e.1)
-    const allFieldRoles = [
-      ...this.getFieldRoles(this.state.activePlayerId),
-      ...this.getFieldRoles(this.state.nonActivePlayerId),
-    ];
-    // 8.13 协战搭档的【协战永】来源集合
-    const allActivePartners = allFieldRoles
-      .map((r) => (r.partnerCardId ? this.state.cards[r.partnerCardId] : undefined))
-      .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
-    // 角色下方叠置牌的【永】来源集合 (如 BP01-049/050/051 帕瓦在《七实·遥星之座》下方)
-    const allActiveUnderneath: CardInstance[] = [];
-    // 附着装备牌的【永】来源集合 (如 BP03-033 时隧之钥-斯托克斯)
-    const allAttachedEquipment: CardInstance[] = [];
-    for (const r of allFieldRoles) {
-      for (const uid of r.underneathCardIds ?? []) {
-        const uCard = this.state.cards[uid];
-        if (uCard) allActiveUnderneath.push(uCard);
-      }
-      if (r.attachedEquipmentId && this.state.cards[r.attachedEquipmentId]) {
-        allAttachedEquipment.push(this.state.cards[r.attachedEquipmentId]!);
-      }
-      for (const extraEqId of r.extraAttachedEquipmentIds ?? []) {
-        if (this.state.cards[extraEqId]) {
-          allAttachedEquipment.push(this.state.cards[extraEqId]!);
-        }
-      }
-    }
-
-    const layer1StaticRules = this.staticRules
-      .filter((r) => r.layer === 'NON_STAT')
-      .sort((a, b) => Number(!!b.providesTraits) - Number(!!a.providesTraits));
-
-    for (const rule of layer1StaticRules) {
-      const candidateSources = rule.sourceZones
-        ? rule.sourceZones.includes(card.zone)
-          ? [card]
-          : []
-        : rule.sourceKind === 'PARTNER'
-          ? allActivePartners
-          : rule.sourceKind === 'UNDERNEATH'
-            ? allActiveUnderneath
-            : rule.sourceKind === 'EQUIPPED'
-              ? allAttachedEquipment
-              : allFieldRoles;
-      for (const source of candidateSources) {
-        if (this.hasLostInherentAbilities(source.instanceId)) continue;
+    for (const rule of this.layer1StaticRules) {
+      for (const source of resolveCandidateSources(rule)) {
         if (!rule.matchSource(source, baseCtx)) continue;
+        if (this.hasLostInherentAbilities(source.instanceId)) continue;
         const evalCtx: StaticRuleEvaluationContext = {
           ...baseCtx,
           targetTraits: traitsSet,
@@ -457,12 +656,27 @@ export class ContinuousEffectEngine {
         };
         const contrib = rule.evaluate(source, card, evalCtx);
         if (!contrib) continue;
+        const hasPhase1BFields = Boolean(
+          contrib.keywords?.length ||
+            contrib.removeKeywords?.length ||
+            contrib.loseAbilities ||
+            contrib.setCardType !== undefined ||
+            contrib.costDelta !== undefined ||
+            contrib.setCost !== undefined ||
+            contrib.canAttackReadyRolesMaxCost !== undefined ||
+            contrib.mustBeAttackTarget ||
+            contrib.prohibitions?.length ||
+            contrib.treatedAsOrbColors?.length ||
+            contrib.orbValue !== undefined ||
+            contrib.treatedAsNames?.length ||
+            contrib.grantedTriggerIds?.length ||
+            contrib.canAttackPlayerOnEnterTurn ||
+            contrib.unblockableMaxPP !== undefined ||
+            contrib.canDualEquipFengren
+        );
+        if (!hasPhase1BFields) continue;
         nonStatOps.push({
           timestamp: source.enteredZoneTimestamp ?? 0,
-          providesTraits: rule.providesTraits || Boolean(contrib.clearBaseTraits || contrib.addTraits?.length),
-          dependsOnTraits: rule.dependsOnTraits,
-          addTraits: contrib.addTraits,
-          clearBaseTraits: contrib.clearBaseTraits,
           keywords: contrib.keywords,
           removeKeywords: contrib.removeKeywords,
           loseAbilities: contrib.loseAbilities,
@@ -484,19 +698,18 @@ export class ContinuousEffectEngine {
       }
     }
 
-    // 8.9.1.d 依赖排序 (提供特征的优先于依赖特征的) + 8.9.1.e 时间戳顺序
-    nonStatOps.sort((a, b) => {
-      if (a.providesTraits && b.dependsOnTraits) return -1;
-      if (b.providesTraits && a.dependsOnTraits) return 1;
-      return a.timestamp - b.timestamp;
-    });
+    // 8.9.1.e 纯时间戳严格弱序排序（确保失能前后赋予的能力严格按获得/失能时间顺序生效）
+    nonStatOps.sort((a, b) => a.timestamp - b.timestamp);
 
     let abilitiesLost = false;
+    let latestLoseAbilitiesTs = -1;
     let cannotGainAbilities = false;
     for (const op of nonStatOps) {
       if (op.loseAbilities) {
         abilitiesLost = true;
-        // 8.3.4 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字/赋予触发，并解除自身固有「不能攻击」
+        latestLoseAbilitiesTs = Math.max(latestLoseAbilitiesTs, op.timestamp);
+        // 8.3.4 / Q&A·3 / Q&A·4：失去能力清空当前已有的固有与早先赋予的关键字/赋予触发，并解除自身固有「不能攻击」
+        // 后续时间戳晚于 loseAbilities 的效果若未被 CANNOT_GAIN_ABILITIES 阻止则可生效
         keywordsSet.clear();
         grantedTriggersSet.clear();
         grantedTriggerEntries.length = 0;
@@ -504,21 +717,13 @@ export class ContinuousEffectEngine {
         canDualEquipFengren = false;
         canAttackReadyRolesMaxCost = undefined;
         mustBeAttackTarget = false;
-        if (hasInherentCannotAttack) {
-          prohibitionsSet.delete('CANNOT_ATTACK');
-        }
+        inherentCannotAttackActive = false;
       }
       if (op.prohibitions) {
         for (const p of op.prohibitions) {
           prohibitionsSet.add(p);
           if (p === 'CANNOT_GAIN_ABILITIES') cannotGainAbilities = true;
         }
-      }
-      if (op.clearBaseTraits) {
-        traitsSet.clear();
-      }
-      if (op.addTraits) {
-        for (const t of op.addTraits) traitsSet.add(t);
       }
       if (op.setCardType !== undefined) {
         effectiveCardType = op.setCardType;
@@ -572,6 +777,9 @@ export class ContinuousEffectEngine {
         orbValue = op.orbValue;
       }
     }
+    if (inherentCannotAttackActive) {
+      prohibitionsSet.add('CANNOT_ATTACK');
+    }
 
     // 8.3.4 若卡牌自身失去能力，固有【充能X】亦不再生效，回到规则基本充能数 1
     let charge = abilitiesLost ? 1 : (inherentCharge ?? 1);
@@ -601,35 +809,26 @@ export class ContinuousEffectEngine {
           timestamp: m.timestamp ?? 0,
           pp: m.pp,
           setPP: m.setPP,
+          baselineRuleCardIds: m.baselineRuleCardIds,
           dp: m.dp,
           setDP: m.setDP,
+          baselinePartnerCardId: m.baselinePartnerCardId,
           setBaseDP: m.setBaseDP,
           charge: m.charge,
+          chargeIsAbility: m.chargeIsAbility,
           setCharge: m.setCharge,
           appliedByPlayerId: m.appliedByPlayerId,
         });
       }
     }
 
-    const layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
-    for (const rule of layer2StaticRules) {
-      const candidateSources = rule.sourceZones
-        ? rule.sourceZones.includes(card.zone)
-          ? [card]
-          : []
-        : rule.sourceKind === 'PARTNER'
-          ? allActivePartners
-          : rule.sourceKind === 'UNDERNEATH'
-            ? allActiveUnderneath
-            : rule.sourceKind === 'EQUIPPED'
-              ? allAttachedEquipment
-              : allFieldRoles;
-      for (const source of candidateSources) {
+    for (const rule of this.layer2StaticRules) {
+      for (const source of resolveCandidateSources(rule)) {
+        if (!rule.matchSource(source, baseCtx)) continue;
         // 8.3.4 失去能力的来源卡其【永】不产生效果 (Q&A·10 BP04-001 失去永久能力时 PP 变为 0)
         const sourceLost =
           source.instanceId === card.instanceId ? abilitiesLost : this.hasLostInherentAbilities(source.instanceId);
         if (sourceLost) continue;
-        if (!rule.matchSource(source, baseCtx)) continue;
         const evalCtx: StaticRuleEvaluationContext = {
           ...baseCtx,
           targetTraits: traitsSet,
@@ -660,12 +859,19 @@ export class ContinuousEffectEngine {
     for (const op of statOps) {
       if (op.setBaseDP !== undefined) baseDPValue = op.setBaseDP;
     }
-    let dp = baseDPValue + partnerBaseDP;
+    let dp = baseDPValue;
 
     const preventOppPPDelta = prohibitionsSet.has('CANNOT_MODIFY_PP_BY_OPPONENT');
     for (const op of statOps) {
       // Q&A·9 BP04-016: 「PP 不会因对方效果增减」挡住对方的 pp +/-，但挡不住「PP 变为 X」(setPP)
-      if (op.setPP !== undefined) pp = op.setPP;
+      // Q&A·6 / Q&A·10: setPP 覆盖当前含装备与搭档在内总 PP，故减去施加瞬间的规则加成基线，并在 Layer 2 末尾加回当前规则加成
+      if (op.setPP !== undefined) {
+        const baselineRulePP = (op.baselineRuleCardIds ?? []).reduce(
+          (sum, id) => sum + this.getCardBasePP(this.state.cards[id]),
+          0
+        );
+        pp = op.setPP - baselineRulePP;
+      }
       if (op.pp !== undefined) {
         const isFromOpponent =
           op.appliedByPlayerId !== undefined && op.appliedByPlayerId !== card.controllerPlayerId;
@@ -673,16 +879,26 @@ export class ContinuousEffectEngine {
           pp += op.pp;
         }
       }
-      if (op.setDP !== undefined) dp = op.setDP;
+      if (op.setDP !== undefined) {
+        const baselinePartnerDP = op.baselinePartnerCardId
+          ? this.getCardBaseDP(this.state.cards[op.baselinePartnerCardId])
+          : 0;
+        dp = op.setDP - baselinePartnerDP;
+      }
       if (op.dp !== undefined) dp += op.dp;
       if (op.setCharge !== undefined) charge = op.setCharge;
       if (op.charge !== undefined) {
-        // Q&A·1 (BP01-025/BP01-050)：以「获得【充能+X】能力」形式赋予的充能，在宿主失去能力或禁止获能时一并失去
-        if (!op.chargeIsAbility || (!abilitiesLost && !cannotGainAbilities)) {
+        // Q&A·1 / Q&A·3 (BP01-025/BP01-050)：以「获得【充能+X】能力」形式赋予的充能，
+        // 在宿主失去能力时丢失先获部分，但在失能之后新获得的若未受 CANNOT_GAIN_ABILITIES 阻止则保留
+        if (!op.chargeIsAbility || (!cannotGainAbilities && (latestLoseAbilitiesTs < 0 || op.timestamp > latestLoseAbilitiesTs))) {
           charge += op.charge;
         }
       }
     }
+
+    // 4.18.2 / 8.13.4.b 规则加成的装备基本 PP 与协战搭档基本 PP/DP 在最后统一叠加，满足卸装/解协战按规则扣减 (Q&A·6/10)
+    pp += currentRulePP;
+    dp += currentPartnerDP;
 
     return {
       pp,
@@ -706,6 +922,9 @@ export class ContinuousEffectEngine {
       canAttackReadyRolesMaxCost,
       mustBeAttackTarget,
     };
+    } finally {
+      this.evaluatingCardIds.delete(cardInstanceId);
+    }
   }
 
   hasKeyword(cardInstanceId: string, keyword: string): boolean {
@@ -799,53 +1018,69 @@ export class ContinuousEffectEngine {
   /**
    * 仅计算 Layer 0 + Layer 1 (8.9.1.a/b) 的有效特征集合，避免 Layer 2 规则互相引用时产生递归
    */
-  private evaluateLayer1Traits(cardInstanceId: string): Set<string> {
+  private evaluateLayer1Traits(cardInstanceId: string, visited: Set<string> = new Set()): Set<string> {
     const card = this.state.cards[cardInstanceId];
     if (!card) return new Set();
     const cardDef = this.getDef(card);
     const traitsSet = expandBaseTraits(cardDef?.traits);
-    for (const m of [...(card.modifiers ?? [])].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))) {
-      if (m.clearBaseTraits) {
-        traitsSet.clear();
-      }
-      if (m.addTraits) {
-        for (const t of m.addTraits) traitsSet.add(t);
+    const ops: Array<{ timestamp: number; clearBaseTraits?: boolean; addTraits?: string[] }> = [];
+    for (const m of card.modifiers ?? []) {
+      if (m.clearBaseTraits || m.addTraits?.length) {
+        ops.push({ timestamp: m.timestamp ?? 0, clearBaseTraits: m.clearBaseTraits, addTraits: m.addTraits });
       }
     }
-    const baseCtx: StaticRuleContext = {
-      state: this.state,
-      cardDb: this.cardDb,
-      getCardsInZone: this.getCardsInZone,
-      getFieldRoles: this.getFieldRoles,
-    };
-    const allFieldRoles = [
-      ...this.getFieldRoles(this.state.activePlayerId),
-      ...this.getFieldRoles(this.state.nonActivePlayerId),
-    ];
-    for (const rule of this.staticRules) {
-      if (rule.layer !== 'NON_STAT' || !rule.providesTraits) continue;
-      const candidateSources = rule.sourceZones
-        ? rule.sourceZones.includes(card.zone)
-          ? [card]
-          : []
-        : allFieldRoles;
-      for (const source of candidateSources) {
-        if (this.hasLostInherentAbilities(source.instanceId)) continue;
-        if (!rule.matchSource(source, baseCtx)) continue;
-        const contrib = rule.evaluate(source, card, {
-          ...baseCtx,
-          targetTraits: traitsSet,
-          targetKeywords: new Set(),
-          isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
-          hasCardTrait: (id, trait) =>
-            id === card.instanceId
-              ? traitsSet.has(trait)
-              : Boolean(this.state.cards[id] && expandBaseTraits(this.getDef(this.state.cards[id]!)?.traits).has(trait)),
-        });
-        if (contrib?.clearBaseTraits) traitsSet.clear();
-        if (contrib?.addTraits) {
-          for (const t of contrib.addTraits) traitsSet.add(t);
+    if (this.traitRules.length > 0) {
+      const baseCtx: StaticRuleContext = {
+        state: this.state,
+        cardDb: this.cardDb,
+        getCardsInZone: this.getCardsInZone,
+        getFieldRoles: this.getFieldRoles,
+      };
+      const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
+        this.collectFieldSources();
+      for (const rule of this.traitRules) {
+        const candidateSources = rule.sourceZones
+          ? rule.sourceZones.includes(card.zone)
+            ? [card]
+            : []
+          : rule.sourceKind === 'PARTNER'
+            ? allActivePartners
+            : rule.sourceKind === 'UNDERNEATH'
+              ? allActiveUnderneath
+              : rule.sourceKind === 'EQUIPPED'
+                ? allAttachedEquipment
+                : allFieldTopCards;
+        for (const source of candidateSources) {
+          if (!rule.matchSource(source, baseCtx)) continue;
+          if (visited.has(source.instanceId)) continue;
+          if (source.instanceId !== cardInstanceId && this.hasLostInherentAbilities(source.instanceId, visited)) {
+            continue;
+          }
+          const contrib = rule.evaluate(source, card, {
+            ...baseCtx,
+            targetTraits: traitsSet,
+            targetKeywords: new Set(),
+            isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+            hasCardTrait: (id, trait) =>
+              id === card.instanceId
+                ? traitsSet.has(trait)
+                : Boolean(this.state.cards[id] && expandBaseTraits(this.getDef(this.state.cards[id]!)?.traits).has(trait)),
+          });
+          if (contrib?.clearBaseTraits || contrib?.addTraits?.length) {
+            ops.push({
+              timestamp: source.enteredZoneTimestamp ?? 0,
+              clearBaseTraits: contrib.clearBaseTraits,
+              addTraits: contrib.addTraits,
+            });
+          }
         }
+      }
+    }
+    ops.sort((a, b) => a.timestamp - b.timestamp);
+    for (const op of ops) {
+      if (op.clearBaseTraits) traitsSet.clear();
+      if (op.addTraits) {
+        for (const t of op.addTraits) traitsSet.add(t);
       }
     }
     return traitsSet;

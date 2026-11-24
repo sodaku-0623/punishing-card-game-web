@@ -208,9 +208,9 @@ export class TriggerManager {
         ? this.cardDb.getCard(destroyedCard.cardNumber) ||
           (destroyedCard.cardId ? this.cardDb.getCard(destroyedCard.cardId) : undefined)
         : undefined;
-      const effectiveType = destroyedCard?.modifiers?.some((m) => m.setCardType === 'ROLE')
-        ? 'ROLE'
-        : destroyedDef?.cardType;
+      const effectiveType = destroyedCard
+        ? this.continuousEffects.getEffectiveCardType(destroyedCard.instanceId) ?? destroyedDef?.cardType
+        : undefined;
       if (effectiveType === 'ROLE' && this.state.players[event.playerId]) {
         this.state.players[event.playerId]!.destroyedFriendlyRoleCountThisTurn =
           (this.state.players[event.playerId]!.destroyedFriendlyRoleCountThisTurn ?? 0) + 1;
@@ -334,17 +334,29 @@ export class TriggerManager {
 
     const isDelayed = Boolean(trigger.triggerContext?.isDelayedTrigger);
 
-    // 8.3.4 / Q&A·4：非时限触发的来源卡在触发时或执行时处于「失去能力」状态，改为不处理；
-    // 被赋予在角色身上的时限触发 (如 ST02-011 回合结束送墓)，若在 6.5.1.b 结算时角色已「失去能力」或「不能获得新能力」，亦不执行 (Q&A·4 BP02-058)
+    // 8.3.4 / Q&A·3 / Q&A·4：
+    // - 卡牌自身固有触发：来源卡在触发时或执行时处于「失去能力」状态，改为不处理；
+    // - 持续效果赋予角色的新自动能力 (带 grantKey，如《荣光护盾》)：在 8.9.1.e 时间戳层面仍有效时继续结算 (Q&A·3)，仅当在战场已失效时跳过；
+    // - 被赋予的时限触发 (如 ST02-011 回合结束送墓)：若在 6.5.1.b 结算时已「失去能力」或「不能获得新能力」，亦不执行 (Q&A·4 BP02-058)。
     const sourceCard = this.state.cards[trigger.sourceCardInstanceId];
+    const grantKey = trigger.triggerContext?.grantKey as string | undefined;
     if (!isDelayed) {
-      const lostAtTrigger = Boolean(trigger.triggerContext?.sourceAbilitiesLostAtTrigger);
-      const lostNow =
-        sourceCard && sourceCard.zone === 'BATTLEFIELD'
-          ? this.continuousEffects.hasLostInherentAbilities(sourceCard.instanceId)
-          : false;
-      if (lostAtTrigger || lostNow) {
-        return;
+      if (grantKey) {
+        if (sourceCard && sourceCard.zone === 'BATTLEFIELD') {
+          const activeKeys = this.continuousEffects.getGrantedTriggerKeys(sourceCard.instanceId, trigger.abilityId);
+          if (!activeKeys.includes(grantKey)) {
+            return;
+          }
+        }
+      } else {
+        const lostAtTrigger = Boolean(trigger.triggerContext?.sourceAbilitiesLostAtTrigger);
+        const lostNow =
+          sourceCard && sourceCard.zone === 'BATTLEFIELD'
+            ? this.continuousEffects.hasLostInherentAbilities(sourceCard.instanceId)
+            : false;
+        if (lostAtTrigger || lostNow) {
+          return;
+        }
       }
     } else if (
       (trigger.abilityId === 'DELAYED_END_OF_TURN_TO_GRAVEYARD' ||

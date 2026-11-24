@@ -323,7 +323,7 @@ describe('Stage 2B 状态机安全、置换收口与【出】能力统一触发'
       passInstantWindows(engine);
 
       expect(state.phase).toBe('END_PHASE');
-      expect(state.endPhaseStep).toBe('CLEANUP_POST');
+      expect(state.endPhaseStep).toBe('CLEANUP_EXPIRE');
       expect(state.activePlayerId).toBe(active);
       expect(state.turnNumber).toBe(1);
       expect(state.currentPendingChoice?.effectType).toBe('DSL_TEST_CLEANUP_POST');

@@ -88,12 +88,13 @@
   - `endCombat()` 在发射并结算完 `ATTACK_ENDED` 后再清空 `currentCombat` 与 `combat-*`；
   - 消除 `card-effects.ts` 7 处前置 `handleCardLeaveField`、`MOVE_CARDS` 校验 `moveCard` 返回值、清理所有直写 `card.zone` 后门（含 `card-effects.ts:3186` 与 `UNDERNEATH`）、补齐 `ReplacementEngine` 多置换排序、`MODIFY_DAMAGE` 与 3.6.4 二次置换链；
   - 将【出】能力统一迁入 `TriggerManager` (`CARD_ENTERED_FIELD`)，解决 11 张卡子角色抢跑、`BP01-058`/`ST05-002` 双【出】顺序与同时出场排序。
-- [ ] **8.9 持续效果层、8.5/9.5 规则与特殊机制闭环**：
-  - 修正 8.9 Layer 1 两阶段依赖与严格弱序、8.3.4 保留后获能力（Q&A·3）、装备/协战基本 PP 按 4.18.2/8.13.4.b/Q&A·6/10 叠加在 `setPP` 之上、6.5.1.d 先解协战后清期限（Q&A·10）、`evaluateLayer1Traits` 覆盖全附着区、补全 `appliedByPlayerId`；
-  - 补全 `SbaEngine` 9.5.2/9.5.3（双持失能卸装）、`getEffectiveCardType` 统一调用、`BP04-052` 进场前阻止超限；
+- [x] **8.9 持续效果层、8.3.4/9.5 规则、6.5.1.d 顺序与确定性 ID 收口（Stage 2C-1）**：
+  - 已修正 8.9 Layer 1 两阶段依赖 (`providesTraits` → 非特征严格时间戳弱序) 与递归守卫、8.3.4 保留后获能力（Q&A·3，含词条/触发器/`chargeIsAbility`）与静态 `loseAbilities` 判定、装备/协战基本 PP/DP 按 4.18.2/8.13.4.b/Q&A·6/10 叠加在 `setPP`/`setDP` 之上、6.5.1.d 先解协战后运行检查时机再清期限（`CLEANUP` → `CLEANUP_EXPIRE` → `CLEANUP_POST`，Q&A·10）、`evaluateLayer1Traits` 覆盖全附着区 (`PARTNER`/`UNDERNEATH`/`EQUIPPED`)、补全 `appliedByPlayerId`、修复装备赋予【起】能力受 `CANNOT_GAIN_ABILITIES` 拦截及 `PR-030`/`BP04-028` 消球事件发射；
+  - 已补全 `SbaEngine` 9.5.2（顶层非法非角色/装备/辅助机牌置墓）/9.5.3（双持失能卸装）、`getModifierEffectiveCardType`/`getEffectiveCardType` 统一调用、`BP04-052` 进场前阻止超限；
+  - 已以持久化 `GameState.choiceIdSeq` (`nextChoiceId`) 彻底替换内存 `choiceSeq` 与 `card-effects.ts` 全部 `Date.now()/Math.random()` 生成逻辑（`stage2c-1-continuous-sba-and-determinism.test.ts` 14 项回归测试验证）。
+- [ ] **可挂起【贯通】/直伤/攻击充能与特殊机制闭环（Stage 2C-2）**：
   - 将【贯通】(`10.7.1`) 与直伤/攻击充能 (`10.2.1.b`) 接入可挂起流程与检查时机；
-  - 补齐 `BP04-001` 多对象升变、`BP02-026`/`036` 墓地使用免除属性检查（8.6.2.a）、`BP02-012`/`041`/`BP04-060` 牺牲减费扫描装备与搭档及腾位后验、10.18.3.b 浮空下方牌不污染 `PROCESSING`、Q&A·8 `attachPartner` 尊重防解除、`costCardInstanceIds` 全路径透传、`hasUsableInstant` 实时费用同步；
-  - 以持久化 `choiceIdSeq` 彻底替换内存 `choiceSeq` 与 `card-effects.ts` 40+ 处 `Date.now()/Math.random()`。
+  - 补齐 `BP04-001` 多对象升变、`BP02-026`/`036` 墓地使用免除属性检查（8.6.2.a）、`BP02-012`/`041`/`BP04-060` 牺牲减费扫描装备与搭档及腾位后验、10.18.3.b 浮空下方牌不污染 `PROCESSING`、Q&A·8 `attachPartner` 尊重防解除、`costCardInstanceIds` 全路径透传、`hasUsableInstant` 实时费用同步。
 
 ### 3.2 双后端安全加固与协议对齐
 
