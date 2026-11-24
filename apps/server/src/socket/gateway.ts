@@ -66,6 +66,8 @@ export function setupSocketGateway(
 
   // 速率限制配置 (防刷与 DoS 攻击拦截)
   const userActionTimestamps = new Map<string, number[]>();
+  // 正在执行开局的房间并发锁，防止并发连击触发双开局
+  const startingRooms = new Set<string>();
   const RATE_LIMIT_WINDOW_MS = 1000;
   const MAX_ACTIONS_PER_WINDOW = 15;
 
@@ -274,7 +276,28 @@ export function setupSocketGateway(
           });
           return;
         }
-        const { roomId, isReady, deckId, customDeck } = rawPayload as any;
+        const { roomId, isReady, deckId, customDeck } = rawPayload as Record<string, unknown>;
+        if (typeof isReady !== 'boolean') {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '准备状态参数非法，isReady 必须为布尔值',
+          });
+          return;
+        }
+        if (roomId !== undefined && typeof roomId !== 'string') {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '房间标识参数非法',
+          });
+          return;
+        }
+        if (deckId !== undefined && typeof deckId !== 'string') {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '卡组标识参数非法',
+          });
+          return;
+        }
         const effectiveRoomId = findJoinedRoomId(roomId);
         if (!effectiveRoomId) {
           socket.emit('game:error', {
@@ -305,8 +328,28 @@ export function setupSocketGateway(
 
     socket.on('room:select_deck', async (rawPayload: unknown) => {
       try {
-        if (!isPlainObject(rawPayload)) return;
-        const { roomId, deckId, customDeck } = rawPayload as any;
+        if (!isPlainObject(rawPayload)) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '卡组选择参数格式非法',
+          });
+          return;
+        }
+        const { roomId, deckId, customDeck } = rawPayload as Record<string, unknown>;
+        if (typeof deckId !== 'string') {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '卡组标识参数非法，deckId 必须为字符串',
+          });
+          return;
+        }
+        if (roomId !== undefined && typeof roomId !== 'string') {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '房间标识参数非法',
+          });
+          return;
+        }
         const effectiveRoomId = findJoinedRoomId(roomId);
         if (!effectiveRoomId) return;
 
@@ -320,12 +363,28 @@ export function setupSocketGateway(
             message: res.errorMessage,
           });
         }
-      } catch {}
+      } catch (err: any) {
+        socket.emit('game:error', {
+          code: ErrorCode.INVALID_ACTION,
+          message: err?.message || '选择卡组异常',
+        });
+      }
     });
 
-    socket.on('room:start', async (payload) => {
+    socket.on('room:start', async (rawPayload: unknown) => {
       try {
-        const effectiveRoomId = findJoinedRoomId(payload?.roomId);
+        if (rawPayload !== undefined && !isPlainObject(rawPayload)) {
+          socket.emit('game:error', {
+            code: ErrorCode.INVALID_ACTION,
+            message: '开局请求参数格式非法',
+          });
+          return;
+        }
+        const explicitRoomId =
+          isPlainObject(rawPayload) && typeof rawPayload.roomId === 'string'
+            ? rawPayload.roomId
+            : undefined;
+        const effectiveRoomId = findJoinedRoomId(explicitRoomId);
         if (!effectiveRoomId) return;
         const room = roomMgr.getRoom(effectiveRoomId);
         if (!room || !room.players.some((p) => p.userId === userId)) {
@@ -335,7 +394,16 @@ export function setupSocketGateway(
           });
           return;
         }
-        if (room.status === RoomStatus.PLAYING) return; // 防止重复点击导致重复开局
+        if (room.creatorId !== userId) {
+          socket.emit('game:error', {
+            code: ErrorCode.ACTION_NOT_ALLOWED,
+            message: '仅房主可以开始对战',
+          });
+          return;
+        }
+        if (room.status === RoomStatus.PLAYING || startingRooms.has(effectiveRoomId)) {
+          return; // 防止并发或重复点击导致双开局
+        }
         if (room.players.length !== 2 || !room.players.every((p) => p.isReady)) {
           socket.emit('game:error', {
             code: ErrorCode.ROOM_NOT_READY,
@@ -344,41 +412,46 @@ export function setupSocketGateway(
           return;
         }
 
-        const p1 = room.players[0]!;
-        const p2 = room.players[1]!;
+        startingRooms.add(effectiveRoomId);
+        try {
+          const p1 = room.players[0]!;
+          const p2 = room.players[1]!;
 
-        const session = await gameSessionMgr.startGameSession(
-          effectiveRoomId,
-          p1.userId,
-          p1.deckId!,
-          p2.userId,
-          p2.deckId!
-        );
+          const session = await gameSessionMgr.startGameSession(
+            effectiveRoomId,
+            p1.userId,
+            p1.deckId!,
+            p2.userId,
+            p2.deckId!
+          );
 
-        room.status = RoomStatus.PLAYING;
-        room.currentGameId = session.gameId;
-        const roomChannel = `room:${effectiveRoomId}`;
-        io.to(roomChannel).emit('room:state_updated', room);
+          room.status = RoomStatus.PLAYING;
+          room.currentGameId = session.gameId;
+          const roomChannel = `room:${effectiveRoomId}`;
+          io.to(roomChannel).emit('room:state_updated', room);
 
-        // 将双方 socket 加入专属 game 频道
-        for (const s of getSocketsInChannel(io, roomChannel)) {
-          // 清理之前残留的旧 game 频道订阅，彻底杜绝多局频道串流
-          for (const r of s.rooms) {
-            if (r.startsWith('game:') && r !== `game:${session.gameId}`) {
-              s.leave(r);
+          // 将双方 socket 加入专属 game 频道
+          for (const s of getSocketsInChannel(io, roomChannel)) {
+            // 清理之前残留的旧 game 频道订阅，彻底杜绝多局频道串流
+            for (const r of s.rooms) {
+              if (r.startsWith('game:') && r !== `game:${session.gameId}`) {
+                s.leave(r);
+              }
+            }
+            s.join(`game:${session.gameId}`);
+            const sAuth = socketAuthMap.get(s.id);
+            if (sAuth) {
+              socketAuthMap.set(s.id, {
+                ...sAuth,
+                roomId: effectiveRoomId,
+                gameId: session.gameId,
+              });
             }
           }
-          s.join(`game:${session.gameId}`);
-          const sAuth = socketAuthMap.get(s.id);
-          if (sAuth) {
-            socketAuthMap.set(s.id, {
-              ...sAuth,
-              roomId: effectiveRoomId,
-              gameId: session.gameId,
-            });
-          }
+          broadcastGameState(session.gameId);
+        } finally {
+          startingRooms.delete(effectiveRoomId);
         }
-        broadcastGameState(session.gameId);
       } catch (err: any) {
         socket.emit('game:error', {
           code: ErrorCode.INVALID_ACTION,

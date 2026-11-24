@@ -110,4 +110,28 @@ describe('Deck Validation Rules (5.1 牌组的准备)', () => {
     expect(fracResult.isValid).toBe(false);
     expect(fracResult.errors.some((e) => e.includes('数量非法'))).toBe(true);
   });
+
+  it('非数组输入、空元素/非对象元素及缺失卡牌编号时返回规范错误且不抛异常', () => {
+    const nullResult = validateDeck(null as any);
+    expect(nullResult.isValid).toBe(false);
+    expect(nullResult.totalCards).toBe(0);
+    expect(nullResult.errors.some((e) => e.includes('必须为数组'))).toBe(true);
+
+    const objResult = validateDeck({} as any);
+    expect(objResult.isValid).toBe(false);
+    expect(objResult.errors.some((e) => e.includes('必须为数组'))).toBe(true);
+
+    const malformedEntriesResult = validateDeck([
+      null as any,
+      undefined as any,
+      'BP01-001' as any,
+      ['nested'] as any,
+      { cardId: 'c1', cardNumber: '', name: '空编号卡', count: 4 },
+      { cardId: 'c2', cardNumber: '   ', name: '空白编号卡', count: 4 },
+      { cardId: 'c3', cardNumber: 123 as any, name: '数字编号卡', count: 4 },
+    ]);
+    expect(malformedEntriesResult.isValid).toBe(false);
+    expect(malformedEntriesResult.errors.some((e) => e.includes('非法的卡牌条目'))).toBe(true);
+    expect(malformedEntriesResult.errors.some((e) => e.includes('缺少有效的卡牌编号'))).toBe(true);
+  });
 });

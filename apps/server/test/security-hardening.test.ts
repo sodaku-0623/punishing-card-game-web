@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { io as ClientSocket, Socket } from 'socket.io-client';
 import { createServerApp, AppComponents, hashPassword, verifyPassword } from '../src/app.js';
+import { OFFICIAL_STARTER_DECKS } from '@zhanshuang/game-rules';
+import { MemoryGameRepository } from '@zhanshuang/database';
 import {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -58,16 +60,31 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     await app.fastify.close();
   });
 
-  it('密码使用 scrypt 加盐存储，并兼容旧版 HMAC 摘要', () => {
-    const stored = hashPassword('secret-123');
+  it('密码使用异步 scrypt 加盐存储，兼容旧版 HMAC 摘要并防御畸形存储串', async () => {
+    const stored = await hashPassword('secret-123');
     expect(stored.startsWith('scrypt:')).toBe(true);
-    expect(hashPassword('secret-123')).not.toBe(stored); // 每次随机盐
-    expect(verifyPassword('secret-123', stored)).toEqual({ ok: true, needsRehash: false });
-    expect(verifyPassword('wrong', stored).ok).toBe(false);
+    expect(await hashPassword('secret-123')).not.toBe(stored); // 每次随机盐
+    expect(await verifyPassword('secret-123', stored)).toEqual({ ok: true, needsRehash: false });
+    expect((await verifyPassword('wrong', stored)).ok).toBe(false);
 
     const legacy = crypto.createHmac('sha256', 'zhanshuang_tcg_salt_2026').update('old-pass').digest('hex');
-    expect(verifyPassword('old-pass', legacy)).toEqual({ ok: true, needsRehash: true });
-    expect(verifyPassword('nope', legacy).ok).toBe(false);
+    expect(await verifyPassword('old-pass', legacy)).toEqual({ ok: true, needsRehash: true });
+    expect((await verifyPassword('nope', legacy)).ok).toBe(false);
+
+    // 畸形存储串防御（奇数长度/非 hex/keylen 越界/缺段）不应抛异常
+    const malformedHashes = [
+      'scrypt:abc:def0',
+      'scrypt:zzzz:1234',
+      'scrypt:00112233:abcd', // keylen = 2 (< 16)
+      `scrypt:00112233:${'aa'.repeat(200)}`, // keylen = 200 (> 128)
+      'scrypt:onlyonepart',
+      'scrypt:aa:bb:cc',
+      'not-even-hex',
+      '',
+    ];
+    for (const bad of malformedHashes) {
+      expect(await verifyPassword('secret-123', bad)).toEqual({ ok: false, needsRehash: false });
+    }
   });
 
   it('握手携带 JWT 时以令牌身份为准，忽略客户端自报的 userId', async () => {
@@ -494,5 +511,250 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     for (const e of s2Events) {
       if (e.type === 'CHOICE_REQUIRED') expect(e.pendingChoice.playerId).toBe(bob.user.id);
     }
+  });
+
+  it('POST /api/auth/login 限流返回 429、超 128 位密码返回 400、REST 写入端点传 null/错类型返回 400', async () => {
+    const isolatedApp = await createServerApp();
+    try {
+      // 超 128 位密码直接返回 400
+      const longPwdRes = await isolatedApp.fastify.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { username: 'player1', password: 'a'.repeat(129) },
+      });
+      expect(longPwdRes.statusCode).toBe(400);
+
+      // 连续超过 20 次/分钟后返回 429
+      for (let i = 0; i < 19; i++) {
+        const res = await isolatedApp.fastify.inject({
+          method: 'POST',
+          url: '/api/auth/login',
+          payload: { username: 'player1', password: 'wrong-password' },
+        });
+        expect(res.statusCode).toBe(401);
+      }
+      const rateLimitedRes = await isolatedApp.fastify.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { username: 'player1', password: 'wrong-password' },
+      });
+      expect(rateLimitedRes.statusCode).toBe(429);
+    } finally {
+      isolatedApp.io.close();
+      await isolatedApp.fastify.close();
+    }
+
+    // 获取管理员与普通用户令牌用于检验写入端点强类型校验
+    const adminLogin = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'admin888' },
+    });
+    const adminToken = JSON.parse(adminLogin.body).token as string;
+    const adminHeaders = { authorization: `Bearer ${adminToken}` };
+
+    const regRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'type-check-user', password: 'password123' },
+    });
+    expect(regRes.statusCode).toBe(200);
+    const userToken = JSON.parse(regRes.body).token as string;
+    const userHeaders = { authorization: `Bearer ${userToken}` };
+
+    // 1. 认证与资料接口传 null / 非对象 / 错类型 -> 400 (不 500)
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/register', headers: { 'content-type': 'application/json' }, payload: 'null' })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/register', payload: [] as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/register', payload: { username: 123, password: 'password123' } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/register', payload: { username: 'valid_u2', password: 'password123', nickname: 999 } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/login', headers: { 'content-type': 'application/json' }, payload: 'null' })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/login', payload: ['bad'] as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'player1', password: 123456 } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'PUT', url: '/api/auth/profile', headers: { ...userHeaders, 'content-type': 'application/json' }, payload: 'null' })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'PUT', url: '/api/auth/profile', headers: userHeaders, payload: { nickname: 123 } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'PUT', url: '/api/auth/profile', headers: userHeaders, payload: [] as any })).statusCode).toBe(400);
+
+    // 2. 房间创建密码字段错类型 -> 400
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/rooms', headers: adminHeaders, payload: { title: 't', password: 1234 } as any })).statusCode).toBe(400);
+
+    // 3. 卡组写入端点错类型 / 嵌套数组 / null 元素 -> 400
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers: userHeaders, payload: [] as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers: userHeaders, payload: { name: 123 } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers: userHeaders, payload: { name: 'bad', cards: [null] } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers: userHeaders, payload: { name: 'bad', cards: [['nested']] } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/decks', headers: userHeaders, payload: { name: 'bad', cards: [{ cardId: 123, count: 1 }] } as any })).statusCode).toBe(400);
+
+    const createdDeckRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: userHeaders,
+      payload: { name: '正常临时卡组' },
+    });
+    expect(createdDeckRes.statusCode).toBe(200);
+    const createdDeckId = JSON.parse(createdDeckRes.body).data.id as string;
+    expect((await app.fastify.inject({ method: 'PUT', url: `/api/decks/${createdDeckId}`, headers: userHeaders, payload: { name: 42 } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'PUT', url: `/api/decks/${createdDeckId}`, headers: userHeaders, payload: { description: {} } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'PUT', url: `/api/decks/${createdDeckId}`, headers: userHeaders, payload: { cards: [{ cardNumber: {}, count: 1 }] } as any })).statusCode).toBe(400);
+
+    // 4. 管理员卡牌端点强校验与 PUT 字段白名单
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/admin/cards', headers: adminHeaders, payload: ['bad'] as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/admin/cards', headers: adminHeaders, payload: { cardNumber: 'BAD-1', name: '错费', cardType: 'ROLE', cost: 'free' } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/admin/cards', headers: adminHeaders, payload: { cardNumber: 'BAD-2', name: '错特征', cardType: 'ROLE', traits: [123] } as any })).statusCode).toBe(400);
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/admin/cards/batch', headers: adminHeaders, payload: { cards: 'not-array' } as any })).statusCode).toBe(400);
+
+    // PUT 不得覆写 id / currentVersion，且忽略 rulesText 缺省创建的卡牌在搜索时不会因 .toLowerCase() 崩溃
+    const noRulesRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/admin/cards',
+      headers: adminHeaders,
+      payload: { cardNumber: 'TEST-NO-RULES', name: '无文本卡', cardType: 'TACTICS', attribute: 'FIRE', cost: 1 },
+    });
+    expect(noRulesRes.statusCode).toBe(200);
+    const createdCard = JSON.parse(noRulesRes.body).data;
+    expect(createdCard.rulesText).toBe('');
+
+    const searchWithEmptyCost = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/cards?query=TEST-NO-RULES&query=DUPLICATE&cost=',
+    });
+    expect(searchWithEmptyCost.statusCode).toBe(200);
+
+    const putWhitelistRes = await app.fastify.inject({
+      method: 'PUT',
+      url: `/api/admin/cards/${createdCard.id}`,
+      headers: adminHeaders,
+      payload: { id: 'forged-id', currentVersion: 999, name: '更新后无文本卡' } as any,
+    });
+    expect(putWhitelistRes.statusCode).toBe(200);
+    const updatedCard = JSON.parse(putWhitelistRes.body).data;
+    expect(updatedCard.id).toBe(createdCard.id);
+    expect(updatedCard.currentVersion).toBe(2);
+    expect(updatedCard.name).toBe('更新后无文本卡');
+  });
+
+  it('PLAYING 状态下 room:ready 与 room:select_deck 被拦截返回 ACTION_NOT_ALLOWED，非房主开局被拒且并发开局仅创建 1 局', async () => {
+    const regHost = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'room-lock-host', password: 'password123' },
+    });
+    const regGuest = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { username: 'room-lock-guest', password: 'password123' },
+    });
+    const host = JSON.parse(regHost.body);
+    const guest = JSON.parse(regGuest.body);
+
+    const sHost = await connect({ token: host.token });
+    const sGuest = await connect({ token: guest.token });
+    const roomId = 'sec-playing-lock-room';
+
+    const hostJoined = nextRoomState(sHost);
+    sHost.emit('room:join', { roomId });
+    await hostJoined;
+
+    const guestJoined = nextRoomState(sGuest);
+    sGuest.emit('room:join', { roomId });
+    await guestJoined;
+
+    sHost.emit('room:ready', { roomId, isReady: true, deckId: 'deck-st01' });
+    sGuest.emit('room:ready', { roomId, isReady: true, deckId: 'deck-st02' });
+    await wait(120);
+
+    // 非房主尝试开局 -> ACTION_NOT_ALLOWED
+    const nonCreatorErr = nextError(sGuest);
+    sGuest.emit('room:start', { roomId });
+    expect((await nonCreatorErr).code).toBe(ErrorCode.ACTION_NOT_ALLOWED);
+    expect(app.roomMgr.getRoom(roomId)!.status).toBe('READY');
+
+    // 房主并发连击两次 room:start -> 仅创建 1 个对局会话
+    const createdGameIds = new Set<string>();
+    sHost.on('game:sync_state', (st) => {
+      if (st?.gameId) createdGameIds.add(st.gameId);
+    });
+    sHost.emit('room:start', { roomId });
+    sHost.emit('room:start', { roomId });
+    await wait(250);
+
+    expect(createdGameIds.size).toBe(1);
+    const room = app.roomMgr.getRoom(roomId)!;
+    expect(room.status).toBe('PLAYING');
+    expect(room.currentGameId).toBeDefined();
+
+    // PLAYING 状态下 room:ready 与 room:select_deck 均被拦截返回 ACTION_NOT_ALLOWED
+    const readyErr = nextError(sHost);
+    sHost.emit('room:ready', { roomId, isReady: false, deckId: 'deck-st01' });
+    expect((await readyErr).code).toBe(ErrorCode.ACTION_NOT_ALLOWED);
+
+    const selectErr = nextError(sGuest);
+    sGuest.emit('room:select_deck', { roomId, deckId: 'deck-st03' });
+    expect((await selectErr).code).toBe(ErrorCode.ACTION_NOT_ALLOWED);
+  });
+
+  it('对局中提交失败行动后不递增 actionSequence，回放记录中不包含失败行动', async () => {
+    const gameRepo = new MemoryGameRepository();
+    const isolatedApp = await createServerApp({ gameRepo });
+    try {
+      const session = await isolatedApp.gameSessionMgr.startGameSession(
+        'sec-failed-action-room',
+        'fa-p1',
+        'deck-st01',
+        'fa-p2',
+        'deck-st02',
+        7777
+      );
+      expect(session.actionSequence).toBe(0);
+      expect(session.stateVersion).toBe(1);
+
+      // 提交当前阶段非法的 DECLARE_BLOCK 行动
+      const failRes = await isolatedApp.gameSessionMgr.processAction(session.gameId, {
+        type: 'DECLARE_BLOCK',
+        playerId: 'fa-p1',
+      } as any);
+      expect(failRes.success).toBe(false);
+      expect(session.actionSequence).toBe(0);
+      expect(session.stateVersion).toBe(1);
+
+      // 再执行一次合法投降结束对局以查看回放记录
+      const okRes = await isolatedApp.gameSessionMgr.processAction(session.gameId, {
+        type: 'SURRENDER',
+        playerId: 'fa-p1',
+      });
+      expect(okRes.success).toBe(true);
+      expect(session.actionSequence).toBe(1);
+
+      const replay = await gameRepo.getReplayData(session.gameId);
+      expect(replay).not.toBeNull();
+      expect(replay!.actions).toHaveLength(1);
+      expect(replay!.actions[0]!.actionType).toBe('SURRENDER');
+      expect(replay!.actions.some((a) => a.actionType === 'DECLARE_BLOCK')).toBe(false);
+    } finally {
+      isolatedApp.io.close();
+      await isolatedApp.fastify.close();
+    }
+  });
+
+  it('官方预组统一来自 OFFICIAL_STARTER_DECKS，GET /api/decks?userId=system 无重复且 deck-st01 别名可解析', async () => {
+    const res = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/decks?userId=system',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    const returnedIds = body.data.map((d: any) => d.id);
+    expect(new Set(returnedIds).size).toBe(returnedIds.length);
+    expect(returnedIds).toEqual(OFFICIAL_STARTER_DECKS.map((d) => d.id));
+
+    // 通过别名获取 ST01 预组
+    const aliasRes = await app.fastify.inject({
+      method: 'GET',
+      url: '/api/decks/deck-st01',
+    });
+    expect(aliasRes.statusCode).toBe(200);
+    const aliasDeck = JSON.parse(aliasRes.body).data;
+    expect(aliasDeck.id).toBe(OFFICIAL_STARTER_DECKS[0]!.id);
+    expect(aliasDeck.isValid).toBe(true);
   });
 });

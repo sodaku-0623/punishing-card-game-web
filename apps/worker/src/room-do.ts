@@ -12,7 +12,7 @@ import { GameEngine, GameEngineSnapshot, sanitizeGameEventsForPlayer } from '@zh
 import { Env, WsClientAttachment } from './types.js';
 import { getJwtSecret, verifyJwt } from './lib/crypto-auth.js';
 import { initializeDatabase } from './lib/db-client.js';
-import { OFFICIAL_CARD_DB, ResolvedDeck, resolveDeck } from './lib/cards.js';
+import { OFFICIAL_CARD_DB, ResolvedDeck, resolveDeckWithD1 } from './lib/cards.js';
 
 /**
  * 单个房间的权威状态 (房间成员、密码摘要、对局引擎)。
@@ -77,6 +77,7 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 export class RoomDO extends DurableObject<Env> {
   private engine: GameEngine | null = null;
   private engineGameId: string | null = null;
+  private startingGame = false;
   private readonly actionTimestamps = new Map<string, number[]>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -124,7 +125,7 @@ export class RoomDO extends DurableObject<Env> {
     const roomIdHint = request.headers.get('x-room-id') || '';
 
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
-      return Response.json({ success: true, data: this.hasRoom() ? this.getPublicRoomState() : null });
+      return Response.json({ success: false, error: 'Upgrade Required' }, { status: 426 });
     }
 
     const identity = await this.resolveIdentity(url);
@@ -184,7 +185,11 @@ export class RoomDO extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const me = ws.deserializeAttachment() as WsClientAttachment | null;
-    if (!me?.userId || typeof message !== 'string') return;
+    if (!me?.userId) return;
+    if (this.isRateLimited(me.userId)) {
+      return this.sendError(ws, ErrorCode.RATE_LIMIT_EXCEEDED, '操作提交过于频繁，防作弊系统已限流拦截');
+    }
+    if (typeof message !== 'string') return;
 
     let parsed: { event?: unknown; payload?: unknown };
     try {
@@ -244,6 +249,7 @@ export class RoomDO extends DurableObject<Env> {
     // 同一账号仍有其他连接 (如多标签页) 时不视为掉线
     const others = this.ctx.getWebSockets(me.userId).filter((s) => s !== ws);
     if (others.length > 0) return;
+    this.actionTimestamps.delete(me.userId);
     await this.markOffline(me.userId);
   }
 
@@ -360,22 +366,44 @@ export class RoomDO extends DurableObject<Env> {
     await this.broadcastRoomState();
   }
 
+  private ensureCanModifyPreGameState(ws: WebSocket, userId: string): boolean {
+    if (!this.getPlayer(userId)) {
+      this.sendError(ws, ErrorCode.UNAUTHORIZED, '非房间内玩家');
+      return false;
+    }
+    if (this.getMeta('status') === RoomStatus.PLAYING) {
+      this.sendError(ws, ErrorCode.ACTION_NOT_ALLOWED, '游戏进行中无法切换卡组或修改准备状态');
+      return false;
+    }
+    return true;
+  }
+
+  private async resolvePlayerDeck(me: WsClientAttachment, payload: any) {
+    return resolveDeckWithD1(payload.deckId, payload.customDeck, {
+      db: this.env.DB,
+      userId: me.userId,
+      isGuest: me.isGuest,
+      adminPassword: this.env.ADMIN_PASSWORD,
+    });
+  }
+
   private async onSelectDeck(ws: WebSocket, me: WsClientAttachment, payload: any): Promise<void> {
-    if (!this.getPlayer(me.userId)) return;
-    const { deck, error } = resolveDeck(payload.deckId, payload.customDeck);
+    if (!this.ensureCanModifyPreGameState(ws, me.userId)) return;
+    const { deck, error } = await this.resolvePlayerDeck(me, payload);
+    // await 期间房间状态或成员可能已发生变化，必须二次校验
+    if (!this.ensureCanModifyPreGameState(ws, me.userId)) return;
     if (!deck) return this.sendError(ws, ErrorCode.INVALID_DECK, error ?? '找不到可用的出战卡组');
     this.saveDeck(me.userId, deck);
     await this.broadcastRoomState();
   }
 
   private async onReady(ws: WebSocket, me: WsClientAttachment, payload: any): Promise<void> {
-    if (!this.getPlayer(me.userId)) {
-      return this.sendError(ws, ErrorCode.UNAUTHORIZED, '非房间内玩家');
-    }
-    if (this.getMeta('status') === RoomStatus.PLAYING) return;
+    if (!this.ensureCanModifyPreGameState(ws, me.userId)) return;
 
     if (payload.isReady) {
-      const { deck, error } = resolveDeck(payload.deckId, payload.customDeck);
+      const { deck, error } = await this.resolvePlayerDeck(me, payload);
+      // await 期间房间状态或成员可能已发生变化，必须二次校验
+      if (!this.ensureCanModifyPreGameState(ws, me.userId)) return;
       if (!deck) return this.sendError(ws, ErrorCode.INVALID_DECK, error ?? '找不到可用的出战卡组');
       this.saveDeck(me.userId, deck);
       this.ctx.storage.sql.exec('UPDATE room_players_v2 SET isReady = 1 WHERE userId = ?', me.userId);
@@ -393,46 +421,54 @@ export class RoomDO extends DurableObject<Env> {
     if (!this.getPlayer(me.userId)) {
       return this.sendError(ws, ErrorCode.UNAUTHORIZED, '非房间内玩家，无法开局');
     }
-    if (this.getMeta('status') === RoomStatus.PLAYING) return; // 防止重复点击导致重复开局
+    if (this.getMeta('creatorId') !== me.userId) {
+      return this.sendError(ws, ErrorCode.ACTION_NOT_ALLOWED, '只有房主可以开始游戏');
+    }
+    if (this.startingGame || this.getMeta('status') === RoomStatus.PLAYING) return; // 防止并发或重复点击导致重复开局
     const players = this.getPlayers();
     if (players.length !== 2 || !players.every((p) => p.isReady && p.deckJson)) {
       return this.sendError(ws, ErrorCode.ROOM_NOT_READY, '双方玩家均需准备就绪后方可开局');
     }
 
-    const [p1, p2] = [players.find((p) => p.seatIndex === 0)!, players.find((p) => p.seatIndex === 1)!];
-    const deck1 = JSON.parse(p1.deckJson!) as ResolvedDeck;
-    const deck2 = JSON.parse(p2.deckJson!) as ResolvedDeck;
-    const roomId = this.getMeta('roomId');
-    // 对局 ID 只用 URL 安全字符，且可反推出房间 ID：game~<roomId>~<timestamp>
-    const gameId = `game~${roomId}~${Date.now()}`;
-    const seed = crypto.getRandomValues(new Uint32Array(1))[0]!;
+    this.startingGame = true;
+    try {
+      const [p1, p2] = [players.find((p) => p.seatIndex === 0)!, players.find((p) => p.seatIndex === 1)!];
+      const deck1 = JSON.parse(p1.deckJson!) as ResolvedDeck;
+      const deck2 = JSON.parse(p2.deckJson!) as ResolvedDeck;
+      const roomId = this.getMeta('roomId');
+      // 对局 ID 只用 URL 安全字符，且可反推出房间 ID：game~<roomId>~<timestamp>
+      const gameId = `game~${roomId}~${Date.now()}`;
+      const seed = crypto.getRandomValues(new Uint32Array(1))[0]!;
 
-    const engine = new GameEngine(
-      gameId,
-      { playerId: p1.userId, deckCardNumbers: deck1.cardNumbers, deckCardImageUrls: deck1.imageUrls },
-      { playerId: p2.userId, deckCardNumbers: deck2.cardNumbers, deckCardImageUrls: deck2.imageUrls },
-      seed,
-      OFFICIAL_CARD_DB,
-      { skipMulligan: false }
-    );
+      const engine = new GameEngine(
+        gameId,
+        { playerId: p1.userId, deckCardNumbers: deck1.cardNumbers, deckCardImageUrls: deck1.imageUrls },
+        { playerId: p2.userId, deckCardNumbers: deck2.cardNumbers, deckCardImageUrls: deck2.imageUrls },
+        seed,
+        OFFICIAL_CARD_DB,
+        { skipMulligan: false }
+      );
 
-    this.ctx.storage.sql.exec('DELETE FROM game_sessions_v2; DELETE FROM game_log_v2;');
-    this.ctx.storage.sql.exec(
-      'INSERT INTO game_sessions_v2 (gameId, status, snapshotJson, seed, stateVersion, startedAt) VALUES (?, ?, ?, ?, 1, ?)',
-      gameId,
-      engine.getState().status,
-      this.serializeEngine(engine),
-      seed,
-      Date.now()
-    );
-    this.appendLog(gameId, null, null, engine.getEvents());
-    this.engine = engine;
-    this.engineGameId = gameId;
+      this.ctx.storage.sql.exec('DELETE FROM game_sessions_v2; DELETE FROM game_log_v2;');
+      this.ctx.storage.sql.exec(
+        'INSERT INTO game_sessions_v2 (gameId, status, snapshotJson, seed, stateVersion, startedAt) VALUES (?, ?, ?, ?, 1, ?)',
+        gameId,
+        engine.getState().status,
+        this.serializeEngine(engine),
+        seed,
+        Date.now()
+      );
+      this.appendLog(gameId, null, null, engine.getEvents());
+      this.engine = engine;
+      this.engineGameId = gameId;
 
-    this.setMeta('status', RoomStatus.PLAYING);
-    this.setMeta('currentGameId', gameId);
-    await this.broadcastRoomState();
-    this.pushGameBundle([]);
+      this.setMeta('status', RoomStatus.PLAYING);
+      this.setMeta('currentGameId', gameId);
+      await this.broadcastRoomState();
+      this.pushGameBundle([]);
+    } finally {
+      this.startingGame = false;
+    }
   }
 
   // ============================================================
@@ -440,9 +476,6 @@ export class RoomDO extends DurableObject<Env> {
   // ============================================================
 
   private async onGameAction(ws: WebSocket, me: WsClientAttachment, payload: any): Promise<void> {
-    if (this.isRateLimited(me.userId)) {
-      return this.sendError(ws, ErrorCode.RATE_LIMIT_EXCEEDED, '操作提交过于频繁，防作弊系统已限流拦截');
-    }
     const action = payload.action as GameAction | undefined;
     if (!action || typeof action.type !== 'string') {
       return this.sendError(ws, ErrorCode.INVALID_ACTION, '非法的行动数据');
@@ -493,10 +526,14 @@ export class RoomDO extends DurableObject<Env> {
       await this.rescheduleAlarm();
       await this.broadcastRoomState();
     }
-    this.broadcast({
-      event: 'game:player_reconnected',
-      payload: { userId: me.userId, message: '对手已重新连入对局，对决继续！' },
-    });
+    const playerIds = new Set(Object.keys(engine.getState().players));
+    this.broadcast(
+      {
+        event: 'game:player_reconnected',
+        payload: { userId: me.userId, message: '对手已重新连入对局，对决继续！' },
+      },
+      playerIds
+    );
     this.sendBundle(ws, me.userId, engine, []);
   }
 
@@ -522,14 +559,24 @@ export class RoomDO extends DurableObject<Env> {
 
   private async finishGame(engine: GameEngine, session: SessionRow): Promise<void> {
     const state = engine.getState();
-    this.broadcast({
-      event: 'game:ended',
-      payload: { winnerId: state.winnerId, isDraw: state.isDraw, reason: state.finishReason ?? '游戏结束' },
-    });
+    const playerIds = new Set(Object.keys(state.players));
+    this.broadcast(
+      {
+        event: 'game:ended',
+        payload: { winnerId: state.winnerId, isDraw: state.isDraw, reason: state.finishReason ?? '游戏结束' },
+      },
+      playerIds
+    );
     this.setMeta('status', RoomStatus.FINISHED);
     this.ctx.storage.sql.exec('UPDATE room_players_v2 SET isReady = 0');
+    // 重置对局结束时仍处于离线状态玩家的掉线计时起点，避免沿用旧时间戳立即触发 100ms alarm
+    this.ctx.storage.sql.exec(
+      'UPDATE room_players_v2 SET offlineSince = ? WHERE isOnline = 0 AND offlineSince IS NOT NULL',
+      Date.now()
+    );
     await this.recordMatch(engine, session);
     await this.broadcastRoomState();
+    await this.rescheduleAlarm();
   }
 
   /** 将对局结果与回放写入 D1 (失败不影响对局流程) */
@@ -602,10 +649,15 @@ export class RoomDO extends DurableObject<Env> {
       userId
     );
     if (this.getMeta('status') === RoomStatus.PLAYING) {
-      this.broadcast({
-        event: 'game:player_disconnected',
-        payload: { userId, message: '对手暂时掉线或失去连接，对战房间已保留，等待对手重新接入...' },
-      });
+      const engine = this.loadEngine();
+      const allowed = engine ? new Set(Object.keys(engine.getState().players)) : undefined;
+      this.broadcast(
+        {
+          event: 'game:player_disconnected',
+          payload: { userId, message: '对手暂时掉线或失去连接，对战房间已保留，等待对手重新接入...' },
+        },
+        allowed
+      );
     }
     await this.rescheduleAlarm();
     await this.broadcastRoomState();
@@ -650,15 +702,38 @@ export class RoomDO extends DurableObject<Env> {
         }
       } else {
         const expired = offline.find((p) => p.offlineSince! + PLAYING_DISCONNECT_FORFEIT_MS <= now);
-        const session = this.getSession();
-        const engine = this.loadEngine();
-        if (expired && session && engine && engine.getState().status === 'PLAYING') {
-          const result = engine.dispatchAction({ type: 'SURRENDER', playerId: expired.userId });
-          if (result.success) {
-            this.saveSession(engine, session.gameId);
-            this.appendLog(session.gameId, expired.userId, { type: 'SURRENDER', playerId: expired.userId }, result.events);
-            this.pushGameBundle(result.events);
+        if (expired) {
+          const session = this.getSession();
+          const engine = this.loadEngine();
+          let handled = false;
+          if (session && engine && engine.getState().status === 'PLAYING') {
+            const result = engine.dispatchAction({ type: 'SURRENDER', playerId: expired.userId });
+            if (result.success) {
+              this.saveSession(engine, session.gameId);
+              this.appendLog(session.gameId, expired.userId, { type: 'SURRENDER', playerId: expired.userId }, result.events);
+              this.pushGameBundle(result.events);
+              this.ctx.storage.sql.exec('UPDATE room_players_v2 SET offlineSince = NULL WHERE userId = ?', expired.userId);
+              await this.finishGame(engine, session);
+              handled = true;
+            }
+          } else if (session && engine && engine.getState().status === 'FINISHED') {
+            this.ctx.storage.sql.exec('UPDATE room_players_v2 SET offlineSince = NULL WHERE userId = ?', expired.userId);
             await this.finishGame(engine, session);
+            handled = true;
+          }
+
+          if (!handled) {
+            // 兜底：对局缺失或 SURRENDER 失败时清理过期时间戳，避免 nextDisconnectDeadline 返回旧时间戳引发 100ms 死循环
+            this.ctx.storage.sql.exec('UPDATE room_players_v2 SET offlineSince = NULL WHERE userId = ?', expired.userId);
+            const onlinePlayers = this.getPlayers().filter((p) => p.isOnline);
+            if (onlinePlayers.length === 0) {
+              await this.closeRoom('对局状态异常且房间内已无在线玩家，房间已自动关闭');
+              return;
+            }
+            this.setMeta('status', RoomStatus.WAITING);
+            this.setMeta('currentGameId', '');
+            this.ctx.storage.sql.exec('UPDATE room_players_v2 SET isReady = 0');
+            await this.broadcastRoomState();
           }
         }
       }
@@ -675,12 +750,15 @@ export class RoomDO extends DurableObject<Env> {
 
   private async closeRoom(reason: string): Promise<void> {
     const roomId = this.getMeta('roomId');
-    this.broadcast({ event: 'room:closed', payload: { roomId, reason } });
+    // 必须在清空 room_players_v2 之前收集房间成员，确保仅向成员定向广播 room:closed
+    const memberIds = new Set(this.getPlayers().map((p) => p.userId));
+    this.broadcast({ event: 'room:closed', payload: { roomId, reason } }, memberIds);
     this.ctx.storage.sql.exec(
       'DELETE FROM room_meta_v2; DELETE FROM room_players_v2; DELETE FROM game_sessions_v2; DELETE FROM game_log_v2;'
     );
     this.engine = null;
     this.engineGameId = null;
+    this.actionTimestamps.clear();
     await this.ctx.storage.deleteAlarm();
     await this.syncLobby(roomId, null);
   }
@@ -763,10 +841,24 @@ export class RoomDO extends DurableObject<Env> {
 
   private isRateLimited(userId: string): boolean {
     const now = Date.now();
+    if (this.actionTimestamps.size > 200) {
+      for (const [key, timestamps] of this.actionTimestamps.entries()) {
+        const active = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+        if (active.length === 0) {
+          this.actionTimestamps.delete(key);
+        } else {
+          this.actionTimestamps.set(key, active);
+        }
+      }
+    }
     const recent = (this.actionTimestamps.get(userId) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
     const limited = recent.length >= MAX_ACTIONS_PER_WINDOW;
     if (!limited) recent.push(now);
-    this.actionTimestamps.set(userId, recent);
+    if (recent.length > 0) {
+      this.actionTimestamps.set(userId, recent);
+    } else {
+      this.actionTimestamps.delete(userId);
+    }
     return limited;
   }
 
@@ -843,9 +935,12 @@ export class RoomDO extends DurableObject<Env> {
   private pushGameBundle(events: GameEvent[]): void {
     const engine = this.loadEngine();
     if (!engine) return;
+    const players = engine.getState().players;
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as WsClientAttachment | null;
-      if (att?.userId) this.sendBundle(ws, att.userId, engine, events);
+      if (att?.userId && players[att.userId]) {
+        this.sendBundle(ws, att.userId, engine, events);
+      }
     }
   }
 
@@ -861,9 +956,13 @@ export class RoomDO extends DurableObject<Env> {
     this.send(ws, { event: 'game:bundle', payload: { events: safeEvents, state } });
   }
 
-  private broadcast(msg: { event: string; payload: unknown }): void {
+  private broadcast(msg: { event: string; payload: unknown }, allowedUserIds?: Set<string>): void {
+    const allowed = allowedUserIds ?? new Set(this.getPlayers().map((p) => p.userId));
+    if (allowed.size === 0) return;
     const data = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as WsClientAttachment | null;
+      if (!att?.userId || !allowed.has(att.userId)) continue;
       try {
         ws.send(data);
       } catch {}

@@ -48,6 +48,27 @@ describe('密码与 JWT 工具 (Web Crypto)', () => {
       .replace(/\//g, '_')
       .replace(/=+$/, '');
     expect(await verifyJwt(`${badHeader}.${parts[1]}.${parts[2]}`, secret)).toBeNull();
+
+    // 缺少 exp、非有限 exp 或非对象 payload 的令牌均应被拒绝
+    const signRawPayload = async (rawPayload: unknown) => {
+      const h = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const p = btoa(JSON.stringify(rawPayload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+      const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${h}.${p}`)));
+      let bin = '';
+      for (const b of sig) bin += String.fromCharCode(b);
+      const s = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return `${h}.${p}.${s}`;
+    };
+    expect(await verifyJwt(await signRawPayload({ sub: 'u1', role: 'USER' }), secret)).toBeNull();
+    expect(await verifyJwt(await signRawPayload({ sub: 123, exp: Math.floor(Date.now() / 1000) + 60 }), secret)).toBeNull();
+    expect(await verifyJwt(await signRawPayload(['u1']), secret)).toBeNull();
   });
 
   it('未配置或过短的 JWT_SECRET 不会回退到默认密钥', () => {

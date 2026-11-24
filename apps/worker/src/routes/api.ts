@@ -6,15 +6,17 @@ import { OFFICIAL_STARTER_DECKS, findOfficialStarterDeck } from '@zhanshuang/gam
 import { Env } from '../types.js';
 import { hashPassword, verifyPassword, signJwt, verifyJwt, getJwtSecret, JwtPayload } from '../lib/crypto-auth.js';
 import { DbUser, DbDeck, DbRoom, DbMatch, initializeDatabase } from '../lib/db-client.js';
-import { findOfficialCard, resolveDeck } from '../lib/cards.js';
+import { findOfficialCard, resolveDeck, validateDeckCardEntriesShape } from '../lib/cards.js';
 
 type AppContext = Context<{ Bindings: Env }>;
 
 /** 大厅只展示最近 6 小时内有活动的房间，避免异常残留的房间长期占位 */
 const LOBBY_STALE_MS = 6 * 60 * 60 * 1000;
 const RULES_ENGINE_VERSION = 'A0 First Edition (2025-11-14)';
+const AUTH_RATE_WINDOW_MS = 60_000;
+const AUTH_RATE_MAX_KEYS = 500;
 
-function fail(c: AppContext, status: 400 | 401 | 403 | 404 | 409 | 501 | 503, error: string) {
+function fail(c: AppContext, status: 400 | 401 | 403 | 404 | 409 | 429 | 501 | 503, error: string) {
   return c.json({ success: false, error }, status);
 }
 
@@ -22,6 +24,47 @@ function clampTake(raw: string | undefined, fallback: number, max = 1000): numbe
   const n = Math.floor(Number(raw));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(n, max);
+}
+
+function clampSkip(raw: string | undefined): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
+function singleQuery(c: AppContext, key: string): string | undefined {
+  const value = c.req.query(key);
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * 解析并校验请求体为非 null、非数组的 JSON 对象
+ */
+async function readJsonObject(
+  c: AppContext,
+  options?: { allowEmpty?: boolean }
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false }> {
+  try {
+    const text = await c.req.text();
+    if (!text.trim()) {
+      return options?.allowEmpty ? { ok: true, data: {} } : { ok: false };
+    }
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false };
+    }
+    return { ok: true, data: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function getClientIp(c: AppContext): string {
+  const cfIp = c.req.header('cf-connecting-ip')?.trim();
+  if (cfIp) return cfIp;
+  const xff = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+  if (xff) return xff;
+  return 'unknown';
 }
 
 function userSummary(user: Pick<DbUser, 'id' | 'username' | 'nickname' | 'role'>) {
@@ -92,8 +135,79 @@ function cardDto(card: CardVersionData) {
   return { ...card, isActive: true };
 }
 
+function filterCards(c: AppContext, defaultTake: number, checkIsActive = false) {
+  const query = singleQuery(c, 'query')?.trim().toLowerCase();
+  const cardType = singleQuery(c, 'cardType')?.trim();
+  const attribute = singleQuery(c, 'attribute')?.trim();
+  const costRaw = singleQuery(c, 'cost')?.trim();
+  const isActiveRaw = checkIsActive ? singleQuery(c, 'isActive')?.trim() : undefined;
+
+  if (isActiveRaw === 'false') {
+    return { data: [], total: 0 };
+  }
+
+  let cards = OFFICIAL_CARDS_DATA;
+  if (query) {
+    cards = cards.filter(
+      (card) =>
+        card.name.toLowerCase().includes(query) ||
+        card.cardNumber.toLowerCase().includes(query) ||
+        (card.rulesText ?? '').toLowerCase().includes(query)
+    );
+  }
+  if (cardType) cards = cards.filter((card) => card.cardType === cardType);
+  if (attribute) cards = cards.filter((card) => card.attribute === attribute);
+  if (costRaw !== undefined && costRaw !== '') {
+    const cost = Number(costRaw);
+    if (Number.isFinite(cost)) {
+      cards = cards.filter((card) => card.cost === cost);
+    }
+  }
+
+  const skip = clampSkip(singleQuery(c, 'skip'));
+  const take = clampTake(singleQuery(c, 'take'), defaultTake, 1000);
+  return {
+    data: cards.slice(skip, skip + take).map(cardDto),
+    total: cards.length,
+  };
+}
+
 export function createApiApp() {
   const app = new Hono<{ Bindings: Env }>();
+  const authRateBuckets = new Map<string, number[]>();
+
+  function isAuthRateLimited(
+    c: AppContext,
+    action: 'login' | 'register' | 'guest',
+    maxPerMinute: number
+  ): boolean {
+    const now = Date.now();
+    if (authRateBuckets.size >= AUTH_RATE_MAX_KEYS) {
+      for (const [key, timestamps] of authRateBuckets.entries()) {
+        const active = timestamps.filter((t) => now - t < AUTH_RATE_WINDOW_MS);
+        if (active.length === 0) {
+          authRateBuckets.delete(key);
+        } else {
+          authRateBuckets.set(key, active);
+        }
+      }
+      while (authRateBuckets.size >= AUTH_RATE_MAX_KEYS) {
+        const oldestKey = authRateBuckets.keys().next().value;
+        if (!oldestKey) break;
+        authRateBuckets.delete(oldestKey);
+      }
+    }
+
+    const bucketKey = `${action}:${getClientIp(c)}`;
+    const recent = (authRateBuckets.get(bucketKey) ?? []).filter((t) => now - t < AUTH_RATE_WINDOW_MS);
+    if (recent.length >= maxPerMinute) {
+      authRateBuckets.set(bucketKey, recent);
+      return true;
+    }
+    recent.push(now);
+    authRateBuckets.set(bucketKey, recent);
+    return false;
+  }
 
   app.use(
     '*',
@@ -132,8 +246,13 @@ export function createApiApp() {
   // ---------------- 1. 鉴权 (/api/auth) ----------------
 
   app.post('/api/auth/register', async (c) => {
+    if (isAuthRateLimited(c, 'register', 15)) {
+      return fail(c, 429, '注册请求过于频繁，请稍后再试');
+    }
     if (!getJwtSecret(c.env)) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法注册');
-    const body = await c.req.json().catch(() => ({}));
+    const parsed = await readJsonObject(c);
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const body = parsed.data;
     const username = typeof body.username === 'string' ? body.username.trim() : '';
     const password = typeof body.password === 'string' ? body.password : '';
     if (!username || !password) return fail(c, 400, '用户名和密码不能为空');
@@ -161,11 +280,18 @@ export function createApiApp() {
   });
 
   app.post('/api/auth/login', async (c) => {
+    if (isAuthRateLimited(c, 'login', 20)) {
+      return fail(c, 429, '登录请求过于频繁，请稍后再试');
+    }
     if (!getJwtSecret(c.env)) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法登录');
-    const body = await c.req.json().catch(() => ({}));
+    const parsed = await readJsonObject(c);
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const body = parsed.data;
     const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
+    if (typeof body.password !== 'string') return fail(c, 400, '请输入用户名和密码');
+    const password = body.password;
     if (!username || !password) return fail(c, 400, '请输入用户名和密码');
+    if (password.length > 128) return fail(c, 400, '密码长度不能超过 128 个字符');
 
     const user = await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first<DbUser>();
     const verification = user ? await verifyPassword(password, user.password_hash) : { ok: false, needsRehash: false };
@@ -185,10 +311,14 @@ export function createApiApp() {
    * 签发或刷新签名游客凭据：防止客户端自报伪造他人 guestId
    */
   app.post('/api/auth/guest', async (c) => {
+    if (isAuthRateLimited(c, 'guest', 60)) {
+      return fail(c, 429, '请求过于频繁，请稍后再试');
+    }
     const secret = getJwtSecret(c.env);
     if (!secret) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法签发游客凭据');
-    const body = await c.req.json().catch(() => ({}));
-    const rawBody = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    const parsed = await readJsonObject(c, { allowEmpty: true });
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const rawBody = parsed.data;
 
     const header = c.req.header('Authorization');
     const candidateToken =
@@ -249,7 +379,9 @@ export function createApiApp() {
   app.put('/api/auth/profile', async (c) => {
     const auth = await readAuth(c);
     if (!auth) return fail(c, 401, '未登录或登录凭据已过期，请重新登录');
-    const body = await c.req.json().catch(() => ({}));
+    const parsed = await readJsonObject(c);
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const body = parsed.data;
     const nickname = typeof body.nickname === 'string' ? body.nickname.trim().slice(0, 32) : '';
     if (!nickname) return fail(c, 400, '昵称/指挥官名称不能为空');
 
@@ -306,21 +438,27 @@ export function createApiApp() {
   });
 
   /** 保存卡组 (需登录；只能写入本人名下，系统预组只读) */
-  async function saveDeck(c: AppContext, deckId: string | undefined, body: any) {
+  async function saveDeck(c: AppContext, deckId: string | undefined, body: Record<string, unknown>) {
     const auth = await readAuth(c);
     if (!auth) return fail(c, 401, '请登录后再将卡组同步到服务器');
     if (deckId && findOfficialStarterDeck(deckId)) return fail(c, 403, '系统预组只读，不可修改');
-    if (!Array.isArray(body.cards)) return fail(c, 400, '卡牌列表格式不正确');
+    if (body.name !== undefined && typeof body.name !== 'string') {
+      return fail(c, 400, '卡组名称必须为字符串');
+    }
+    const shapeError = validateDeckCardEntriesShape(body.cards);
+    if (shapeError) return fail(c, 400, shapeError);
+    const rawCards = body.cards as unknown[];
 
     const existing = deckId
       ? await c.env.DB.prepare('SELECT * FROM decks WHERE id = ?').bind(deckId).first<DbDeck>()
       : null;
     if (existing && existing.user_id !== auth.sub) return fail(c, 403, '无权修改其他玩家的卡组');
 
-    const { deck, error } = resolveDeck(undefined, { id: deckId, name: body.name, cards: body.cards });
+    const requestedName = typeof body.name === 'string' ? body.name.trim() : '';
+    const { deck, error } = resolveDeck(undefined, { id: deckId, name: requestedName, cards: rawCards });
     const isValid = Boolean(deck);
     const id = deckId || `deck-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    const name = String(body.name || existing?.name || '我的自定义卡组').slice(0, 64);
+    const name = (requestedName || existing?.name || '我的自定义卡组').slice(0, 64);
     const now = Date.now();
     await c.env.DB.prepare(
       `INSERT INTO decks (id, user_id, name, cards_json, is_valid, created_at, updated_at)
@@ -328,7 +466,7 @@ export function createApiApp() {
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, cards_json = excluded.cards_json,
          is_valid = excluded.is_valid, updated_at = excluded.updated_at`
     )
-      .bind(id, auth.sub, name, JSON.stringify(body.cards.slice(0, 200)), isValid ? 1 : 0, existing?.created_at ?? now, now)
+      .bind(id, auth.sub, name, JSON.stringify(rawCards), isValid ? 1 : 0, existing?.created_at ?? now, now)
       .run();
 
     const saved = await c.env.DB.prepare('SELECT * FROM decks WHERE id = ?').bind(id).first<DbDeck>();
@@ -340,13 +478,25 @@ export function createApiApp() {
   }
 
   app.post('/api/decks', async (c) => {
-    const body = await c.req.json().catch(() => ({}));
-    return saveDeck(c, typeof body.id === 'string' ? body.id : undefined, body);
+    const parsed = await readJsonObject(c);
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const body = parsed.data;
+    let deckId: string | undefined;
+    if (body.id !== undefined) {
+      if (typeof body.id !== 'string') return fail(c, 400, '卡组 ID 格式不正确');
+      const trimmedId = body.id.trim();
+      if (!trimmedId || trimmedId.length > 128) return fail(c, 400, '卡组 ID 格式不正确');
+      deckId = trimmedId;
+    }
+    return saveDeck(c, deckId, body);
   });
 
   app.put('/api/decks/:id', async (c) => {
-    const body = await c.req.json().catch(() => ({}));
-    return saveDeck(c, c.req.param('id'), body);
+    const parsed = await readJsonObject(c);
+    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    const deckId = c.req.param('id').trim();
+    if (!deckId || deckId.length > 128) return fail(c, 400, '卡组 ID 格式不正确');
+    return saveDeck(c, deckId, parsed.data);
   });
 
   app.delete('/api/decks/:id', async (c) => {
@@ -364,21 +514,8 @@ export function createApiApp() {
   // ---------------- 4. 卡牌库 (/api/cards，直接读取引擎内置卡表，不消耗 D1 额度) ----------------
 
   app.get('/api/cards', (c) => {
-    const query = c.req.query('query')?.trim().toLowerCase();
-    const cardType = c.req.query('cardType');
-    const attribute = c.req.query('attribute');
-    const costRaw = c.req.query('cost');
-    let cards = OFFICIAL_CARDS_DATA;
-    if (query) {
-      cards = cards.filter(
-        (card) => card.name.toLowerCase().includes(query) || card.cardNumber.toLowerCase().includes(query)
-      );
-    }
-    if (cardType) cards = cards.filter((card) => card.cardType === cardType);
-    if (attribute) cards = cards.filter((card) => card.attribute === attribute);
-    if (costRaw !== undefined && costRaw !== '') cards = cards.filter((card) => card.cost === Number(costRaw));
-    const take = clampTake(c.req.query('take'), 200);
-    return c.json({ success: true, data: cards.slice(0, take).map(cardDto), total: cards.length });
+    const { data, total } = filterCards(c, 200, false);
+    return c.json({ success: true, data, total });
   });
 
   app.get('/api/cards/:id', (c) => {
@@ -509,7 +646,8 @@ export function createApiApp() {
   });
 
   app.get('/api/admin/cards', (c) => {
-    return c.json({ success: true, data: OFFICIAL_CARDS_DATA.map(cardDto), total: OFFICIAL_CARDS_DATA.length });
+    const { data, total } = filterCards(c, 500, true);
+    return c.json({ success: true, data, total });
   });
 
   app.get('/api/admin/cards/:id/versions', (c) => c.json({ success: true, data: [] }));

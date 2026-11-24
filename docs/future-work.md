@@ -98,8 +98,8 @@
 
 ### 3.2 双后端安全加固与协议对齐
 
-- [ ] **Cloudflare `RoomDO` 加固**：仅向已通过认证/密码的房间成员广播、收紧非 Upgrade HTTP GET；`EchoDO` 停写 SQLite；`RoomDO.webSocketMessage` 全事件限流并清理过期连接记录；`RoomDO.alarm()` 兜底清理异常 `offlineSince` 防止 100ms 死循环唤醒。
-- [ ] **认证、校验与双端一致化**：Node 改为异步 `crypto.scrypt`；双端登录限流并限制 `password.length <= 128`；双端在 `PLAYING` 时拒绝 `room:ready`/`room:select_deck`；Node `room:start` 加锁并双端校验房主；Node 失败行动不污染回放；Node 预组统一源自 `OFFICIAL_STARTER_DECKS`；CF `resolveDeck` 回退查 D1；CF `/api/admin/cards` 补齐筛选与 `take`；REST 请求体强类型校验。
+- [x] **Cloudflare `RoomDO` 加固**：仅向已通过认证/密码的房间成员广播（`closeRoom` 在删成员前定向推送）、收紧非 Upgrade HTTP GET 返回 426；`EchoDO` 停写 SQLite 改用内存计数；`RoomDO.webSocketMessage` 全事件限流并清理过期连接记录；`RoomDO.alarm()` 兜底清理异常 `offlineSince` 防止 100ms 死循环唤醒（已更新 `worker-echo.test.ts` 与 `e2e.workerd.test.ts` 回归）。
+- [x] **认证、校验与双端一致化**：Node 改为异步 `crypto.scrypt`；双端登录/注册/游客按 IP 限流并限制登录 `password.length <= 128`；双端在 `PLAYING` 时拒绝 `room:ready`/`room:select_deck`；双端 `room:start` 校验房主并加并发锁；Node 失败行动不污染回放；Node 预组统一源自 `OFFICIAL_STARTER_DECKS`；CF `resolveDeckWithD1` 回退仅查当前用户名下 D1 卡组；CF `/api/admin/cards` 补齐筛选与 `take`；双端 REST 请求体与 `validateDeck` 强类型校验（已由 `deck-validator.test.ts`、`security-hardening.test.ts`、`crypto-auth.test.ts` 与 `e2e.workerd.test.ts` 覆盖）。
 
 ### 3.3 前端交互补齐与视觉瑕疵修复
 

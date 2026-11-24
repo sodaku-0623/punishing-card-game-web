@@ -214,15 +214,27 @@ export async function verifyJwt(token: string, secret: string): Promise<JwtPaylo
     if (!isValid) return null;
 
     const header = JSON.parse(base64UrlToUtf8(headerB64!)) as { alg?: unknown };
-    if (header?.alg !== 'HS256') return null;
-
-    const payload = JSON.parse(base64UrlToUtf8(payloadB64!)) as JwtPayload;
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.exp !== undefined && (typeof payload.exp !== 'number' || payload.exp < now)) {
-      return null; // Token 过期或字段非法
+    if (!header || typeof header !== 'object' || Array.isArray(header) || header.alg !== 'HS256') {
+      return null;
     }
 
-    return payload;
+    const rawPayload = JSON.parse(base64UrlToUtf8(payloadB64!)) as unknown;
+    if (!rawPayload || typeof rawPayload !== 'object' || Array.isArray(rawPayload)) {
+      return null;
+    }
+    const payload = rawPayload as Partial<JwtPayload>;
+    if (typeof payload.sub !== 'string' || !payload.sub) {
+      return null;
+    }
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
+      return null;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp < now) {
+      return null; // Token 过期
+    }
+
+    return payload as JwtPayload;
   } catch {
     return null;
   }

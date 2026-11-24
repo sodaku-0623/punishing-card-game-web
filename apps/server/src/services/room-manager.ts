@@ -1,10 +1,8 @@
 import crypto from 'node:crypto';
 import { RoomStatus, PublicRoomState, RoomPlayerDto, ErrorCode } from '@zhanshuang/shared';
 import { IRoomRepository, IDeckRepository, ICardRepository, DeckEntity } from '@zhanshuang/database';
-import { validateDeck, DeckCardInput } from '@zhanshuang/game-rules';
+import { validateDeck, DeckCardInput, findOfficialStarterDeck } from '@zhanshuang/game-rules';
 
-/** 官方预组的历史别名 (客户端可能使用任一 ID 引用同一套系统卡组) */
-const ST01_DECK_ALIASES = ['deck-1791110685763', 'default-starter-deck', 'deck-st01'];
 const MAX_CUSTOM_DECK_ENTRIES = 200;
 
 function hashRoomPassword(password: string): string {
@@ -374,12 +372,28 @@ export class RoomManager {
     deckId: string,
     customDeck?: any
   ): Promise<{ deck: DeckEntity | null; error?: string }> {
+    const officialStarter =
+      (deckId ? findOfficialStarterDeck(deckId) : undefined) ??
+      (typeof customDeck?.id === 'string' ? findOfficialStarterDeck(customDeck.id) : undefined);
+    if (officialStarter) {
+      const officialDeck = await this.deckRepo.findById(officialStarter.id);
+      if (officialDeck) {
+        return { deck: officialDeck };
+      }
+    }
+
     const deck = deckId ? await this.deckRepo.findById(deckId) : null;
     if (deck && deck.userId === 'system') {
       return { deck };
     }
 
-    if (customDeck && Array.isArray(customDeck.cards) && customDeck.cards.length > 0) {
+    if (
+      customDeck &&
+      typeof customDeck === 'object' &&
+      !Array.isArray(customDeck) &&
+      Array.isArray(customDeck.cards) &&
+      customDeck.cards.length > 0
+    ) {
       if (!this.cardRepo) {
         return { deck: null, error: '服务端卡牌数据库未就绪，暂无法使用自定义卡组' };
       }
@@ -390,20 +404,27 @@ export class RoomManager {
       const normalizedCards: { cardId: string; count: number; imageUrl?: string }[] = [];
       const validationInput: DeckCardInput[] = [];
       for (const item of customDeck.cards) {
-        const rawCardId = typeof item?.cardId === 'string' ? item.cardId : undefined;
-        const rawCardNumber = typeof item?.cardNumber === 'string' ? item.cardNumber : undefined;
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return { deck: null, error: '自定义卡组包含非法的卡牌条目格式' };
+        }
+        const rawCardId = typeof item.cardId === 'string' ? item.cardId : undefined;
+        const rawCardNumber = typeof item.cardNumber === 'string' ? item.cardNumber : undefined;
         let c = rawCardId ? await this.cardRepo.findById(rawCardId) : null;
         if (!c && rawCardNumber) c = await this.cardRepo.findByCardNumber(rawCardNumber);
         if (!c && rawCardId) {
-          c = await this.cardRepo.findByCardNumber(rawCardId.replace(/^c-/, '').toUpperCase());
+          const normalizedCardNumber = rawCardId
+            .replace(/^c-/, '')
+            .replace(/-champion$/i, '【冠军】')
+            .toUpperCase();
+          c = await this.cardRepo.findByCardNumber(normalizedCardNumber);
         }
         if (!c) {
           return { deck: null, error: `自定义卡组包含未知卡牌: ${rawCardNumber || rawCardId || '(空)'}` };
         }
-        const count = Math.floor(Number(item.count));
-        if (!Number.isFinite(count) || count <= 0) {
+        if (typeof item.count !== 'number' || !Number.isInteger(item.count) || item.count <= 0) {
           return { deck: null, error: `卡牌 ${c.name} (${c.cardNumber}) 数量非法` };
         }
+        const count = item.count;
         normalizedCards.push({
           cardId: c.id,
           count,
@@ -424,7 +445,7 @@ export class RoomManager {
       }
 
       // 客户端卡组 ID 仅在本人名下有效；与系统或他人卡组重名时，落入该玩家私有命名空间
-      const requestedId = String(customDeck.id || deckId || '').slice(0, 128);
+      const requestedId = String((typeof customDeck.id === 'string' ? customDeck.id : '') || deckId || '').slice(0, 128);
       let targetId = requestedId || undefined;
       let target = targetId ? await this.deckRepo.findById(targetId) : null;
       if (target && target.userId !== userId) {
@@ -432,8 +453,11 @@ export class RoomManager {
         target = await this.deckRepo.findById(targetId);
       }
 
-      const deckName = String(customDeck.name || '自定义构筑卡组').slice(0, 64);
-      const deckDesc = String(customDeck.description || '').slice(0, 500);
+      const deckName =
+        typeof customDeck.name === 'string' && customDeck.name.trim()
+          ? customDeck.name.trim().slice(0, 64)
+          : '自定义构筑卡组';
+      const deckDesc = typeof customDeck.description === 'string' ? customDeck.description.slice(0, 500) : '';
       if (!target) {
         target = await this.deckRepo.create(userId, deckName, deckDesc, targetId);
       } else {
@@ -447,30 +471,14 @@ export class RoomManager {
       return { deck };
     }
 
-    // 兼容旧版客户端的预组别名
-    let fallback: DeckEntity | null = null;
-    if (deckId?.includes('st02')) {
-      fallback = await this.deckRepo.findById('deck-st02');
-    } else if (deckId?.includes('st03')) {
-      fallback = await this.deckRepo.findById('deck-st03');
-    } else if (deckId && (deckId.includes('1791110685763') || ST01_DECK_ALIASES.includes(deckId))) {
-      for (const alias of ST01_DECK_ALIASES) {
-        fallback = await this.deckRepo.findById(alias);
-        if (fallback) break;
-      }
-    }
-    if (!fallback) {
-      const sysDecks = await this.deckRepo.findByUserId('system');
-      fallback = sysDecks[0] || null;
-    }
-    return { deck: fallback };
+    return { deck: null, error: '找不到指定的出战卡组' };
   }
 
   async setReady(
     roomId: string,
     userId: string,
     isReady: boolean,
-    deckId: string,
+    deckId?: string,
     customDeck?: any
   ): Promise<RoomOperationResult<PublicRoomState>> {
     const room = this.activeRooms.get(roomId);
@@ -479,8 +487,21 @@ export class RoomManager {
     const player = room.players.find((p) => p.userId === userId);
     if (!player) return { success: false, errorCode: ErrorCode.UNAUTHORIZED, errorMessage: '非房间内玩家' };
 
+    if (
+      room.status === RoomStatus.PLAYING ||
+      room.status === RoomStatus.FINISHED ||
+      room.status === RoomStatus.CLOSED
+    ) {
+      return {
+        success: false,
+        errorCode: ErrorCode.ACTION_NOT_ALLOWED,
+        errorMessage: '对局进行中无法更改卡组或准备状态',
+      };
+    }
+
     if (isReady) {
-      const { deck, error } = await this.resolveOrSyncDeck(userId, deckId, customDeck);
+      const effectiveDeckId = deckId ?? player.deckId ?? '';
+      const { deck, error } = await this.resolveOrSyncDeck(userId, effectiveDeckId, customDeck);
       if (error || !deck) {
         return {
           success: false,
@@ -515,6 +536,18 @@ export class RoomManager {
 
     const player = room.players.find((p) => p.userId === userId);
     if (!player) return { success: false, errorCode: ErrorCode.UNAUTHORIZED, errorMessage: '非房间内玩家' };
+
+    if (
+      room.status === RoomStatus.PLAYING ||
+      room.status === RoomStatus.FINISHED ||
+      room.status === RoomStatus.CLOSED
+    ) {
+      return {
+        success: false,
+        errorCode: ErrorCode.ACTION_NOT_ALLOWED,
+        errorMessage: '对局进行中无法更改卡组或准备状态',
+      };
+    }
 
     const { deck, error } = await this.resolveOrSyncDeck(userId, deckId, customDeck);
     if (error || !deck) {

@@ -121,17 +121,47 @@ describe('Cloudflare Worker & EchoDO 连通性测试服务', () => {
   });
 
   describe('EchoDO 状态管理与 WebSocket 协议交互', () => {
-    it('非 WebSocket 请求访问 EchoDO 应返回 SQLite 统计数据', async () => {
-      const { ctx } = createMockDOState();
+    it('非 WebSocket 请求访问 EchoDO 应返回内存统计数据且不触发 SQLite 读写', async () => {
+      const { ctx, sqlLog } = createMockDOState();
       const echoDo = new EchoDO(ctx, {} as Env);
 
-      const req = new Request('https://do.example.com/');
-      const res = await echoDo.fetch(req);
-      expect(res.status).toBe(200);
-      const data = await res.json() as { ok: boolean; type: string; stats: { total_pings: number } };
-      expect(data.ok).toBe(true);
-      expect(data.type).toBe('EchoDO');
-      expect(data.stats.total_pings).toBe(10);
+      const initRes = await echoDo.fetch(new Request('https://do.example.com/'));
+      expect(initRes.status).toBe(200);
+      const initData = (await initRes.json()) as {
+        status: string;
+        stats: { total_pings: number; total_connections: number; last_ping_time: number };
+      };
+      expect(initData.status).toBe('ok');
+      expect(initData.stats).toEqual({
+        total_pings: 0,
+        total_connections: 0,
+        last_ping_time: 0,
+      });
+      expect(sqlLog.length).toBe(0);
+
+      // 经过 WS 连接与 ping 后内存计数递增，依然不触碰 SQLite
+      await echoDo.fetch(
+        new Request('https://do.example.com/ws', {
+          headers: { Upgrade: 'websocket' },
+        })
+      );
+      const { ws } = createMockWebSocket();
+      await echoDo.webSocketMessage(
+        ws,
+        JSON.stringify({ type: 'ping', seq: 1, clientTime: 1700000000000 })
+      );
+
+      const afterRes = await echoDo.fetch(new Request('https://do.example.com/'));
+      expect(afterRes.status).toBe(200);
+      const afterData = (await afterRes.json()) as {
+        status: string;
+        stats: { total_pings: number; total_connections: number; last_ping_time: number };
+      };
+      expect(afterData.status).toBe('ok');
+      expect(afterData.stats.total_connections).toBe(1);
+      expect(afterData.stats.total_pings).toBe(1);
+      expect(afterData.stats.last_ping_time).toBeGreaterThan(0);
+      expect(sqlLog.length).toBe(0);
     });
 
     it('WebSocket 升级请求应通过 acceptWebSocket 接入并发送欢迎事件', async () => {
