@@ -10,6 +10,14 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui';
+import {
+  GUIDE_CARD_EXAMPLES,
+  GUIDE_DIAGRAMS,
+  GuideCardExampleStrip,
+  GuideDiagramFigure,
+  GuideImagePreviewDialog,
+  type GuidePreviewMedia,
+} from '@/components/guide/GuideMedia';
 
 interface RuleGuideModalProps {
   isOpen: boolean;
@@ -45,19 +53,27 @@ const TABS: { id: GuideTab; num: string; label: string }[] = [
 
 export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState<GuideTab>('overview');
+  const [previewMedia, setPreviewMedia] = useState<GuidePreviewMedia | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (previewMedia) {
+          setPreviewMedia(null);
+        } else {
+          onClose();
+        }
+      }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, previewMedia]);
 
   if (!isOpen) return null;
 
   return (
+    <>
     <div
       role="dialog"
       aria-modal="true"
@@ -222,6 +238,7 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                       </li>
                     </ul>
                   </div>
+                  <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.role} onPreview={setPreviewMedia} />
                 </div>
 
                 <div className="p-4 border border-line bg-ink-950 space-y-3">
@@ -251,6 +268,7 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                       </p>
                     </div>
                   </div>
+                  <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.item} onPreview={setPreviewMedia} />
                 </div>
 
                 <div className="p-4 border border-line bg-ink-950 space-y-3">
@@ -276,6 +294,7 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                       <p className="text-fg-muted">仅在战斗流程的自由时点步骤（阻挡前后）以及回合结束阶段使用。</p>
                     </div>
                   </div>
+                  <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.tactics} onPreview={setPreviewMedia} />
                 </div>
               </div>
             )}
@@ -291,6 +310,8 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                     CARD STRUCTURE &amp; STATS
                   </p>
                 </div>
+
+                <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.cardStructure} onPreview={setPreviewMedia} />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-caption">
                   <div className="p-3.5 bg-ink-950 border border-line">
@@ -330,6 +351,8 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                     SEVEN GAME ZONES
                   </p>
                 </div>
+
+                <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.officialPlaymat} onPreview={setPreviewMedia} />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-caption">
                   <div className="p-3.5 bg-ink-950 border border-line">
@@ -583,6 +606,8 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
                   </div>
                 </div>
 
+                <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.signalOrbs} onPreview={setPreviewMedia} />
+
                 <div className="p-4 bg-ink-950 border border-line space-y-2 text-caption">
                   <div className="text-gold-300 font-semibold">信号球的三种来源：</div>
                   <ul className="list-disc list-inside space-y-1 text-fg-muted">
@@ -681,5 +706,7 @@ export const RuleGuideModal: React.FC<RuleGuideModalProps> = ({ isOpen, onClose 
         </div>
       </div>
     </div>
+    <GuideImagePreviewDialog media={previewMedia} onClose={() => setPreviewMedia(null)} />
+    </>
   );
 };

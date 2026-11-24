@@ -16,6 +16,14 @@ import {
   SectionHeader,
   HudCounter,
 } from '@/components/ui';
+import {
+  GUIDE_CARD_EXAMPLES,
+  GUIDE_DIAGRAMS,
+  GuideCardExampleStrip,
+  GuideDiagramFigure,
+  GuideImagePreviewDialog,
+  type GuidePreviewMedia,
+} from '@/components/guide/GuideMedia';
 
 type GuideTab =
   | 'overview'
@@ -68,6 +76,7 @@ const KEYWORDS: { tag: string; variant: 'teal' | 'gold' | 'crimson' | 'neutral';
 
 export default function GuidePage() {
   const [activeTab, setActiveTab] = useState<GuideTab>('overview');
+  const [previewMedia, setPreviewMedia] = useState<GuidePreviewMedia | null>(null);
   const activeIndex = GUIDE_TABS.findIndex((t) => t.id === activeTab);
   const currentMeta = GUIDE_TABS[activeIndex] || GUIDE_TABS[0];
 
@@ -235,6 +244,7 @@ export default function GuidePage() {
                     </li>
                   </ul>
                 </div>
+                <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.role} onPreview={setPreviewMedia} />
               </div>
 
               <div className="p-5 border border-line bg-ink-900 space-y-4">
@@ -262,6 +272,7 @@ export default function GuidePage() {
                     </p>
                   </div>
                 </div>
+                <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.item} onPreview={setPreviewMedia} />
               </div>
 
               <div className="p-5 border border-line bg-ink-900 space-y-4">
@@ -285,12 +296,14 @@ export default function GuidePage() {
                     <p className="text-fg-secondary">在战斗流程的自由时点步骤（阻挡前后）以及回合结束阶段使用。</p>
                   </div>
                 </div>
+                <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.tactics} onPreview={setPreviewMedia} />
               </div>
             </div>
           )}
 
           {activeTab === 'card-info' && (
             <div className="space-y-5">
+              <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.cardStructure} onPreview={setPreviewMedia} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-body-sm">
                 <div className="p-4 bg-ink-900 border border-line space-y-1">
                   <div className="font-semibold text-gold-300">1. 费用（左上角）</div>
@@ -319,46 +332,49 @@ export default function GuidePage() {
           )}
 
           {activeTab === 'field' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-body-sm">
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-teal-400">① 战场区 (Battlefield)</div>
-                <p className="text-fg-secondary mt-1">角色牌和道具牌出场及战斗区域，每位指挥官拥有 5 个卡位。</p>
-              </div>
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-gold-300">② 牌组 (Deck)</div>
-                <p className="text-fg-secondary mt-1">放置牌组的区域，必须由刚好 50 张卡牌构成。</p>
-              </div>
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-crimson-400">③ 侵蚀计数区 (Erosion)</div>
-                <p className="text-fg-secondary mt-1">记录自身所受侵蚀计数的刻度（0~7）。达到 7 即败北。</p>
-              </div>
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-fg">④ 墓地 (Graveyard)</div>
-                <p className="text-fg-secondary mt-1">放置已使用、被战斗破坏或离开战场的卡牌。</p>
-              </div>
-              <div className="p-4 bg-ink-900 border-l-2 border-teal-400 border border-line md:col-span-2 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-fg">⑤ 费用区 (Cost Zone) · 明费与暗费（上限 10 张）</span>
-                  <Badge variant="gold">核心规则</Badge>
+            <div className="space-y-5">
+              <GuideDiagramFigure diagram={GUIDE_DIAGRAMS.officialPlaymat} onPreview={setPreviewMedia} />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-body-sm">
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-teal-400">① 战场区 (Battlefield)</div>
+                  <p className="text-fg-secondary mt-1">角色牌和道具牌出场及战斗区域，每位指挥官拥有 5 个卡位。</p>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-fg-secondary">
-                  <li><strong className="text-fg">明费：</strong>正面表示的卡牌。支付费用时将竖直状态的明费横置。</li>
-                  <li>
-                    <strong className="text-fg">暗费：</strong>背面竖直表示的卡牌（受伤害充能产生）。支付费用时移至墓地；
-                    <span className="text-gold-300">回合玩家未使用的暗费在回合结束阶段全部送入墓地。</span>
-                  </li>
-                  <li>
-                    <strong className="text-fg">10 张上限限制：</strong>费用区明费与暗费合计上限为 10 张，超出部分改为直接送入墓地。
-                  </li>
-                </ul>
-              </div>
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-gold-300">⑥ 信号球区 (Signal Orb Zone)</div>
-                <p className="text-fg-secondary mt-1">放置红、蓝、黄信号球的队列区域，数量无上限，顺序不可随意变动。</p>
-              </div>
-              <div className="p-4 bg-ink-900 border border-line">
-                <div className="font-semibold text-steel-300">⑦ 处理区 (Processing Zone)</div>
-                <p className="text-fg-secondary mt-1">能力处理、攻击充能及伤害充能时卡牌临时公开放置该区域。</p>
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-gold-300">② 牌组 (Deck)</div>
+                  <p className="text-fg-secondary mt-1">放置牌组的区域，必须由刚好 50 张卡牌构成。</p>
+                </div>
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-crimson-400">③ 侵蚀计数区 (Erosion)</div>
+                  <p className="text-fg-secondary mt-1">记录自身所受侵蚀计数的刻度（0~7）。达到 7 即败北。</p>
+                </div>
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-fg">④ 墓地 (Graveyard)</div>
+                  <p className="text-fg-secondary mt-1">放置已使用、被战斗破坏或离开战场的卡牌。</p>
+                </div>
+                <div className="p-4 bg-ink-900 border-l-2 border-teal-400 border border-line md:col-span-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-fg">⑤ 费用区 (Cost Zone) · 明费与暗费（上限 10 张）</span>
+                    <Badge variant="gold">核心规则</Badge>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-fg-secondary">
+                    <li><strong className="text-fg">明费：</strong>正面表示的卡牌。支付费用时将竖直状态的明费横置。</li>
+                    <li>
+                      <strong className="text-fg">暗费：</strong>背面竖直表示的卡牌（受伤害充能产生）。支付费用时移至墓地；
+                      <span className="text-gold-300">回合玩家未使用的暗费在回合结束阶段全部送入墓地。</span>
+                    </li>
+                    <li>
+                      <strong className="text-fg">10 张上限限制：</strong>费用区明费与暗费合计上限为 10 张，超出部分改为直接送入墓地。
+                    </li>
+                  </ul>
+                </div>
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-gold-300">⑥ 信号球区 (Signal Orb Zone)</div>
+                  <p className="text-fg-secondary mt-1">放置红、蓝、黄信号球的队列区域，数量无上限，顺序不可随意变动。</p>
+                </div>
+                <div className="p-4 bg-ink-900 border border-line">
+                  <div className="font-semibold text-steel-300">⑦ 处理区 (Processing Zone)</div>
+                  <p className="text-fg-secondary mt-1">能力处理、攻击充能及伤害充能时卡牌临时公开放置该区域。</p>
+                </div>
               </div>
             </div>
           )}
@@ -530,6 +546,8 @@ export default function GuidePage() {
                 </div>
               </div>
 
+              <GuideCardExampleStrip examples={GUIDE_CARD_EXAMPLES.signalOrbs} onPreview={setPreviewMedia} />
+
               <div className="p-5 bg-ink-900 border border-line space-y-2.5">
                 <div className="font-semibold text-gold-300">信号球的三种来源</div>
                 <ul className="list-disc list-inside space-y-1.5 text-fg-secondary">
@@ -582,6 +600,8 @@ export default function GuidePage() {
           )}
         </article>
       </div>
+
+      <GuideImagePreviewDialog media={previewMedia} onClose={() => setPreviewMedia(null)} />
     </AppShell>
   );
 }
