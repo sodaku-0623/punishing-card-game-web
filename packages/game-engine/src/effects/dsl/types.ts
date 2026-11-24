@@ -23,6 +23,7 @@ export type UsableActivationZone =
 export type CustomHandlerId =
   | 'BP02_048_WANSHIMING_SACRIFICE'
   | 'BP03_056_COPY_GY_ENTRY'
+  | 'BP03_057_LILITH_CHALLENGE'
   | 'BP03_058_ASCENDING_COST_5'
   | 'BP03_059_BLACKJACK_21'
   | 'BP03_061_GUESS_PARITY'
@@ -80,6 +81,8 @@ export interface CardFilter {
   minUnderneathCount?: number;
   /** 角色下方或附着装备中存在满足子筛选的卡牌 (如 BP04-077~079 判断下方/装备《飞叶点翠》) */
   hasUnderneathOrEquipMatching?: CardFilter;
+  /** true = 仅浮空模式 (处理区浮空卡)，false = 非浮空模式 */
+  isAirborne?: boolean;
   /** 限制卡牌当前所在区域 (如 Q&A·7 BP01-056 结算时确认仍在墓地) */
   inZone?: ZoneId;
   excludeSelf?: boolean;
@@ -92,11 +95,12 @@ export type NumberExpr =
   | number
   | { kind: 'EROSION_MULT'; side: PlayerSide; multiplier: number }
   | { kind: 'ROLE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
-  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number; uniqueNames?: boolean }
+  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number; uniqueNames?: boolean; filter?: CardFilter }
   | { kind: 'SUM_UNDERNEATH_COUNT'; side: PlayerSide; roleFilter?: CardFilter; filter?: CardFilter; uniqueNames?: boolean; multiplier?: number }
   | { kind: 'ORB_ZONE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
   | { kind: 'ZONE_COUNT_MULT'; side: PlayerSide; zone: ZoneId; filter?: CardFilter; uniqueNames?: boolean; multiplier: number }
   | { kind: 'VAR_COUNT_MULT'; varName: string; multiplier: number }
+  | { kind: 'VAR_DISTINCT_COST_MULT'; varName: string; multiplier: number }
   | { kind: 'FLOOR_DIV'; expr: NumberExpr; divisor: number }
   | { kind: 'ADD'; left: NumberExpr; right: NumberExpr };
 
@@ -140,6 +144,9 @@ export type ConditionExpr =
   | { kind: 'VAR_NON_EMPTY'; varName: string }
   | { kind: 'VAR_COUNT_COMPARE'; varName: string; op: CompareOp; value: number }
   | { kind: 'VAR_HAS_CARD_MATCHING'; varName: string; filter: CardFilter }
+  | { kind: 'VAR_HAS_DUPLICATE_COST'; varName: string }
+  | { kind: 'HAS_ELIMINABLE_ORBS'; filter: OrbColorFilter; count: number }
+  | { kind: 'IS_STANDALONE_EQUIPMENT' }
   | { kind: 'ALL'; conditions: ConditionExpr[] }
   | { kind: 'ANY'; conditions: ConditionExpr[] }
   | { kind: 'NOT'; condition: ConditionExpr };
@@ -149,6 +156,9 @@ export type ConditionExpr =
  */
 export type CardTargetRef =
   | { kind: 'SELF' }
+  | { kind: 'SELF_UNDERNEATH'; filter?: CardFilter }
+  | { kind: 'SELF_PARTNER' }
+  | { kind: 'ZONE_BOTTOM_CARD'; side: PlayerSide; zone: ZoneId }
   | { kind: 'VAR'; varName: string }
   | { kind: 'REST_OF_VAR'; allVar: string; excludeVar: string }
   | { kind: 'ALL_MATCHING_ROLES'; side: PlayerSide; filter?: CardFilter }
@@ -290,7 +300,9 @@ export type EffectStep =
         | 'COST'
         | 'DECK'
         | 'BATTLEFIELD'
+        | 'PROCESSING'
         | 'HOST_UNDERNEATH'
+        | 'SELF_UNDERNEATH'
         | 'OPPONENT_HAND_BLIND';
       /** 可选多区域联合选择 (如 BP01-028 墓地+费用区合计最多6张<万世铭>) */
       zones?: (
@@ -300,7 +312,9 @@ export type EffectStep =
         | 'COST'
         | 'DECK'
         | 'BATTLEFIELD'
+        | 'PROCESSING'
         | 'HOST_UNDERNEATH'
+        | 'SELF_UNDERNEATH'
       )[];
       /** zone 为 HOST_UNDERNEATH 时筛选宿主角色 (如《露娜·终焉》) */
       hostFilter?: CardFilter;
@@ -360,6 +374,8 @@ export type EffectStep =
       prompt?: string;
       choiceEffectType?: string;
       savePaidToVar?: string;
+      /** true 时不计入「因《卡列尼娜·辉晓》能力消除信号球」计数 (BP04-040) */
+      excludeFromAbilityOrbCount?: boolean;
       onPaid: EffectStep[];
     }
   | {
@@ -429,6 +445,8 @@ export type EffectStep =
         | 'BATTLEFIELD';
       /** 仅 toZone === 'UNDERNEATH' 时必填：指定置入哪张战场角色下方 */
       underneathHost?: CardTargetRef;
+      /** 仅 toZone === 'UNDERNEATH' 时：true 表示连同目标原本下方的所有牌一并转移到新宿主下方 (PR-041) */
+      includeUnderneath?: boolean;
       isFaceUp?: boolean;
       /** 移动到费用区等区域时的竖直/横置状态 (如 BP01-029 竖直放费用区、BP01-039 横置放对方费用区) */
       isReady?: boolean;
@@ -593,9 +611,12 @@ export type EffectStep =
         | 'DELAYED_END_OF_TURN_TO_DECK_BOTTOM'
         | 'DELAYED_END_OF_TURN_UNTAP'
         | 'DELAYED_END_OF_TURN_DRAW'
-        | 'DELAYED_ATTACK_END_TO_SIGNAL_ORB_BOTTOM';
+        | 'DELAYED_ATTACK_END_TO_SIGNAL_ORB_BOTTOM'
+        | 'DELAYED_ATTACK_END_DEPLOY_PARTNER';
       /** 默认 BATTLEFIELD；放入信号球区最下方后回合结束送墓时填 SIGNAL_ORB */
       expectedZone?: ZoneId;
+      /** 仅 DELAYED_ATTACK_END_DEPLOY_PARTNER：若协战搭档来自该区域 (如 GRAVEYARD)，出场时赋予【速攻】 */
+      grantRushIfPartnerFromZone?: ZoneId;
       drawCount?: number;
       targetSide?: PlayerSide;
       labelSuffix?: string;
@@ -729,6 +750,20 @@ export type DeclarativeTriggerMatcher =
       /** 该牌离开战场时触发 (搭配 CARD_LEFT_FIELD，支持检查离场前是否装备特定特征装备) */
       kind: 'SELF_LEFT_FIELD';
       requiredEquipTrait?: string;
+    }
+  | {
+      /** 由静态效果 grantedTriggerIds 赋予到角色身上的离场【自】触发 (如 PR-015 位于《七实·遥星之座》下方) */
+      kind: 'GRANTED_SELF_LEFT_FIELD';
+    }
+  | {
+      /** 我方玩家受到伤害时触发 (搭配 DAMAGE_DEALT，如 BP04-015 薇拉·灼惘) */
+      kind: 'SELF_PLAYER_DAMAGED';
+      onlySelfTurn?: boolean;
+    }
+  | {
+      /** 墓地中触发：我方满足条件的角色被攻击时 (搭配 ATTACK_DECLARED，如 BP04-047 塞西莉) */
+      kind: 'SELF_IN_GRAVEYARD_ON_FRIENDLY_ROLE_ATTACKED';
+      targetFilter?: CardFilter;
     };
 
 export interface DeclarativeTriggerSpec {
@@ -737,6 +772,8 @@ export interface DeclarativeTriggerSpec {
   /** 可选多事件触发 (如 BP01-029 同时监听 ATTACK_DECLARED 与 BLOCK_DECLARED) */
   eventTypes?: TriggerEventType[];
   oncePerTurn?: boolean;
+  /** 10.1 【回合N】限制 (按卡牌实例计数，如 BP04-015 【回合2】) */
+  maxPerTurn?: number;
   /** 可选代价未支付时不消耗【回合1】次数 (如 Q&A·2/7 BP01-023) */
   deferOncePerTurnUntilCostPaid?: boolean;
   /** 「《XXX》的该能力每回合最多发动1次」(按玩家+能力ID限制，如 ST06-008) */
@@ -788,6 +825,8 @@ export interface DeclarativeStaticEffectSpec {
   orbValue?: number;
   treatedAsNames?: string[];
   unblockableMaxPP?: number;
+  /** 静态赋予宿主的【自】能力 ID 列表 (如 PR-015 存在于《七实·遥星之座》下方时赋予离场【自】) */
+  grantedTriggerIds?: string[];
   /** 允许同时装备 2 张<封刃太刀>装备 (BP01-014 / BP01-016 / BP01-017) */
   canDualEquipFengren?: boolean;
   /** 是否依赖特征层 (8.9.1.d) */
@@ -876,8 +915,10 @@ export interface CardEffectSpec {
     label: string;
     activate: DeclarativeActivateSpec;
   };
-  /** 使用该牌时可丢弃手牌中满足条件的任意张牌来减费 (如 BP01-067 最后的晚空) */
+  /** 使用该牌时可将手牌或信号球区中满足条件的任意张牌置入墓地来减费 (如 BP01-067 最后的晚空 / BP03-075 露西亚·深红之渊) */
   playDiscardDiscount?: {
+    sourceZone?: 'HAND' | 'SIGNAL_ORB';
+    signalOrbColor?: SignalOrbColor;
     filter: CardFilter;
     discountPerCard: number;
     prompt?: string;

@@ -1984,31 +1984,25 @@ export class CardEffectEngine {
         break;
       }
 
-      // 10.2.1.b BP04-012 薇拉·灼惘：侵蚀>=6时蓝/黄球充能自改为发动红色信号球【充能自】
+      // 10.2.1.b BP04-012 薇拉·灼惘：侵蚀>=6时蓝/黄球充能自改为发动标准红色信号球【充能自】（DP+1 或 PP+2000）
       case 'BP04_012_RED_ORB_SUBSTITUTE': {
         const chargeCardId = choice.sourceCardInstanceId;
         const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
         const chargeDef = chargeCard ? this.getCardDef(chargeCard) : undefined;
         if (!chargeCard || !chargeDef || chargeCard.zone !== 'PROCESSING') break;
         if (selectedIds[0] === 'vera_red') {
-          const redTargets = this.getOpponentRoles(playerId).filter(
-            (r) => this.ctx.fieldMgr.evaluateRoleStats(r.instanceId).pp <= 4000
-          );
-          const redOptions: { id: string; label: string }[] = [
-            { id: 'red_draw', label: '红色信号球【充能自】：抽 1 张牌' },
-          ];
-          if (redTargets.length > 0) {
-            redOptions.push({ id: 'red_destroy', label: '红色信号球【充能自】：破坏对方 PP<=4000 角色' });
-          }
           this.ctx.setPendingChoice({
             id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             playerId,
             choiceType: 'SELECT_OPTION',
-            prompt: '【薇拉·灼惘 / 红色信号球】充能自：请从以下 2 项选择 1 项：',
-            options: redOptions,
-            effectType: 'CHARGE_AUTO_SELECT',
+            prompt: '【薇拉·灼惘 / 红色信号球】充能自：请从以下 2 项选择 1 项执行：',
+            options: [
+              { id: 'opt_dp_plus_1', label: '选择我方战场最多1张角色，直到回合结束 DP+1' },
+              { id: 'opt_pp_plus_2000', label: '选择我方战场最多1张角色，直到回合结束 PP+2000' },
+            ],
+            effectType: 'SIGNATURE_MOVE_EFFECT',
             sourceCardInstanceId: chargeCardId,
-            metadata: { cardName: chargeDef.name, signalOrb: 'RED' },
+            metadata: { cardName: chargeDef.name, cardNumber: chargeDef.cardNumber, signalOrb: 'RED' },
             minSelections: 1,
             maxSelections: 1,
           });

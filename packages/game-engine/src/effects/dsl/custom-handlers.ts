@@ -235,6 +235,26 @@ export function startCustomHandler(
       return true;
     }
 
+    case 'BP03_057_LILITH_CHALLENGE': {
+      const handLiliths = rt.zone(playerId, 'HAND').filter((c) => rt.hasTrait(c, '莉莉丝'));
+      if (handLiliths.length === 0) return false;
+      rt.enqueueCustomChoice(
+        {
+          id: rt.choiceId('bp03-057-self'),
+          playerId,
+          choiceType: 'SELECT_CARDS',
+          prompt: '【BP03-057 莉莉丝·谬影】【出】可公开我方手牌 1 张<莉莉丝>并将其丢弃（不选则不发动）：',
+          options: handLiliths.map((c) => rt.effects.createGeneralCardChoiceOption(c)),
+          effectType: 'DSL_CUSTOM_BP03_057_PICK_SELF',
+          sourceCardInstanceId: sourceId,
+          minSelections: 0,
+          maxSelections: 1,
+        },
+        { ...baseFrame, vars, stage: 'PICK_SELF' }
+      );
+      return true;
+    }
+
     case 'BP03_058_ASCENDING_COST_5': {
       const revealed: string[] = [];
       for (let i = 0; i < 5; i++) {
@@ -427,6 +447,43 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
         maxSelections: 5,
       },
       { ...baseFrame, vars, stage: 'PICK_5_CARDS_SUBMIT' }
+    );
+    return true;
+  }
+
+  if (handlerId === 'BP03_057_LILITH_CHALLENGE' && stage === 'CHALLENGE_OPPONENT') {
+    const revId = (vars.bp03_057_rev ?? [])[0];
+    const revCard = revId ? rt.ctx.state.cards[revId] : undefined;
+    if (!revCard) return false;
+    const revealedCost = getEffectiveRevealedCost(rt, revCard, vars);
+    const oppId = rt.resolveSide(playerId, 'OPPONENT');
+    const higherCards = rt.zone(oppId, 'HAND').filter((c) => (rt.def(c)?.cost ?? 0) > revealedCost);
+    if (higherCards.length === 0) {
+      const selfCard = rt.ctx.state.cards[sourceId];
+      if (selfCard && selfCard.zone === 'BATTLEFIELD') {
+        addCardModifier(rt.ctx.state, selfCard, {
+          keywords: ['贯通'],
+          untilTurn: rt.ctx.state.turnNumber,
+          source: cardNumber,
+          sourceCardInstanceId: sourceId,
+          appliedByPlayerId: playerId,
+        });
+      }
+      return false;
+    }
+    rt.enqueueCustomChoice(
+      {
+        id: rt.choiceId('bp03-057-opp'),
+        playerId: oppId,
+        choiceType: 'SELECT_CARDS',
+        prompt: `【BP03-057 莉莉丝·谬影】对方公开了费用 ${revealedCost} 的<莉莉丝>；可丢弃手牌 1 张费用高于 ${revealedCost} 的牌以阻止其获得【贯通】（不选则其获得【贯通】）：`,
+        options: higherCards.map((c) => rt.effects.createGeneralCardChoiceOption(c)),
+        effectType: 'DSL_CUSTOM_BP03_057_OPP_DISCARD',
+        sourceCardInstanceId: sourceId,
+        minSelections: 0,
+        maxSelections: 1,
+      },
+      { ...baseFrame, vars, stage: 'OPP_DISCARD' }
     );
     return true;
   }
@@ -993,6 +1050,53 @@ export function resolveCustomChoice(
         return { success: true };
       }
       return { success: false, error: '未知 BP03-064 阶段' };
+    }
+
+    case 'BP03_057_LILITH_CHALLENGE': {
+      if (stage === 'PICK_SELF') {
+        const pickedId = selected[0];
+        if (!pickedId) {
+          rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
+          return { success: true };
+        }
+        vars.bp03_057_rev = [pickedId];
+        rt.ctx.zoneMgr.moveCard(pickedId, 'GRAVEYARD', { isFaceUp: true });
+        if (
+          promptNextLilithCostDeclaration(
+            rt,
+            [pickedId],
+            vars,
+            { cardNumber, sourceCardInstanceId: sourceId, playerId, handlerId, remainingSteps },
+            'CHALLENGE_OPPONENT'
+          )
+        ) {
+          return { success: true };
+        }
+        const paused = continueCustomStage(rt, { ...frame, vars, stage: 'CHALLENGE_OPPONENT' });
+        if (!paused) rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
+        return { success: true };
+      }
+
+      if (stage === 'OPP_DISCARD') {
+        const pickedId = selected[0];
+        if (pickedId) {
+          rt.ctx.zoneMgr.moveCard(pickedId, 'GRAVEYARD', { isFaceUp: true });
+        } else {
+          const selfCard = rt.ctx.state.cards[sourceId];
+          if (selfCard && selfCard.zone === 'BATTLEFIELD') {
+            addCardModifier(rt.ctx.state, selfCard, {
+              keywords: ['贯通'],
+              untilTurn: turn,
+              source: cardNumber,
+              sourceCardInstanceId: sourceId,
+              appliedByPlayerId: playerId,
+            });
+          }
+        }
+        rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
+        return { success: true };
+      }
+      return { success: false, error: '未知 BP03-057 阶段' };
     }
 
     default:

@@ -31,7 +31,9 @@ const VALID_CHOOSE_ZONES = new Set([
   'COST',
   'DECK',
   'BATTLEFIELD',
+  'PROCESSING',
   'HOST_UNDERNEATH',
+  'SELF_UNDERNEATH',
   'OPPONENT_HAND_BLIND',
 ]);
 const VALID_MULTI_CHOOSE_ZONES = new Set([
@@ -41,12 +43,15 @@ const VALID_MULTI_CHOOSE_ZONES = new Set([
   'COST',
   'DECK',
   'BATTLEFIELD',
+  'PROCESSING',
   'HOST_UNDERNEATH',
+  'SELF_UNDERNEATH',
 ]);
 const VALID_USABLE_ZONES = new Set(['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'UNDERNEATH']);
 const VALID_CUSTOM_HANDLERS = new Set([
   'BP02_048_WANSHIMING_SACRIFICE',
   'BP03_056_COPY_GY_ENTRY',
+  'BP03_057_LILITH_CHALLENGE',
   'BP03_058_ASCENDING_COST_5',
   'BP03_059_BLACKJACK_21',
   'BP03_061_GUESS_PARITY',
@@ -59,6 +64,7 @@ const VALID_DELAYED_ABILITIES = new Set([
   'DELAYED_END_OF_TURN_UNTAP',
   'DELAYED_END_OF_TURN_DRAW',
   'DELAYED_ATTACK_END_TO_SIGNAL_ORB_BOTTOM',
+  'DELAYED_ATTACK_END_DEPLOY_PARTNER',
 ]);
 const VALID_MOVE_ZONES = new Set([
   'HAND',
@@ -104,6 +110,9 @@ const VALID_TRIGGER_MATCHERS = new Set([
   'SELF_BECAME_PARTNER',
   'SELF_GAINED_PARTNER',
   'SELF_LEFT_FIELD',
+  'GRANTED_SELF_LEFT_FIELD',
+  'SELF_PLAYER_DAMAGED',
+  'SELF_IN_GRAVEYARD_ON_FRIENDLY_ROLE_ATTACKED',
 ]);
 const VALID_PROHIBITIONS = new Set([
   'CANNOT_ATTACK',
@@ -189,6 +198,7 @@ function validateNumberExpr(
       return;
     case 'UNDERNEATH_COUNT_MULT':
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      validateFilter(expr.filter, `${path}.filter`);
       return;
     case 'SUM_UNDERNEATH_COUNT':
       assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
@@ -208,6 +218,7 @@ function validateNumberExpr(
       validateFilter(expr.filter, `${path}.filter`);
       return;
     case 'VAR_COUNT_MULT':
+    case 'VAR_DISTINCT_COST_MULT':
       assert(typeof expr.varName === 'string' && expr.varName.length > 0, `${path}.varName 不能为空`);
       if (definedVars) assert(definedVars.has(expr.varName), `${path} 引用了未定义变量 "${expr.varName}"`);
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
@@ -340,6 +351,15 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
       validateFilter(cond.filter, `${path}.filter`);
       return;
+    case 'VAR_HAS_DUPLICATE_COST':
+      assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
+      return;
+    case 'HAS_ELIMINABLE_ORBS':
+      assert(VALID_ORB_FILTERS.has(cond.filter), `${path}.filter 非法`);
+      assertPositiveInt(cond.count, `${path}.count`);
+      return;
+    case 'IS_STANDALONE_EQUIPMENT':
+      return;
     case 'ALL':
     case 'ANY':
       assert(Array.isArray(cond.conditions) && cond.conditions.length > 0, `${path}.conditions 不能为空`);
@@ -357,10 +377,18 @@ function validateTarget(target: CardTargetRef, definedVars: ReadonlySet<string>,
   assert(typeof target === 'object' && target !== null, `${path} 必须是目标对象`);
   switch (target.kind) {
     case 'SELF':
+    case 'SELF_PARTNER':
     case 'TRIGGER_ATTACKER':
     case 'TRIGGER_BLOCKER':
     case 'TRIGGER_HOST':
     case 'TRIGGER_TARGET':
+      return;
+    case 'SELF_UNDERNEATH':
+      validateFilter(target.filter, `${path}.filter`);
+      return;
+    case 'ZONE_BOTTOM_CARD':
+      assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
+      assert(VALID_ZONES.has(target.zone), `${path}.zone 非法`);
       return;
     case 'HOST_UNDERNEATH_MATCHING':
       assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
@@ -843,6 +871,7 @@ function validateStaticEffect(eff: DeclarativeStaticEffectSpec, path: string): v
     (eff.treatedAsOrbColors && eff.treatedAsOrbColors.length > 0) ||
     eff.orbValue !== undefined ||
     (eff.treatedAsNames && eff.treatedAsNames.length > 0) ||
+    (eff.grantedTriggerIds && eff.grantedTriggerIds.length > 0) ||
     eff.unblockableMaxPP !== undefined ||
     eff.canDualEquipFengren === true;
   assert(hasAnyEffect, `${path} 至少须指定一项静态增益`);

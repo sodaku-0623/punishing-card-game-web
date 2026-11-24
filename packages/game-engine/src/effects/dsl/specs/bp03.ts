@@ -659,7 +659,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
             kind: 'ZONE_COUNT',
             side: 'SELF',
             zone: 'PROCESSING',
-            filter: { exactName: '露西亚·誓焰' },
+            filter: { exactName: '露西亚·誓焰', isAirborne: true },
             op: '>=',
             value: 1,
           },
@@ -681,8 +681,27 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
                   modes: [
                     {
                       id: 'deploy_airborne',
-                      label: '选择我方处理区1张浮空模式的《露西亚·誓焰》出场 (尚缺 PROCESSING 选牌与 isAirborne 过滤)',
-                      steps: [],
+                      label: '选择我方处理区1张浮空模式的《露西亚·誓焰》，将其出场',
+                      steps: [
+                        {
+                          op: 'CHOOSE_ZONE_CARDS',
+                          side: 'SELF',
+                          zone: 'PROCESSING',
+                          prompt: '【露西亚·誓焰】选择我方处理区 1 张浮空模式的《露西亚·誓焰》，将其出场',
+                          filter: { exactName: '露西亚·誓焰', isAirborne: true },
+                          requireEmptySlot: true,
+                          min: 1,
+                          max: 1,
+                          saveToVar: 'airborneFire',
+                          choiceEffectType: 'DSL_BP03-004_DEPLOY',
+                        },
+                        {
+                          op: 'MOVE_CARDS',
+                          target: { kind: 'VAR', varName: 'airborneFire' },
+                          toZone: 'BATTLEFIELD',
+                          triggerEntry: true,
+                        },
+                      ],
                     },
                     {
                       id: 'destroy_4000',
@@ -853,7 +872,42 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
   {
     cardNumber: 'BP03-010',
     name: '旋光灿昼',
-    tactics: [],
+    tactics: [
+      {
+        op: 'CHOOSE_ZONE_CARDS',
+        side: 'SELF',
+        zone: 'PROCESSING',
+        prompt: '【旋光灿昼】选择我方处理区 1 张浮空模式的《露西亚·誓焰》，将其出场',
+        filter: { exactName: '露西亚·誓焰', isAirborne: true },
+        requireEmptySlot: true,
+        min: 1,
+        max: 1,
+        saveToVar: 'airborneFire',
+        choiceEffectType: 'DSL_BP03-010_DEPLOY',
+      },
+      {
+        op: 'IF',
+        condition: { kind: 'FRIENDLY_ROLE_COUNT_COMPARE_OPPONENT', op: '<' },
+        then: [
+          {
+            op: 'MOVE_CARDS',
+            target: { kind: 'VAR', varName: 'airborneFire' },
+            toZone: 'BATTLEFIELD',
+            enterTapped: false,
+            triggerEntry: true,
+          },
+        ],
+        else: [
+          {
+            op: 'MOVE_CARDS',
+            target: { kind: 'VAR', varName: 'airborneFire' },
+            toZone: 'BATTLEFIELD',
+            enterTapped: true,
+            triggerEntry: true,
+          },
+        ],
+      },
+    ],
   },
 
   {
@@ -1960,7 +2014,13 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     vanillaEntry: true,
     activate: {
       oncePerTurn: true,
-      condition: { kind: 'CARDS_PLAYED_THIS_TURN', side: 'SELF', op: '==', value: 3 },
+      condition: {
+        kind: 'ALL',
+        conditions: [
+          { kind: 'IS_STANDALONE_EQUIPMENT' },
+          { kind: 'CARDS_PLAYED_THIS_TURN', side: 'SELF', op: '==', value: 3 },
+        ],
+      },
       conditionError: '需要该牌未被装备且该回合中我方已使用卡牌的张数为 3 张',
       steps: [
         {
@@ -1985,7 +2045,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
                       zones: ['HAND', 'BATTLEFIELD'],
                       topLevelOnly: true,
                       prompt: '【冈格尼尔】选择我方手牌或战场 1 张物理属性的牌放置到该牌下方',
-                      filter: { attribute: ElementAttribute.PHYSICAL },
+                      filter: { attribute: ElementAttribute.PHYSICAL, excludeSelf: true },
                       min: 1,
                       max: 1,
                       saveToVar: 'mat',
@@ -2003,12 +2063,40 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
             },
             {
               id: 'clear_underneath_wipe',
-              label: '若下方>=3张，下方所有牌置墓并消2同色球破坏对方所有横置角色 (尚缺 SELF_UNDERNEATH 目标原语)',
+              label: '若下方>=3张，将该牌下方所有牌置入墓地并消除2同色信号球，破坏对方所有横置角色',
               steps: [
                 {
                   op: 'IF',
-                  condition: { kind: 'SELF_UNDERNEATH_COUNT', op: '>=', value: 3 },
-                  then: [],
+                  condition: {
+                    kind: 'ALL',
+                    conditions: [
+                      { kind: 'SELF_UNDERNEATH_COUNT', op: '>=', value: 3 },
+                      { kind: 'HAS_ELIMINABLE_ORBS', filter: 'SAME', count: 2 },
+                    ],
+                  },
+                  then: [
+                    {
+                      op: 'ELIMINATE_ORB_COST',
+                      filter: 'SAME',
+                      count: 2,
+                      optional: true,
+                      prompt: '【冈格尼尔】是否将该牌下方所有牌置入墓地并消除 2 同色信号球，破坏对方战场所有横置角色？',
+                      choiceEffectType: 'DSL_BP03-042_ORBS',
+                      onPaid: [
+                        {
+                          op: 'MOVE_CARDS',
+                          target: { kind: 'SELF_UNDERNEATH' },
+                          toZone: 'GRAVEYARD',
+                          isFaceUp: true,
+                          sentByEffectOrCost: true,
+                        },
+                        {
+                          op: 'DESTROY_ROLES',
+                          target: { kind: 'ALL_MATCHING_ROLES', side: 'OPPONENT', filter: { isReady: false } },
+                        },
+                      ],
+                    },
+                  ],
                 },
               ],
             },
@@ -2572,44 +2660,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     name: '莉莉丝·谬影',
     // 【永】：【突进】由 rules/keywords.ts 自动解析
     entry: {
-      steps: [
-        {
-          op: 'CHOOSE_ZONE_CARDS',
-          side: 'SELF',
-          zone: 'HAND',
-          prompt: '【莉莉丝·谬影】【出】可公开我方手牌最多 1 张<莉莉丝>并将其丢弃',
-          filter: { trait: '莉莉丝' },
-          min: 0,
-          max: 1,
-          saveToVar: 'revHand',
-          choiceEffectType: 'DSL_BP03-057_DISCARD_HAND',
-        },
-        {
-          op: 'MOVE_CARDS',
-          target: { kind: 'VAR', varName: 'revHand' },
-          toZone: 'GRAVEYARD',
-          isFaceUp: true,
-          saveMovedToVar: 'discarded',
-        },
-        {
-          op: 'IF',
-          condition: {
-            kind: 'ALL',
-            conditions: [
-              { kind: 'VAR_COUNT_COMPARE', varName: 'discarded', op: '>=', value: 1 },
-              { kind: 'ZONE_COUNT', side: 'OPPONENT', zone: 'HAND', op: '==', value: 0 },
-            ],
-          },
-          then: [
-            {
-              op: 'MODIFY_STATS',
-              target: { kind: 'SELF' },
-              keywords: ['贯通'],
-              duration: 'END_OF_TURN',
-            },
-          ],
-        },
-      ],
+      steps: [{ op: 'CUSTOM_HANDLER', handlerId: 'BP03_057_LILITH_CHALLENGE' }],
     },
   },
 
@@ -2640,12 +2691,18 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
         {
           op: 'CHOOSE_ROLES',
           side: 'SELF',
-          prompt: '【莉莉丝·谬影】【出】选择我方战场 1 张<莉莉丝>角色 (尚缺 DISTINCT_COST_COUNT 动态 PP 加成原语)',
+          prompt: '【莉莉丝·谬影】【出】选择我方战场 1 张<莉莉丝>角色，按公开牌不同费用数每有 1 张 PP+1000',
           filter: { trait: '莉莉丝' },
           min: 1,
           max: 1,
           saveToVar: 'lilithTarget',
           choiceEffectType: 'DSL_BP03-060_PICK',
+        },
+        {
+          op: 'MODIFY_STATS',
+          target: { kind: 'VAR', varName: 'lilithTarget' },
+          pp: { kind: 'VAR_DISTINCT_COST_MULT', varName: 'rev', multiplier: 1000 },
+          duration: 'END_OF_NEXT_TURN',
         },
         { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'rev' }, toZone: 'DECK_BOTTOM' },
       ],
@@ -2675,6 +2732,24 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
       steps: [
         { op: 'REVEAL_TOP', count: 3, saveToVar: 'rev' },
         { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'rev' }, toZone: 'GRAVEYARD', isFaceUp: true },
+        {
+          op: 'IF',
+          condition: { kind: 'VAR_HAS_DUPLICATE_COST', varName: 'rev' },
+          then: [
+            {
+              op: 'CHOOSE_ZONE_CARDS',
+              side: 'SELF',
+              zone: 'GRAVEYARD',
+              prompt: '【莉莉丝·谬影】【出】公开了费用相同的牌，可选择我方墓地最多 1 张<莉莉丝>加入手牌',
+              filter: { trait: '莉莉丝' },
+              min: 0,
+              max: 1,
+              saveToVar: 'recovered',
+              choiceEffectType: 'DSL_BP03-062_RECOVER',
+            },
+            { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'recovered' }, toZone: 'HAND', isFaceUp: true },
+          ],
+        },
       ],
     },
   },
@@ -3131,6 +3206,13 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     name: '露西亚·深红之渊',
     vanillaEntry: true,
     // 【永】：【速攻】由 rules/keywords.ts 自动解析
+    playDiscardDiscount: {
+      sourceZone: 'SIGNAL_ORB',
+      signalOrbColor: 'BLUE',
+      filter: {},
+      discountPerCard: 2,
+      prompt: '【露西亚·深红之渊】可将我方信号球区任意张【蓝色信号球】放置到墓地，每放置 1 张该牌费用-2：',
+    },
   },
 
   {
