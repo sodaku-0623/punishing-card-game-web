@@ -1,5 +1,4 @@
 import { GameState, GameEvent, CardInstance, ProhibitionFlag } from '@zhanshuang/shared';
-import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager } from '../zone/battlefield-manager.js';
 import { ICardDatabase } from '../database/card-registry.js';
@@ -639,18 +638,7 @@ export class CombatManager {
               destroyReason: 'BATTLE',
               subjectSnapshot: defenderSnapshot,
             });
-
-            // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
-            // Q&A·7 PR-034：若本次攻击不会给予伤害或攻击角色禁止造成伤害，贯通伤害亦不造成
-            const cannotDealDamage =
-              combat.cannotDealDamage || this.hasProhibition(combat.attackerCardId, 'CANNOT_DEAL_DAMAGE');
-            if (!cannotDealDamage && this.hasKeyword(combat.attackerCardId, '贯通')) {
-              this.zoneMgr.applyDamageToPlayer(
-                this.state.nonActivePlayerId,
-                RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
-                combat.attackerCardId
-              );
-            }
+            // 10.7.1 【贯通】现作为自动能力 (BUILTIN_PIERCING_DAMAGE) 由 CARD_DESTROYED 入待机池并在检查时机 (7.6.1.d) 统一结算
           }
         }
       }

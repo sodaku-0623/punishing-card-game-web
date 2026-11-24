@@ -409,6 +409,24 @@ export interface CombatState {
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 
+export interface PendingChargeTask {
+  kind: 'DIRECT_DAMAGE' | 'ATTACK_CHARGE';
+  playerId: string;
+  sourceCardId?: string;
+  remaining: number;
+  chargeIndex: number;
+  pendingCardId?: string; // '' 表示牌组为空仍须执行侵蚀 +1
+  deferCheckTiming?: boolean; // 8.5.3 效果处理途中推迟触发器检查时机，但仍校验 9.3 败北
+}
+
+export interface PendingDslContinuation {
+  cardNumber: string;
+  sourceCardInstanceId: string;
+  playerId: string;
+  vars: Record<string, string[]>;
+  remainingSteps: unknown[];
+}
+
 export interface GameState {
   readonly gameId: string;
   readonly rngSeed: number;
@@ -428,6 +446,8 @@ export interface GameState {
   pendingTriggers: PendingTrigger[]; // 8.5 待机自动能力池
   delayedTriggers?: DelayedTrigger[]; // 8.7.5 时限触发池
   activeReplacements?: ActiveReplacementEffect[]; // 8.10 状态内置换效果池 (可随快照恢复)
+  pendingChargeQueue?: PendingChargeTask[]; // 10.2.1.b 可挂起直伤/攻击充能任务队列
+  pendingDslContinuations?: PendingDslContinuation[]; // 8.5.3 挂起充能恢复后待续行的 DSL 步骤帧
   effectTimestampSeq?: number; // 8.9.1.e 持续效果时间戳序号 (随快照保存)
   choiceIdSeq?: number; // 确定性决策 ID 序号 (随快照保存，消除 Date.now/Math.random)
   currentPendingChoice?: PendingChoice; // 待决玩家决策

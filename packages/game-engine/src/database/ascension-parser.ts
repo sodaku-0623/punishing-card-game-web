@@ -47,6 +47,12 @@ export function parseAscensionConfig(rulesText: string): AscensionRuleConfig | u
     else targetFilter.exactCost = value;
   }
 
+  const multiMatch = targetPart.match(/(\d+)\s*张及以上/);
+  if (multiMatch) {
+    targetFilter.minCount = parseInt(multiMatch[1]!, 10);
+    targetFilter.allowMultiple = true;
+  }
+
   const subjectMatch = targetPart.match(/([<《])([^>》]+)[>》]/);
   if (!subjectMatch) return undefined;
   const subject = subjectMatch[2]!.trim();

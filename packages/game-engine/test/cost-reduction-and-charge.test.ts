@@ -294,11 +294,30 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     // p2 受到 1 点伤害充能
     engine.zoneMgr.applyDamageToPlayer(p2, 1);
 
-    // 1. 触发了 ST03-013 的【充能自】
+    // 1. 触发了 ST03-013 的【充能自】；10.2.1.b 处理完毕前该牌暂留处理区
     const choice = engine.getState().currentPendingChoice;
     expect(choice).toBeDefined();
     expect(choice?.playerId).toBe(p2);
     expect(choice?.effectType).toBe('SIGNATURE_MOVE_EFFECT');
+    expect(p2Orb.zone).toBe('PROCESSING');
+
+    // 选择完成【充能自】决策后，由引擎恢复并把该牌作为暗费置入费用区
+    const res = engine.dispatchAction({
+      type: 'SELECT_CHOICE_OPTION',
+      playerId: p2,
+      pendingChoiceId: choice!.id,
+      selectedIds: [choice!.options[0]!.id],
+    });
+    expect(res.success).toBe(true);
+    for (let g = 0; g < 5 && engine.getState().currentPendingChoice; g++) {
+      const ch = engine.getState().currentPendingChoice!;
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: ch.playerId,
+        pendingChoiceId: ch.id,
+        selectedIds: ch.minSelections === 0 ? [] : [ch.options[0]!.id],
+      });
+    }
 
     // 2. 该牌背面朝上放置到了费用区成为暗费
     expect(engine.getState().players[p2]!.hiddenCostCount).toBe(p2HiddenCostBefore + 1);

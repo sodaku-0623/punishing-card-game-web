@@ -2220,6 +2220,7 @@ export class CardEffectEngine {
         source.zone === 'PROCESSING' &&
         source.instanceId !== combat?.pendingChargeCardId &&
         source.instanceId !== combat?.pendingDamageCardId &&
+        !this.ctx.state.pendingChargeQueue?.some((t) => t.pendingCardId === source.instanceId) &&
         this.getCardDef(source)?.cardType === CardType.TACTICS
       ) {
         this.ctx.zoneMgr.moveCard(source.instanceId, 'GRAVEYARD', { isFaceUp: true });

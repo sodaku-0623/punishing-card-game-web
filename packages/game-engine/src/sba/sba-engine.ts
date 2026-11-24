@@ -41,17 +41,13 @@ export class SbaEngine {
   }
 
   /**
-   * 执行检查型规则处理 (9.1.2.b 检查型规则处理)
-   * 返回是否有规则处理被执行
+   * 9.3 败北判定处理 (9.3.1)：检查是否有玩家侵蚀达到上限或牌组与墓地均耗尽
    */
-  runCheckTimingSba(): boolean {
+  checkDefeatCondition(): boolean {
     if (this.state.status === 'FINISHED') return false;
-
-    let executedAny = false;
-
-    // 1. 9.3 败北判定处理 (9.3.1)
-    const p1 = this.state.players[this.state.activePlayerId]!;
-    const p2 = this.state.players[this.state.nonActivePlayerId]!;
+    const p1 = this.state.players[this.state.activePlayerId];
+    const p2 = this.state.players[this.state.nonActivePlayerId];
+    if (!p1 || !p2) return false;
 
     const p1Loss =
       p1.erosionCount >= RULE_CONSTANTS.EROSION_LOSS_THRESHOLD ||
@@ -74,7 +70,8 @@ export class SbaEngine {
         reason: this.state.finishReason,
       });
       return true;
-    } else if (p1Loss) {
+    }
+    if (p1Loss) {
       this.state.status = 'FINISHED';
       this.state.winnerId = p2.playerId;
       this.state.finishReason = `${p1.playerId} 满足败北条件 (侵蚀达标或牌组墓地耗尽)`;
@@ -85,7 +82,8 @@ export class SbaEngine {
         reason: this.state.finishReason,
       });
       return true;
-    } else if (p2Loss) {
+    }
+    if (p2Loss) {
       this.state.status = 'FINISHED';
       this.state.winnerId = p1.playerId;
       this.state.finishReason = `${p2.playerId} 满足败北条件 (侵蚀达标或牌组墓地耗尽)`;
@@ -95,6 +93,22 @@ export class SbaEngine {
         isDraw: false,
         reason: this.state.finishReason,
       });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 执行检查型规则处理 (9.1.2.b 检查型规则处理)
+   * 返回是否有规则处理被执行
+   */
+  runCheckTimingSba(): boolean {
+    if (this.state.status === 'FINISHED') return false;
+
+    let executedAny = false;
+
+    // 1. 9.3 败北判定处理 (9.3.1)
+    if (this.checkDefeatCondition()) {
       return true;
     }
 
@@ -143,6 +157,8 @@ export class SbaEngine {
     }
 
     // 3. 9.5 违规卡牌处理
+    const p1 = this.state.players[this.state.activePlayerId]!;
+    const p2 = this.state.players[this.state.nonActivePlayerId]!;
     for (const p of [p1, p2]) {
       // 9.5.2 战场顶层卡位存在角色牌、道具牌、辅助机牌以外的卡牌时 (如违规滞留的战术牌)，移动到墓地
       for (const s of this.fieldMgr.getSlots(p.playerId)) {

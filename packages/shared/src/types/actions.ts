@@ -12,6 +12,7 @@ export type GameAction =
       cardInstanceId: string; 
       targetSlotIndex?: number; 
       targetAscensionCardId?: string; // 8.11 升变对象
+      targetAscensionCardIds?: string[]; // BP04-001 等多对象升变 (兼容单选 targetAscensionCardId)
       targetEquipRoleId?: string; // 4.18 装备对象
       isAscension?: boolean;
       costCardInstanceIds?: string[]; // 2.5 玩家自选支付费用的明费/暗费卡牌 ID

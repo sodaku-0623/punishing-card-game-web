@@ -28,6 +28,8 @@ export class ZoneManager {
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
   private continuousEffects?: ContinuousEffectEngine;
   private replacementEngine?: ReplacementEngine;
+  private checkTimingResolver?: () => boolean;
+  private defeatConditionChecker?: () => boolean;
 
   constructor(
     private state: GameState,
@@ -42,6 +44,11 @@ export class ZoneManager {
 
   setReplacementEngine(engine: ReplacementEngine): void {
     this.replacementEngine = engine;
+  }
+
+  setCheckTimingResolver(resolver: () => boolean, defeatChecker?: () => boolean): void {
+    this.checkTimingResolver = resolver;
+    this.defeatConditionChecker = defeatChecker;
   }
 
   /**
@@ -693,13 +700,34 @@ export class ZoneManager {
 
   /**
    * 获取指定玩家某区域的卡牌列表 (保持物理顺序，零多余对象分配)
+   * 10.18.3.b 浮空模式卡牌下方的卡牌与附着装备不视为处理区中的卡牌
    */
   getCardsInZone(playerId: string, zone: ZoneId): CardInstance[] {
     const res: CardInstance[] = [];
     const cards = this.state.cards;
+    let excludedFromProcessing: Set<string> | undefined;
+    if (zone === 'PROCESSING') {
+      for (const id in cards) {
+        const c = cards[id];
+        if (!c || c.controllerPlayerId !== playerId || c.zone !== 'PROCESSING' || !c.isAirborne) {
+          continue;
+        }
+        if (
+          (c.underneathCardIds && c.underneathCardIds.length > 0) ||
+          c.attachedEquipmentId ||
+          (c.extraAttachedEquipmentIds && c.extraAttachedEquipmentIds.length > 0)
+        ) {
+          excludedFromProcessing ??= new Set();
+          for (const uid of c.underneathCardIds ?? []) excludedFromProcessing.add(uid);
+          if (c.attachedEquipmentId) excludedFromProcessing.add(c.attachedEquipmentId);
+          for (const eqId of c.extraAttachedEquipmentIds ?? []) excludedFromProcessing.add(eqId);
+        }
+      }
+    }
     for (const id in cards) {
       const c = cards[id];
       if (c && c.controllerPlayerId === playerId && c.zone === zone) {
+        if (excludedFromProcessing?.has(id)) continue;
         res.push(c);
       }
     }
@@ -918,30 +946,113 @@ export class ZoneManager {
     });
   }
 
+  hasPendingCharges(): boolean {
+    return Boolean(this.state.pendingChargeQueue && this.state.pendingChargeQueue.length > 0);
+  }
+
   /**
-   * 4.12.2 依次执行攻击充能 (不等待玩家选择的同步版本，供卡牌效果等直接调用)
+   * 10.2.1.b 逐张推进可挂起的直伤/攻击充能队列，遇到需要玩家决策的【充能自】或胜负结束立即挂起
+   */
+  drainPendingCharges(): boolean {
+    let progressed = false;
+    for (let guard = 0; guard < 100; guard++) {
+      if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) break;
+      const queue = this.state.pendingChargeQueue;
+      if (!queue || queue.length === 0) break;
+      const task = queue[0]!;
+
+      if (task.pendingCardId !== undefined) {
+        progressed = true;
+        if (task.kind === 'DIRECT_DAMAGE') {
+          const cid = task.pendingCardId || undefined;
+          task.pendingCardId = undefined;
+          this.completeDamageCharge(task.playerId, cid);
+          if (task.deferCheckTiming) {
+            this.defeatConditionChecker?.();
+          } else {
+            this.checkTimingResolver?.();
+          }
+          if (this.isFinished()) {
+            this.state.pendingChargeQueue = undefined;
+            break;
+          }
+        } else {
+          const cid = task.pendingCardId;
+          task.pendingCardId = undefined;
+          this.completeAttackCharge(task.sourceCardId ?? '', cid, task.chargeIndex);
+        }
+        if (task.remaining <= 0) {
+          queue.shift();
+          if (queue.length === 0) this.state.pendingChargeQueue = undefined;
+        }
+        continue;
+      }
+
+      if (task.remaining > 0) {
+        progressed = true;
+        task.remaining -= 1;
+        task.chargeIndex += 1;
+        if (task.kind === 'DIRECT_DAMAGE') {
+          const cardId = this.revealTopForCharge(task.playerId, 'DAMAGE', task.sourceCardId);
+          if (this.isFinished()) {
+            this.state.pendingChargeQueue = undefined;
+            break;
+          }
+          task.pendingCardId = cardId ?? '';
+          if ((this.state.currentPendingChoice as unknown)) {
+            break;
+          }
+          continue;
+        } else {
+          const cardId = this.revealTopForCharge(task.playerId, 'ATTACK', task.sourceCardId);
+          if (!cardId) {
+            task.remaining = 0;
+            queue.shift();
+            if (queue.length === 0) this.state.pendingChargeQueue = undefined;
+            continue;
+          }
+          task.pendingCardId = cardId;
+          if ((this.state.currentPendingChoice as unknown)) {
+            break;
+          }
+          continue;
+        }
+      }
+
+      queue.shift();
+      if (queue.length === 0) this.state.pendingChargeQueue = undefined;
+    }
+    return progressed;
+  }
+
+  /**
+   * 4.12.2 依次执行攻击充能 (支持翻出交互【充能自】时挂起保留在 PROCESSING，待选择完再归位)
    */
   performAttackCharge(attackerCardId: string, chargeCount: number = 1): void {
     const attacker = this.state.cards[attackerCardId];
-    if (!attacker) return;
-    for (let i = 0; i < chargeCount; i++) {
-      const cardId = this.revealTopForCharge(attacker.controllerPlayerId, 'ATTACK', attackerCardId);
-      if (!cardId) break;
-      this.completeAttackCharge(attackerCardId, cardId, i + 1);
-    }
+    if (!attacker || chargeCount <= 0) return;
+    this.state.pendingChargeQueue ??= [];
+    this.state.pendingChargeQueue.push({
+      kind: 'ATTACK_CHARGE',
+      playerId: attacker.controllerPlayerId,
+      sourceCardId: attackerCardId,
+      remaining: chargeCount,
+      chargeIndex: 0,
+    });
+    this.drainPendingCharges();
   }
 
   /**
    * 4.10 伤害处理：依次执行与伤害量相同次数的伤害充能，每次完毕侵蚀计数 +1
-   * (不等待玩家选择的同步版本，供卡牌效果、贯通等直接调用；经 8.10 置换引擎拦截伤害量并支持多置换选序挂起)
+   * (支持翻出交互【充能自】10.2.1.b 与多置换选序挂起；8.5.3 效果途中可传 deferCheckTiming 延后检查时机)
    */
   applyDamageToPlayer(
     defenderPlayerId: string,
     damageAmount: number,
     sourceCardId?: string,
-    options?: { appliedReplacementIds?: Set<string>; preferredReplacementId?: string }
+    options?: { appliedReplacementIds?: Set<string>; preferredReplacementId?: string; deferCheckTiming?: boolean }
   ): void {
-    if (!this.state.players[defenderPlayerId] || damageAmount <= 0) return;
+    if (!this.state.players[defenderPlayerId] || damageAmount <= 0 || this.isFinished()) return;
     let effectiveDamage = damageAmount;
     if (this.replacementEngine) {
       const res = this.replacementEngine.interceptDealDamageDetailed(
@@ -955,13 +1066,16 @@ export class ZoneManager {
       effectiveDamage = res.amount;
     }
     if (effectiveDamage <= 0) return;
-    for (let i = 0; i < effectiveDamage; i++) {
-      if (this.isFinished()) return;
-      const cardId = this.revealTopForCharge(defenderPlayerId, 'DAMAGE');
-      // 牌组与墓地都为空时已立即败北 (9.2.2.a)
-      if (this.isFinished()) return;
-      this.completeDamageCharge(defenderPlayerId, cardId);
-    }
+    this.state.pendingChargeQueue ??= [];
+    this.state.pendingChargeQueue.push({
+      kind: 'DIRECT_DAMAGE',
+      playerId: defenderPlayerId,
+      sourceCardId,
+      remaining: effectiveDamage,
+      chargeIndex: 0,
+      deferCheckTiming: options?.deferCheckTiming,
+    });
+    this.drainPendingCharges();
   }
 
   /**

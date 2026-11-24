@@ -176,6 +176,10 @@ export class GameEngine {
 
     this.checkTimingMgr = new CheckTimingManager(this.state, this.sbaEngine);
     this.checkTimingMgr.setTriggerManager(this.triggerMgr);
+    this.zoneMgr.setCheckTimingResolver(
+      () => this.checkTimingMgr.resolveCheckTiming(),
+      () => this.sbaEngine.checkDefeatCondition()
+    );
 
     this.combatMgr = new CombatManager(
       this.state,
@@ -669,7 +673,7 @@ export class GameEngine {
     playerId: string,
     cardInstanceId: string,
     isAscension?: boolean,
-    targetAscensionCardId?: string
+    targetAscensionCardIdOrIds?: string | string[]
   ): { costToPay: number; appliedModifiers: CostModifier[] } {
     const card = this.state.cards[cardInstanceId];
     if (!card) return { costToPay: 0, appliedModifiers: [] };
@@ -682,23 +686,32 @@ export class GameEngine {
       ? cardDef.ascensionConfig!.ascensionCost
       : cardDef.cost;
 
-    // BP02-067 万事·明晰梦【永】：若横置状态在对方战场，对方在横置状态角色上方升变须额外支付【1费】
-    if (isAscensionPlay && targetAscensionCardId) {
-      const targetAsc = this.state.cards[targetAscensionCardId];
-      if (targetAsc && !targetAsc.isReady) {
-        const oppId = this.getOpponentId(playerId);
-        const hasTappedWanshiTax = this.fieldMgr.getSlots(oppId).some((s) => {
-          const r = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
-          return Boolean(
-            r &&
-              r.cardNumber === 'BP02-067' &&
-              !r.isReady &&
-              !this.continuousEffects.hasLostInherentAbilities(r.instanceId)
-          );
-        });
-        if (hasTappedWanshiTax) {
-          baseCost += 1;
-        }
+    const targetAscensionIds = Array.isArray(targetAscensionCardIdOrIds)
+      ? targetAscensionCardIdOrIds
+      : targetAscensionCardIdOrIds
+        ? [targetAscensionCardIdOrIds]
+        : [];
+
+    // BP02-067 万事·明晰梦【永】：若横置状态在对方战场，对方在横置状态角色上方升变须额外支付【1费】(Q&A·4 多张叠加、与对象数无关)
+    if (
+      isAscensionPlay &&
+      targetAscensionIds.some((id) => {
+        const targetAsc = this.state.cards[id];
+        return Boolean(targetAsc && !targetAsc.isReady);
+      })
+    ) {
+      const oppId = this.getOpponentId(playerId);
+      const tappedWanshiCount = this.fieldMgr.getSlots(oppId).filter((s) => {
+        const r = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
+        return Boolean(
+          r &&
+            r.cardNumber === 'BP02-067' &&
+            !r.isReady &&
+            !this.continuousEffects.hasLostInherentAbilities(r.instanceId)
+        );
+      }).length;
+      if (tappedWanshiCount > 0) {
+        baseCost += tappedWanshiCount;
       }
     }
 
@@ -755,6 +768,117 @@ export class GameEngine {
 
       const costToPay = Math.max(0, effectiveBase - discount);
       return { costToPay, appliedModifiers };
+  }
+
+  private collectPlaySacrificeCandidates(
+    playerId: string,
+    excludeCardId: string,
+    rule: NonNullable<ReturnType<CardEffectEngine['presets']['getSpec']>>['playSacrificeDiscount']
+  ): CardInstance[] {
+    if (!rule) return [];
+    const results: CardInstance[] = [];
+    const seen = new Set<string>([excludeCardId]);
+    for (const z of rule.zones) {
+      const rawList: CardInstance[] = [];
+      if (z === 'BATTLEFIELD') {
+        for (const slot of this.fieldMgr.getSlots(playerId)) {
+          for (const id of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+            if (id && this.state.cards[id]) rawList.push(this.state.cards[id]!);
+          }
+          if (slot.roleCardId && this.state.cards[slot.roleCardId]) {
+            const roleCard = this.state.cards[slot.roleCardId]!;
+            for (const eqId of getAttachedEquipmentIds(roleCard)) {
+              if (this.state.cards[eqId]) rawList.push(this.state.cards[eqId]!);
+            }
+            // Q&A·8：要求「战场中的卡牌」(未限定角色/道具牌类型) 时包含协战搭档
+            if (!rule.filter.cardType && roleCard.partnerCardId && this.state.cards[roleCard.partnerCardId]) {
+              rawList.push(this.state.cards[roleCard.partnerCardId]!);
+            }
+          }
+        }
+      } else {
+        rawList.push(...this.zoneMgr.getCardsInZone(playerId, z));
+      }
+
+      for (const c of rawList) {
+        if (seen.has(c.instanceId)) continue;
+        seen.add(c.instanceId);
+        const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+        if (!d) continue;
+        if (
+          rule.filter.exactName &&
+          d.name !== rule.filter.exactName &&
+          !this.continuousEffects.hasCardName(c.instanceId, rule.filter.exactName)
+        ) {
+          continue;
+        }
+        if (rule.filter.trait && !this.continuousEffects.hasTrait(c.instanceId, rule.filter.trait)) {
+          continue;
+        }
+        if (rule.filter.cardType && getModifierEffectiveCardType(c, d) !== rule.filter.cardType) {
+          continue;
+        }
+        results.push(c);
+      }
+    }
+    return results;
+  }
+
+  private collectPlayDiscardCandidates(
+    playerId: string,
+    excludeCardId: string,
+    rule: NonNullable<ReturnType<CardEffectEngine['presets']['getSpec']>>['playDiscardDiscount']
+  ): CardInstance[] {
+    if (!rule) return [];
+    const sourceZone = rule.sourceZone ?? 'HAND';
+    return this.zoneMgr.getCardsInZone(playerId, sourceZone).filter((c) => {
+      if (c.instanceId === excludeCardId) return false;
+      if (sourceZone === 'SIGNAL_ORB') {
+        if (!c.isFaceUp) return false;
+        const orbInfo = this.continuousEffects.getEffectiveOrbInfo(c.instanceId);
+        if (!orbInfo.isOrb) return false;
+        if (rule.signalOrbColor && !orbInfo.colors.includes(rule.signalOrbColor)) {
+          return false;
+        }
+      }
+      const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
+      if (!d) return false;
+      if (rule.filter.exactName && d.name !== rule.filter.exactName) return false;
+      if (rule.filter.trait && !this.continuousEffects.hasTrait(c.instanceId, rule.filter.trait)) {
+        return false;
+      }
+      if (rule.filter.cardType && getModifierEffectiveCardType(c, d) !== rule.filter.cardType) return false;
+      return true;
+    });
+  }
+
+  private getMinimumPayableCostForPlay(
+    playerId: string,
+    cardInstanceId: string,
+    cardDef: CardVersionData,
+    baseCostToPay: number,
+    isAscension: boolean = false
+  ): number {
+    let minCost = baseCostToPay;
+    const spec = this.effectEngine.presets.getSpec(cardDef.cardNumber);
+    if (spec?.playSacrificeDiscount) {
+      const candidates = this.collectPlaySacrificeCandidates(playerId, cardInstanceId, spec.playSacrificeDiscount);
+      if (candidates.length > 0) {
+        const discounted =
+          spec.playSacrificeDiscount.setCost !== undefined
+            ? Math.max(0, spec.playSacrificeDiscount.setCost)
+            : Math.max(0, baseCostToPay - (spec.playSacrificeDiscount.discount ?? 0));
+        minCost = Math.min(minCost, discounted);
+      }
+    }
+    if (!isAscension && spec?.playDiscardDiscount) {
+      const candidates = this.collectPlayDiscardCandidates(playerId, cardInstanceId, spec.playDiscardDiscount);
+      if (candidates.length > 0) {
+        const maxDiscount = candidates.length * spec.playDiscardDiscount.discountPerCard;
+        minCost = Math.min(minCost, Math.max(0, baseCostToPay - maxDiscount));
+      }
+    }
+    return minCost;
   }
 
   /**
@@ -849,9 +973,10 @@ export class GameEngine {
       };
     }
 
-    // 8.6.2.a.1 卡牌属性条件：属性需与自身费用区中任意一张明费属性相同
+    // 8.6.2.a.1 卡牌属性条件：从手牌使用时，属性需与自身费用区中任意一张明费属性相同 (8.6.2.a 从手牌以外使用不需要满足属性条件)
     // 信号球牌无属性 (4.16.1.a) 或满足「无视属性条件」(ST04-008 / PR-010 / BP02-009 / BP04-059) 时跳过检查
     if (
+      inHand &&
       cardDef.attribute !== ElementAttribute.NONE &&
       !this.effectEngine.presets.canIgnoreAttributeCondition(action.playerId, cardDef.cardNumber) &&
       !this.effectEngine.presets.canPlayerIgnoreAttributeForPlay(
@@ -872,6 +997,68 @@ export class GameEngine {
       }
     }
 
+    // 8.6.2.b / Q&A·7：在支付代价/牺牲减费之前先行确认战场卡位或装备条件 (不可先牺牲战场卡来腾出卡位)
+    if (!action.isAscension) {
+      if (cardDef.cardType === CardType.ROLE) {
+        const hasSlot =
+          action.targetSlotIndex !== undefined
+            ? (() => {
+                const s = this.fieldMgr.getSlots(action.playerId)[action.targetSlotIndex!];
+                return Boolean(s && !s.roleCardId && !s.standaloneEquipmentId && !s.assistCardId);
+              })()
+            : this.fieldMgr.findFirstEmptySlot(action.playerId) !== undefined;
+        if (!hasSlot) {
+          return { success: false, error: '战场没有空余卡位 (8.6.2.b.1)' };
+        }
+      } else if (cardDef.cardType === CardType.ASSIST) {
+        const isValidAssistSlot = (s: { roleCardId?: string; standaloneEquipmentId?: string; assistCardId?: string } | undefined) =>
+          Boolean(
+            s &&
+              !s.roleCardId &&
+              !s.standaloneEquipmentId &&
+              (!s.assistCardId || this.continuousEffects.getEffectiveCardType(s.assistCardId) === CardType.ASSIST)
+          );
+        const hasSlot =
+          action.targetSlotIndex !== undefined
+            ? isValidAssistSlot(this.fieldMgr.getSlots(action.playerId)[action.targetSlotIndex!])
+            : this.fieldMgr.findFirstEmptySlot(action.playerId) !== undefined ||
+              this.fieldMgr
+                .getSlots(action.playerId)
+                .some(
+                  (s) =>
+                    Boolean(s.assistCardId) &&
+                    this.continuousEffects.getEffectiveCardType(s.assistCardId!) === CardType.ASSIST
+                );
+        if (!hasSlot) {
+          return { success: false, error: '战场没有空余卡位，也没有可替换的辅助机 (8.6.2.b.2)' };
+        }
+      } else if (cardDef.cardType === CardType.EQUIPMENT) {
+        if (action.targetEquipRoleId) {
+          if (!this.fieldMgr.canEquipToRole(action.playerId, card.instanceId, action.targetEquipRoleId)) {
+            return { success: false, error: '装备对象必须是自身战场上可以装备该牌的角色 (4.18.3)' };
+          }
+        } else if (action.targetSlotIndex !== undefined) {
+          const s = this.fieldMgr.getSlots(action.playerId)[action.targetSlotIndex];
+          if (!s || s.roleCardId || s.standaloneEquipmentId || s.assistCardId) {
+            return { success: false, error: '所选卡位已被占用 (8.6.2.b.3)' };
+          }
+        } else {
+          const canStandOrEquip =
+            this.fieldMgr.findFirstEmptySlot(action.playerId) !== undefined ||
+            this.fieldMgr
+              .getSlots(action.playerId)
+              .some(
+                (s) =>
+                  Boolean(s.roleCardId) &&
+                  this.fieldMgr.canEquipToRole(action.playerId, card.instanceId, s.roleCardId!)
+              );
+          if (!canStandOrEquip) {
+            return { success: false, error: '战场没有空余卡位或可装备的角色 (8.6.2.b.3)' };
+          }
+        }
+      }
+    }
+
     // 若从《露娜·终焉》下方使用战术牌，先行解绑并进入处理区 (8.6.2)
     if (lunaUnderneathHost) {
       lunaUnderneathHost.underneathCardIds = lunaUnderneathHost.underneathCardIds.filter(
@@ -880,14 +1067,22 @@ export class GameEngine {
       this.zoneMgr.moveCard(card.instanceId, 'PROCESSING', { isFaceUp: true });
     }
 
-    // 8.11 升变：检查升变对象、限制条件 (8.11.3.b~d)，升变代价在下方与费用一并支付 (8.11.3.e)
+    // 8.11 升变：检查升变对象 (支持多对象升变 BP04-001)、限制条件 (8.11.3.b~d)，升变代价在下方与费用一并支付 (8.11.3.e)
+    const rawAscensionTargets =
+      action.targetAscensionCardIds && action.targetAscensionCardIds.length > 0
+        ? action.targetAscensionCardIds
+        : action.targetAscensionCardId
+          ? [action.targetAscensionCardId]
+          : [];
+    const resolvedTargetAscensionCardId = rawAscensionTargets[0];
+    const resolvedAdditionalAscensionCardIds = rawAscensionTargets.slice(1);
     let extraStackRoleCardId: string | undefined;
     let bp01001GraveyardShuffleIds: string[] | undefined;
     if (action.isAscension) {
       const ascensionCheck = this.validateAscensionPlan(
         action.playerId,
         cardDef,
-        action.targetAscensionCardId,
+        rawAscensionTargets,
         action.targetSlotIndex,
         action.extraAscensionCostCardId
       );
@@ -901,44 +1096,17 @@ export class GameEngine {
       action.playerId,
       action.cardInstanceId,
       action.isAscension,
-      action.targetAscensionCardId
+      rawAscensionTargets
     );
 
-    // BP02-012 丽芙·极昼 / BP04-060 血税：使用时可选将战场/手牌指定卡牌放置到墓地以减费或改写费用
+    // BP02-012 丽芙·极昼 / BP02-041 含英·檀心 / BP04-060 血税：使用时可选将战场/手牌指定卡牌放置到墓地以减费或改写费用
     const playSacrificeRule = spec?.playSacrificeDiscount;
-    if (playSacrificeRule && !action.costCardInstanceIds) {
-      const sacrificeCandidates: CardInstance[] = [];
-      for (const z of playSacrificeRule.zones) {
-        const rawList =
-          z === 'BATTLEFIELD'
-            ? this.fieldMgr
-                .getSlots(action.playerId)
-                .map((s) => (s.roleCardId ? this.state.cards[s.roleCardId] : undefined))
-                .filter((c): c is CardInstance => Boolean(c))
-            : this.zoneMgr.getCardsInZone(action.playerId, z);
-        for (const c of rawList) {
-          if (c.instanceId === action.cardInstanceId) continue;
-          const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
-          if (!d) continue;
-          if (
-            playSacrificeRule.filter.exactName &&
-            d.name !== playSacrificeRule.filter.exactName &&
-            !this.continuousEffects.hasCardName(c.instanceId, playSacrificeRule.filter.exactName)
-          ) {
-            continue;
-          }
-          if (
-            playSacrificeRule.filter.trait &&
-            !this.continuousEffects.hasTrait(c.instanceId, playSacrificeRule.filter.trait)
-          ) {
-            continue;
-          }
-          if (playSacrificeRule.filter.cardType && d.cardType !== playSacrificeRule.filter.cardType) {
-            continue;
-          }
-          sacrificeCandidates.push(c);
-        }
-      }
+    if (playSacrificeRule) {
+      const sacrificeCandidates = this.collectPlaySacrificeCandidates(
+        action.playerId,
+        action.cardInstanceId,
+        playSacrificeRule
+      );
       if (sacrificeCandidates.length > 0) {
         const avail = player.availableOpenCostCount + player.hiddenCostCount;
         const discountedCost =
@@ -974,11 +1142,14 @@ export class GameEngine {
                   ? playSacrificeRule.setCost
                   : (playSacrificeRule.discount ?? 0),
               isAscension: action.isAscension,
-              targetAscensionCardId: action.targetAscensionCardId,
+              targetAscensionCardId: resolvedTargetAscensionCardId,
+              additionalTargetAscensionCardIds: resolvedAdditionalAscensionCardIds,
               targetSlotIndex: action.targetSlotIndex,
+              targetEquipRoleId: action.targetEquipRoleId,
               extraStackRoleCardId,
               bp01001GraveyardShuffleIds,
               appliedModifierIds: appliedModifiers.map((m) => m.id),
+              costCardInstanceIds: action.costCardInstanceIds,
               isTimingWindow: Boolean(timingWindow),
             },
           });
@@ -993,27 +1164,11 @@ export class GameEngine {
       : undefined;
     if (playDiscardRule) {
       const sourceZone = playDiscardRule.sourceZone ?? 'HAND';
-      const handCandidates = this.zoneMgr
-        .getCardsInZone(action.playerId, sourceZone)
-        .filter((c) => {
-          if (c.instanceId === action.cardInstanceId) return false;
-          if (sourceZone === 'SIGNAL_ORB') {
-            if (!c.isFaceUp) return false;
-            const orbInfo = this.continuousEffects.getEffectiveOrbInfo(c.instanceId);
-            if (!orbInfo.isOrb) return false;
-            if (playDiscardRule.signalOrbColor && !orbInfo.colors.includes(playDiscardRule.signalOrbColor)) {
-              return false;
-            }
-          }
-          const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
-          if (!d) return false;
-          if (playDiscardRule.filter.exactName && d.name !== playDiscardRule.filter.exactName) return false;
-          if (playDiscardRule.filter.trait && !this.continuousEffects.hasTrait(c.instanceId, playDiscardRule.filter.trait)) {
-            return false;
-          }
-          if (playDiscardRule.filter.cardType && d.cardType !== playDiscardRule.filter.cardType) return false;
-          return true;
-        });
+      const handCandidates = this.collectPlayDiscardCandidates(
+        action.playerId,
+        action.cardInstanceId,
+        playDiscardRule
+      );
       if (handCandidates.length > 0) {
         const avail = player.availableOpenCostCount + player.hiddenCostCount;
         const maxDiscount = handCandidates.length * playDiscardRule.discountPerCard;
@@ -1044,7 +1199,9 @@ export class GameEngine {
             discountPerCard: playDiscardRule.discountPerCard,
             sourceZone,
             targetSlotIndex: action.targetSlotIndex,
+            targetEquipRoleId: action.targetEquipRoleId,
             appliedModifierIds: appliedModifiers.map((m) => m.id),
+            costCardInstanceIds: action.costCardInstanceIds,
             isTimingWindow: Boolean(timingWindow),
           },
         });
@@ -1056,13 +1213,22 @@ export class GameEngine {
       const avail = player.availableOpenCostCount + player.hiddenCostCount;
       return { success: false, error: `费用不足或自选支付无效，需要 ${costToPay} 费，当前可用 ${avail}` };
     }
-    return this.completePlayCardDeployment(action, card, cardDef, {
-      appliedModifiers,
-      paidHiddenCost: this.lastPayCostHiddenCount > 0,
-      extraStackRoleCardId,
-      bp01001GraveyardShuffleIds,
-      isTimingWindow: Boolean(timingWindow),
-    });
+    return this.completePlayCardDeployment(
+      {
+        ...action,
+        targetAscensionCardId: resolvedTargetAscensionCardId,
+      },
+      card,
+      cardDef,
+      {
+        appliedModifiers,
+        paidHiddenCost: this.lastPayCostHiddenCount > 0,
+        extraStackRoleCardId,
+        additionalTargetAscensionCardIds: resolvedAdditionalAscensionCardIds,
+        bp01001GraveyardShuffleIds,
+        isTimingWindow: Boolean(timingWindow),
+      }
+    );
   }
 
   /**
@@ -1076,6 +1242,7 @@ export class GameEngine {
       appliedModifiers: CostModifier[];
       paidHiddenCost: boolean;
       extraStackRoleCardId?: string;
+      additionalTargetAscensionCardIds?: string[];
       bp01001GraveyardShuffleIds?: string[];
       isTimingWindow: boolean;
     }
@@ -1129,6 +1296,7 @@ export class GameEngine {
         {
           targetSlotIndex: action.targetSlotIndex,
           extraStackRoleCardId: options.extraStackRoleCardId,
+          additionalTargetRoleCardIds: options.additionalTargetAscensionCardIds,
         }
       );
       if (!ok) return { success: false, error: '升变出场失败' };
@@ -1215,12 +1383,12 @@ export class GameEngine {
   }
 
   /**
-   * 8.11.3 检查能否以升变机制使用该卡牌 (支持战场 / 信号球区正面 / 浮空模式对象，及 BP01-040 额外叠放代价)
+   * 8.11.3 检查能否以升变机制使用该卡牌 (支持战场多对象 BP04-001 / 信号球区正面 BP04-061 / 浮空模式对象，及 BP01-040 额外叠放代价)
    */
   private validateAscensionPlan(
     playerId: string,
     cardDef: CardVersionData,
-    targetCardId: string | undefined,
+    targetCardIds: string[],
     targetSlotIndex?: number,
     extraAscensionCostCardId?: string
   ): { error?: string; extraStackRoleCardId?: string; bp01001GraveyardShuffleIds?: string[] } {
@@ -1228,70 +1396,96 @@ export class GameEngine {
     if (!config) return { error: `【${cardDef.name}】没有升变机制 (8.11.1.a)` };
     if (config.unsupportedReason) return { error: `【${cardDef.name}】的升变机制${config.unsupportedReason}` };
 
-    const target = targetCardId ? this.state.cards[targetCardId] : undefined;
-    if (!target || target.controllerPlayerId !== playerId) {
+    if (targetCardIds.length === 0) {
       return { error: '升变对象不存在或不属于己方 (8.11.2.a.1)' };
+    }
+    if (new Set(targetCardIds).size !== targetCardIds.length) {
+      return { error: '升变对象中存在重复的卡牌 (8.11.2.a.1)' };
+    }
+    if (!config.targetFilter.allowMultiple && targetCardIds.length > 1) {
+      return { error: `【${cardDef.name}】的升变条件只允许选择 1 张升变对象 (8.11.2.a.1)` };
+    }
+    const minCount = config.targetFilter.minCount ?? 1;
+    if (targetCardIds.length < minCount) {
+      return { error: `【${cardDef.name}】至少需要选择 ${minCount} 张升变对象 (8.11.2.a.1)` };
     }
 
     const allowedZones = config.targetFilter.targetZones ?? ['BATTLEFIELD'];
-    const inField = target.zone === 'BATTLEFIELD' && this.fieldMgr.isSlotRole(playerId, target.instanceId);
-    const inOrbZone = target.zone === 'SIGNAL_ORB';
-    const inAirborne = target.zone === 'PROCESSING' && target.isAirborne === true;
-
-    let zoneValid = false;
-    if (allowedZones.includes('BATTLEFIELD') && inField) {
-      zoneValid = true;
-    } else if (allowedZones.includes('SIGNAL_ORB') && inOrbZone) {
-      if (!target.isFaceUp) {
-        return { error: '信号球区中背面的卡牌不能作为升变对象 (Q&A·10)' };
-      }
-      if (
-        (targetSlotIndex !== undefined &&
-          (() => {
-            const s = this.fieldMgr.getSlots(playerId)[targetSlotIndex];
-            return !s || Boolean(s.roleCardId || s.standaloneEquipmentId || s.assistCardId);
-          })()) ||
-        (targetSlotIndex === undefined && this.fieldMgr.findFirstEmptySlot(playerId) === undefined)
-      ) {
-        return { error: '战场没有空余卡位供信号球区升变对象出场' };
-      }
-      zoneValid = true;
-    } else if (allowedZones.includes('AIRBORNE') && inAirborne) {
-      if (this.fieldMgr.findFirstEmptySlot(playerId) === undefined) {
-        return { error: '战场没有空余卡位供浮空模式升变对象出场' };
-      }
-      zoneValid = true;
-    }
-
-    if (!zoneValid) {
-      return { error: '升变对象不在合法的升变区域 (8.11.2.a.1)' };
-    }
-
-    const targetDef =
-      this.cardDb.getCard(target.cardNumber) || (target.cardId ? this.cardDb.getCard(target.cardId) : undefined);
-    if (!targetDef) return { error: '升变对象的卡牌数据不存在' };
-
     const tf = config.targetFilter;
     const normalize = (name: string) => name.replace(/\s+/g, '');
-    if (
-      tf.exactName &&
-      normalize(targetDef.name) !== normalize(tf.exactName) &&
-      !this.continuousEffects.hasCardName(target.instanceId, tf.exactName)
-    ) {
-      return { error: `升变对象必须是《${tf.exactName}》 (8.11.2.a.1)` };
+
+    for (let i = 0; i < targetCardIds.length; i++) {
+      const target = this.state.cards[targetCardIds[i]!];
+      if (!target || target.controllerPlayerId !== playerId) {
+        return { error: '升变对象不存在或不属于己方 (8.11.2.a.1)' };
+      }
+
+      const inField = target.zone === 'BATTLEFIELD' && this.fieldMgr.isSlotRole(playerId, target.instanceId);
+      const inOrbZone = target.zone === 'SIGNAL_ORB';
+      const inAirborne = target.zone === 'PROCESSING' && target.isAirborne === true;
+
+      let zoneValid = false;
+      if (allowedZones.includes('BATTLEFIELD') && inField) {
+        zoneValid = true;
+      } else if (allowedZones.includes('SIGNAL_ORB') && inOrbZone && i === 0) {
+        if (!target.isFaceUp) {
+          return { error: '信号球区中背面的卡牌不能作为升变对象 (Q&A·10)' };
+        }
+        if (
+          (targetSlotIndex !== undefined &&
+            (() => {
+              const s = this.fieldMgr.getSlots(playerId)[targetSlotIndex];
+              return !s || Boolean(s.roleCardId || s.standaloneEquipmentId || s.assistCardId);
+            })()) ||
+          (targetSlotIndex === undefined && this.fieldMgr.findFirstEmptySlot(playerId) === undefined)
+        ) {
+          return { error: '战场没有空余卡位供信号球区升变对象出场' };
+        }
+        zoneValid = true;
+      } else if (allowedZones.includes('AIRBORNE') && inAirborne && i === 0) {
+        if (
+          (targetSlotIndex !== undefined &&
+            (() => {
+              const s = this.fieldMgr.getSlots(playerId)[targetSlotIndex];
+              return !s || Boolean(s.roleCardId || s.standaloneEquipmentId || s.assistCardId);
+            })()) ||
+          (targetSlotIndex === undefined && this.fieldMgr.findFirstEmptySlot(playerId) === undefined)
+        ) {
+          return { error: '战场没有空余卡位供浮空模式升变对象出场' };
+        }
+        zoneValid = true;
+      }
+
+      if (!zoneValid) {
+        return { error: '升变对象不在合法的升变区域 (8.11.2.a.1)' };
+      }
+
+      const targetDef =
+        this.cardDb.getCard(target.cardNumber) || (target.cardId ? this.cardDb.getCard(target.cardId) : undefined);
+      if (!targetDef) return { error: '升变对象的卡牌数据不存在' };
+
+      if (
+        tf.exactName &&
+        normalize(targetDef.name) !== normalize(tf.exactName) &&
+        !this.continuousEffects.hasCardName(target.instanceId, tf.exactName)
+      ) {
+        return { error: `升变对象必须是《${tf.exactName}》 (8.11.2.a.1)` };
+      }
+      if (tf.traits && !tf.traits.every((t) => this.continuousEffects.hasTrait(target.instanceId, t))) {
+        return { error: `升变对象必须是<${tf.traits.join('、')}> (8.11.2.a.1)` };
+      }
+      if (tf.exactCost !== undefined && targetDef.cost !== tf.exactCost) {
+        return { error: `升变对象的费用必须为 ${tf.exactCost} (8.11.2.a.1)` };
+      }
+      if (tf.maxCost !== undefined && targetDef.cost > tf.maxCost) {
+        return { error: `升变对象的费用必须小于 ${tf.maxCost + 1} (8.11.2.a.1、10.12)` };
+      }
+      if (tf.requireReady && !target.isReady) {
+        return { error: '升变对象必须为竖直状态 (8.11.2.a.1)' };
+      }
     }
-    if (tf.traits && !tf.traits.every((t) => this.continuousEffects.hasTrait(target.instanceId, t))) {
-      return { error: `升变对象必须是<${tf.traits.join('、')}> (8.11.2.a.1)` };
-    }
-    if (tf.exactCost !== undefined && targetDef.cost !== tf.exactCost) {
-      return { error: `升变对象的费用必须为 ${tf.exactCost} (8.11.2.a.1)` };
-    }
-    if (tf.maxCost !== undefined && targetDef.cost > tf.maxCost) {
-      return { error: `升变对象的费用必须小于 ${tf.maxCost + 1} (8.11.2.a.1、10.12)` };
-    }
-    if (tf.requireReady && !target.isReady) {
-      return { error: '升变对象必须为竖直状态 (8.11.2.a.1)' };
-    }
+
+    const targetIdSet = new Set(targetCardIds);
 
     // 8.11.2.a.2 / 8.11.3.d 限制条件 (含 BP01-001 露西亚·鸦羽：墓地 10 张<灰鸦小队>洗回牌组可无视「费用上限8及以上」)
     let bp01001GraveyardShuffleIds: string[] | undefined;
@@ -1321,7 +1515,7 @@ export class GameEngine {
         .filter(
           (r): r is CardInstance =>
             Boolean(r) &&
-            r!.instanceId !== target.instanceId &&
+            !targetIdSet.has(r!.instanceId) &&
             this.continuousEffects.hasCardName(r!.instanceId, reqName)
         );
       if (extraAscensionCostCardId) {
@@ -1430,7 +1624,13 @@ export class GameEngine {
 
     // 声明式起动能力：包含卡牌自身【起】及附着装备赋予的【起】(如 BP01-022 夜煌—小太刀)
     if (this.effectEngine.presets.handlesActivationForCard(action.playerId, card.instanceId, cardDef)) {
-      const res = this.effectEngine.presets.activate(action.playerId, card.instanceId, cardDef, action.abilityIndex);
+      const res = this.effectEngine.presets.activate(
+        action.playerId,
+        card.instanceId,
+        cardDef,
+        action.abilityIndex,
+        action.costCardInstanceIds
+      );
       if (res.success) {
         this.events.push({
           type: 'ABILITY_ACTIVATED',
@@ -1630,26 +1830,12 @@ export class GameEngine {
                 type: 'CARD_DESTROYED',
                 playerId: card.controllerPlayerId,
                 cardInstanceId: card.instanceId,
+                targetCardId: meta.attackerCardId,
                 fromZone: 'BATTLEFIELD',
                 toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
                 destroyReason: meta.reason,
                 subjectSnapshot: snapshot,
               });
-              if (
-                meta.reason === 'BATTLE' &&
-                meta.attackerCardId &&
-                !meta.combatCannotDealDamage
-              ) {
-                const atkId = meta.attackerCardId;
-                const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
-                if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
-                  this.zoneMgr.applyDamageToPlayer(
-                    card.controllerPlayerId,
-                    RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
-                    atkId
-                  );
-                }
-              }
             }
           }
         }
@@ -1760,26 +1946,12 @@ export class GameEngine {
                   type: 'CARD_DESTROYED',
                   playerId: card.controllerPlayerId,
                   cardInstanceId: card.instanceId,
+                  targetCardId: meta.originalEvent.attackerCardId,
                   fromZone: 'BATTLEFIELD',
                   toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
                   destroyReason: meta.originalEvent.reason,
                   subjectSnapshot: snapshot,
                 });
-                if (
-                  meta.originalEvent.reason === 'BATTLE' &&
-                  meta.originalEvent.attackerCardId &&
-                  !meta.originalEvent.combatCannotDealDamage
-                ) {
-                  const atkId = meta.originalEvent.attackerCardId;
-                  const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
-                  if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
-                    this.zoneMgr.applyDamageToPlayer(
-                      card.controllerPlayerId,
-                      RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
-                      atkId
-                    );
-                  }
-                }
               }
             }
           } else if (meta.originalEvent.isPlacingUnderneath && meta.originalEvent.underneathHostId) {
@@ -1870,10 +2042,13 @@ export class GameEngine {
         sacrificedCostValue: number;
         isAscension?: boolean;
         targetAscensionCardId?: string;
+        additionalTargetAscensionCardIds?: string[];
         targetSlotIndex?: number;
+        targetEquipRoleId?: string;
         extraStackRoleCardId?: string;
         bp01001GraveyardShuffleIds?: string[];
         appliedModifierIds?: string[];
+        costCardInstanceIds?: string[];
         isTimingWindow?: boolean;
       };
       const player = this.state.players[action.playerId]!;
@@ -1891,12 +2066,11 @@ export class GameEngine {
           const sc = this.state.cards[sid];
           if (sc) {
             const fromField = sc.zone === 'BATTLEFIELD';
-            if (
-              this.zoneMgr.moveCard(sid, 'GRAVEYARD', {
-                isFaceUp: true,
-                sentByEffectOrCost: fromField,
-              })
-            ) {
+            const moved = this.zoneMgr.moveCard(sid, 'GRAVEYARD', {
+              isFaceUp: true,
+              sentByEffectOrCost: fromField,
+            });
+            if (moved && this.state.cards[sid]?.zone === 'GRAVEYARD') {
               sacrificedCount += 1;
             }
           }
@@ -1908,7 +2082,13 @@ export class GameEngine {
               : Math.max(0, meta.baseCostToPay - meta.sacrificedCostValue);
         }
       }
-      if (!this.payCost(action.playerId, finalCost)) {
+      const selectedCostIds =
+        meta.costCardInstanceIds && finalCost > 0
+          ? meta.costCardInstanceIds.length >= finalCost
+            ? meta.costCardInstanceIds.slice(0, finalCost)
+            : meta.costCardInstanceIds
+          : undefined;
+      if (!this.payCost(action.playerId, finalCost, selectedCostIds)) {
         const avail = player.availableOpenCostCount + player.hiddenCostCount;
         return { success: false, error: `费用不足，需要 ${finalCost} 费，当前可用 ${avail}` };
       }
@@ -1925,6 +2105,7 @@ export class GameEngine {
           isAscension: meta.isAscension,
           targetAscensionCardId: meta.targetAscensionCardId,
           targetSlotIndex: meta.targetSlotIndex,
+          targetEquipRoleId: meta.targetEquipRoleId,
         },
         card,
         cardDef,
@@ -1932,6 +2113,7 @@ export class GameEngine {
           appliedModifiers,
           paidHiddenCost: paidHidden,
           extraStackRoleCardId: meta.extraStackRoleCardId,
+          additionalTargetAscensionCardIds: meta.additionalTargetAscensionCardIds,
           bp01001GraveyardShuffleIds: meta.bp01001GraveyardShuffleIds,
           isTimingWindow: Boolean(meta.isTimingWindow),
         }
@@ -1949,7 +2131,9 @@ export class GameEngine {
         discountPerCard: number;
         sourceZone?: 'HAND' | 'SIGNAL_ORB';
         targetSlotIndex?: number;
+        targetEquipRoleId?: string;
         appliedModifierIds?: string[];
+        costCardInstanceIds?: string[];
         isTimingWindow?: boolean;
       };
       const player = this.state.players[action.playerId]!;
@@ -1961,15 +2145,24 @@ export class GameEngine {
         return { success: false, error: '待使用的卡牌不存在' };
       }
       const expectedZone = meta.sourceZone ?? 'HAND';
+      let discardedCount = 0;
       for (const id of action.selectedIds) {
         const picked = this.state.cards[id];
         if (!picked || picked.zone !== expectedZone) {
           return { success: false, error: '所选减费卡牌已不在预期区域' };
         }
-        this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        if (this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true }) && this.state.cards[id]?.zone === 'GRAVEYARD') {
+          discardedCount += 1;
+        }
       }
-      const finalCost = Math.max(0, meta.baseCostToPay - action.selectedIds.length * meta.discountPerCard);
-      if (!this.payCost(action.playerId, finalCost)) {
+      const finalCost = Math.max(0, meta.baseCostToPay - discardedCount * meta.discountPerCard);
+      const selectedCostIds =
+        meta.costCardInstanceIds && finalCost > 0
+          ? meta.costCardInstanceIds.length >= finalCost
+            ? meta.costCardInstanceIds.slice(0, finalCost)
+            : meta.costCardInstanceIds
+          : undefined;
+      if (!this.payCost(action.playerId, finalCost, selectedCostIds)) {
         const avail = player.availableOpenCostCount + player.hiddenCostCount;
         return { success: false, error: `费用不足，需要 ${finalCost} 费，当前可用 ${avail}` };
       }
@@ -1984,6 +2177,7 @@ export class GameEngine {
           playerId: action.playerId,
           cardInstanceId: meta.cardInstanceId,
           targetSlotIndex: meta.targetSlotIndex,
+          targetEquipRoleId: meta.targetEquipRoleId,
         },
         card,
         cardDef,
@@ -2085,7 +2279,13 @@ export class GameEngine {
       ) {
         continue;
       }
-      if (card.instanceId === combat?.pendingChargeCardId || card.instanceId === combat?.pendingDamageCardId) continue;
+      if (
+        card.instanceId === combat?.pendingChargeCardId ||
+        card.instanceId === combat?.pendingDamageCardId ||
+        this.state.pendingChargeQueue?.some((t) => t.pendingCardId === card.instanceId)
+      ) {
+        continue;
+      }
       const def = this.cardDb.getCard(card.cardNumber);
       if (def?.cardType === CardType.TACTICS) {
         this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
@@ -2167,9 +2367,34 @@ export class GameEngine {
       // 8.6.2.e.4 战术牌结算完毕送入墓地后再进入检查时机
       this.sweepResolvedTactics();
 
+      // 优先推进尚未结束的直伤/攻击充能队列与挂起的效果续行帧 (8.5.3 / 10.2.1.b)
+      if (this.zoneMgr.drainPendingCharges()) {
+        continue;
+      }
+      if (
+        !this.state.currentPendingChoice &&
+        !this.zoneMgr.hasPendingCharges() &&
+        this.state.pendingDslContinuations?.length
+      ) {
+        const frame = this.state.pendingDslContinuations.shift()!;
+        if (this.state.pendingDslContinuations.length === 0) {
+          this.state.pendingDslContinuations = undefined;
+        }
+        this.effectEngine.presets.interpreter.resumeContinuation(frame);
+        continue;
+      }
+
       // 8.5.1 推进检查时机 (SBA + 待机自动能力队列)；若产生待机顺序或效果选择则暂停
       if (!this.checkTimingMgr.resolveCheckTiming()) return;
+      if (this.zoneMgr.hasPendingCharges() || this.state.pendingDslContinuations?.length) {
+        continue;
+      }
       if ((this.state.status as string) === 'FINISHED' || this.state.currentPendingChoice) return;
+
+      // 在判定瞬时窗前实时同步费用统计 (避免效果竖直费用后读到过期 availableOpenCostCount)
+      for (const pid of Object.keys(this.state.players)) {
+        this.zoneMgr.syncCostStats(pid);
+      }
 
       const window = this.state.timingWindow;
       if (window) {
@@ -2271,6 +2496,7 @@ export class GameEngine {
         return false;
       }
       if (
+        card.zone === 'HAND' &&
         def.attribute !== ElementAttribute.NONE &&
         !openAttributes.has(def.attribute) &&
         !this.effectEngine.presets.canIgnoreAttributeCondition(playerId, def.cardNumber) &&
@@ -2278,7 +2504,9 @@ export class GameEngine {
       ) {
         return false;
       }
-      if (this.calculateCardCost(playerId, card.instanceId).costToPay > payable) return false;
+      const baseCost = this.calculateCardCost(playerId, card.instanceId).costToPay;
+      const minPayable = this.getMinimumPayableCostForPlay(playerId, card.instanceId, def, baseCost, false);
+      if (minPayable > payable) return false;
       return !this.checkInstantTiming(playerId, def);
     };
     const hasHandInstantTactics = this.zoneMgr
@@ -2600,15 +2828,6 @@ export class GameEngine {
             (p.eliminatedOrbsByKareninaCountThisTurn ?? 0) + costOpt.eliminateOrbs.count;
         }
       }
-    }
-    // ST06-002 坠落与新生 塞西莉【协战永】：从手牌成为《坠落与新生 亚里莎·回音》协战搭档的回合中，不会解除协战状态
-    if (
-      partnerFromZone === 'HAND' &&
-      partner.cardNumber === 'ST06-002' &&
-      !this.continuousEffects.hasLostInherentAbilities(partner.instanceId) &&
-      this.continuousEffects.hasCardName(host.instanceId, '坠落与新生 亚里莎·回音')
-    ) {
-      partner.cannotReleasePartnerUntilTurn = this.state.turnNumber;
     }
     player.turnAbilityUsage[`${host.instanceId}:ASSIST`] = 1;
 

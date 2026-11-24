@@ -70,6 +70,10 @@ export interface AscensionRuleConfig {
     nameIncludes?: string;
     /** 升变对象须为竖直状态 */
     requireReady?: boolean;
+    /** 多对象升变最少张数 (如 BP04-001「1张及以上」为 1) */
+    minCount?: number;
+    /** 是否允许选择多个升变对象 (如 BP04-001) */
+    allowMultiple?: boolean;
   };
   restrictionFilter?: {
     minCostLimit?: number;

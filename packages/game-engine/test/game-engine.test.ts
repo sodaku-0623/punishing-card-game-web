@@ -322,9 +322,19 @@ describe('GameEngine 核心规则引擎测试套件', () => {
     const state = engine.getState();
     expect(state.status).toBe('PLAYING');
 
-    // 模拟连续对战伤害结算：使 bob 的侵蚀度达到 7
+    // 模拟连续对战伤害结算：若途中有【充能自】挂起则依次决策，直到 7 点伤害结算使 bob 侵蚀度达到 7
     const zoneMgr = (engine as any).zoneMgr;
     zoneMgr.applyDamageToPlayer('bob', 7);
+    for (let guard = 0; guard < 20 && state.currentPendingChoice && (state.status as string) !== 'FINISHED'; guard++) {
+      const ch = state.currentPendingChoice;
+      const eligible = ch.options.filter((o: any) => o.payload?.eligible !== false);
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: ch.playerId,
+        pendingChoiceId: ch.id,
+        selectedIds: ch.minSelections === 0 ? [] : eligible.slice(0, ch.minSelections).map((o: any) => o.id),
+      });
+    }
 
     // 触发检查时机与规则处理 (8.5 & 9.3)
     const checkMgr = (engine as any).checkTimingMgr;
