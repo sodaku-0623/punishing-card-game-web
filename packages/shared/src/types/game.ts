@@ -234,6 +234,8 @@ export interface PendingTrigger {
   controllerPlayerId: string;
   label?: string; // 展示给玩家的触发能力说明 (用于多触发顺序选择与前端展示)
   oncePerTurn?: boolean; // 10.1 【回合1】限制 (按实例计数)
+  /** 10.1 【回合N】限制 (按实例计数，如 BP04-015 【回合2】) */
+  maxPerTurn?: number;
   /** 自定义每回合次数限制键 (如 Q&A·2 不同装备分别赋予同一角色的同文本能力各自计次) */
   oncePerTurnKey?: string;
   /** 可选代价未支付时不消耗【回合1】次数 (如 Q&A·2/7 BP01-023 夜煌—大太刀) */

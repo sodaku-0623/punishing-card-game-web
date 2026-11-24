@@ -173,20 +173,30 @@ export class SbaEngine {
         executedAny = true;
       }
 
-      // 9.5.4 / Q&A·9 (BP04-001 变为辅助机)：战场辅助机超过 1 张时，保留最新成为辅助机的卡牌，其余置入墓地
+      // 9.5.4 / Q&A·9 (BP04-001 变为辅助机 / PR-041 变为角色)：战场辅助机超过 1 张时，保留最新成为辅助机的卡牌，其余置入墓地
       const assistEntries: Array<{ card: CardInstance; ts: number }> = [];
       for (const s of this.fieldMgr.getSlots(p.playerId)) {
         if (s.assistCardId) {
           const ac = this.state.cards[s.assistCardId];
-          if (ac && !ac.modifiers?.some((m) => m.setCardType === 'ROLE')) {
+          const isAssist = ac
+            ? this.continuousEffects
+              ? this.continuousEffects.getEffectiveCardType(ac.instanceId) === 'ASSIST'
+              : !ac.modifiers?.some((m) => m.setCardType === 'ROLE')
+            : false;
+          if (ac && isAssist) {
             assistEntries.push({ card: ac, ts: ac.enteredZoneTimestamp ?? 0 });
           }
         }
         if (s.roleCardId) {
           const rc = this.state.cards[s.roleCardId];
+          const isAssist = rc
+            ? this.continuousEffects
+              ? this.continuousEffects.getEffectiveCardType(rc.instanceId) === 'ASSIST'
+              : Boolean(rc.modifiers?.some((m) => m.setCardType === 'ASSIST'))
+            : false;
           const assistMod = rc?.modifiers?.find((m) => m.setCardType === 'ASSIST');
-          if (rc && assistMod) {
-            assistEntries.push({ card: rc, ts: assistMod.timestamp ?? rc.enteredZoneTimestamp ?? 0 });
+          if (rc && isAssist) {
+            assistEntries.push({ card: rc, ts: assistMod?.timestamp ?? rc.enteredZoneTimestamp ?? 0 });
           }
         }
       }

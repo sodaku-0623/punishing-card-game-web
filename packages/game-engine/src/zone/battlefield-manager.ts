@@ -145,14 +145,40 @@ export class BattlefieldManager {
       return false; // 卡位已被占用
     }
 
-    const fromZone = this.state.cards[cardInstanceId]?.zone;
+    const srcCard = this.state.cards[cardInstanceId];
+    const fromZone = srcCard?.zone;
+    const wasAirborne = Boolean(srcCard && fromZone === 'PROCESSING' && srcCard.isAirborne);
+    const airborneUnderIds = wasAirborne ? [...(srcCard!.underneathCardIds ?? [])] : [];
+    const airborneEqIds = wasAirborne ? getAttachedEquipmentIds(srcCard) : [];
+
     slot.roleCardId = cardInstanceId;
     this.zoneMgr.moveCard(cardInstanceId, 'BATTLEFIELD', {
       slotIndex,
       isFaceUp: true,
       isReady: !options?.enterTapped,
+      ...(wasAirborne ? { preserveAttachments: true } : {}),
     });
     const movedCard = this.state.cards[cardInstanceId];
+    if (movedCard && wasAirborne) {
+      movedCard.underneathCardIds = airborneUnderIds;
+      setAttachedEquipmentIds(movedCard, airborneEqIds);
+      for (const uid of airborneUnderIds) {
+        const uc = this.state.cards[uid];
+        if (uc) {
+          uc.zone = 'BATTLEFIELD';
+          uc.slotIndex = undefined;
+        }
+      }
+      for (const eqId of airborneEqIds) {
+        const eq = this.state.cards[eqId];
+        if (eq) {
+          eq.zone = 'BATTLEFIELD';
+          eq.slotIndex = slotIndex;
+          eq.isFaceUp = true;
+          eq.isReady = true;
+        }
+      }
+    }
     if (movedCard && options?.enterAbilitiesLost) {
       addCardModifier(this.state, movedCard, {
         loseAbilities: true,
@@ -451,12 +477,21 @@ export class BattlefieldManager {
     const slots = this.getSlots(playerId);
     const targetSlot = slots[slotIndex];
     if (!targetSlot) return false;
-    // 8.6.2.e.3 只能放置到空余卡位，或替换原有辅助机所占的卡位
+    // 8.6.2.e.3 只能放置到空余卡位，或替换原有仍为辅助机类型的卡位 (PR-041 变为角色牌期间不可覆盖或误杀)
+    const isEffectiveAssist = (cardId: string): boolean => {
+      const c = this.state.cards[cardId];
+      if (!c) return false;
+      if (this.continuousEffects) {
+        return this.continuousEffects.getEffectiveCardType(cardId) === CardType.ASSIST;
+      }
+      return !c.modifiers?.some((m) => m.setCardType === CardType.ROLE);
+    };
     if (targetSlot.roleCardId || targetSlot.standaloneEquipmentId) return false;
+    if (targetSlot.assistCardId && !isEffectiveAssist(targetSlot.assistCardId)) return false;
 
-    // 8.6.2.e.3 若已有辅助机，可将其置入墓地替换
+    // 8.6.2.e.3 若已有辅助机（且当前有效类型仍为 ASSIST），将其置入墓地替换
     for (const slot of slots) {
-      if (slot.assistCardId) {
+      if (slot.assistCardId && isEffectiveAssist(slot.assistCardId)) {
         const oldAssistId = slot.assistCardId;
         slot.assistCardId = undefined;
         this.zoneMgr.moveCard(oldAssistId, 'GRAVEYARD', { isFaceUp: true });
@@ -529,16 +564,19 @@ export class BattlefieldManager {
   }
 
   /**
-   * 10.18 将战场角色【浮空】到处理区成为【浮空模式】
+   * 10.18 将战场角色或手牌中的指定角色【浮空】到处理区成为【浮空模式】(支持 BP03-002 / BP04-071 手牌直接浮空)
    * - 10.18.2.a 每位玩家处理区最多 1 张浮空模式卡牌；已存在时不执行并返回 false
    * - 10.18.2.b / 10.18.2.d.3 下方的卡牌与装备保持不变一同移动，但它们不视为浮空模式/处理区牌
    */
   airborneRole(cardInstanceId: string): boolean {
     const card = this.state.cards[cardInstanceId];
-    if (!card || !this.isSlotRole(card.controllerPlayerId, cardInstanceId)) {
+    if (!card) return false;
+    const playerId = card.controllerPlayerId;
+    const fromBattlefield = this.isSlotRole(playerId, cardInstanceId);
+    const fromHand = card.zone === 'HAND';
+    if (!fromBattlefield && !fromHand) {
       return false;
     }
-    const playerId = card.controllerPlayerId;
     const existingAirborne = this.zoneMgr
       .getCardsInZone(playerId, 'PROCESSING')
       .some((c) => c.isAirborne === true);
@@ -547,16 +585,18 @@ export class BattlefieldManager {
     }
 
     // 8.13.4.a.3 若处于协战状态，离场前先解除协战并将搭档置入墓地
-    if (card.partnerCardId) {
+    if (fromBattlefield && card.partnerCardId) {
       this.releasePartner(cardInstanceId, true);
     }
 
-    const underIds = [...card.underneathCardIds];
-    const eqIds = getAttachedEquipmentIds(card);
+    const underIds = fromBattlefield ? [...card.underneathCardIds] : [];
+    const eqIds = fromBattlefield ? getAttachedEquipmentIds(card) : [];
 
-    for (const slot of this.getSlots(playerId)) {
-      if (slot.roleCardId === cardInstanceId) {
-        slot.roleCardId = undefined;
+    if (fromBattlefield) {
+      for (const slot of this.getSlots(playerId)) {
+        if (slot.roleCardId === cardInstanceId) {
+          slot.roleCardId = undefined;
+        }
       }
     }
 
@@ -564,23 +604,25 @@ export class BattlefieldManager {
     const moved = this.zoneMgr.moveCard(cardInstanceId, 'PROCESSING', {
       isFaceUp: true,
       isReady: true,
-      preserveAttachments: true,
+      preserveAttachments: fromBattlefield,
     });
     if (!moved) {
       card.isAirborne = undefined;
       return false;
     }
 
-    card.underneathCardIds = underIds;
-    setAttachedEquipmentIds(card, eqIds);
-    for (const id of [...underIds, ...eqIds]) {
-      const sub = this.state.cards[id];
-      if (sub) {
-        sub.zone = 'PROCESSING';
-        sub.slotIndex = undefined;
-        sub.modifiers = undefined;
-        sub.isFrozen = undefined;
-        sub.isAirborne = undefined;
+    if (fromBattlefield) {
+      card.underneathCardIds = underIds;
+      setAttachedEquipmentIds(card, eqIds);
+      for (const id of [...underIds, ...eqIds]) {
+        const sub = this.state.cards[id];
+        if (sub) {
+          sub.zone = 'PROCESSING';
+          sub.slotIndex = undefined;
+          sub.modifiers = undefined;
+          sub.isFrozen = undefined;
+          sub.isAirborne = undefined;
+        }
       }
     }
     return true;

@@ -1167,6 +1167,154 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
     cardNumber: 'BP04-015',
     name: '薇拉·灼惘',
     vanillaEntry: true,
+    triggers: [
+      {
+        abilityId: 'dsl:BP04-015:self_damage_orb_mode',
+        eventType: 'DAMAGE_DEALT',
+        maxPerTurn: 2,
+        deferOncePerTurnUntilCostPaid: true,
+        matcher: { kind: 'SELF_PLAYER_DAMAGED', onlySelfTurn: true },
+        label: '【薇拉·灼惘】【自】【回合2】我方回合受到伤害时，可消【蓝球】或【2任意球】3选1',
+        steps: [
+          (() => {
+            const onPaidSteps: EffectStep[] = [
+              { op: 'MARK_TURN_ABILITY_USED', abilityKey: '__TRIGGER_ONCE_KEY__' },
+              {
+                op: 'CHOOSE_MODE',
+                prompt: '【薇拉·灼惘】【自】请从以下 3 项选择 1 项执行：',
+                min: 1,
+                max: 1,
+                choiceEffectType: 'DSL_BP04_015_MODE',
+                modes: [
+                  {
+                    id: 'rush',
+                    label: '直到回合结束为止，该牌获得【速攻】',
+                    steps: [
+                      {
+                        op: 'MODIFY_STATS',
+                        target: { kind: 'SELF' },
+                        keywords: ['速攻'],
+                        duration: 'END_OF_TURN',
+                      },
+                    ],
+                  },
+                  {
+                    id: 'destroy_3000',
+                    label: '选择对方战场1张PP为3000及以下的角色，将其破坏',
+                    steps: [
+                      {
+                        op: 'CHOOSE_ROLES',
+                        side: 'OPPONENT',
+                        prompt: '【薇拉·灼惘】选择对方战场 1 张 PP 为 3000 及以下的角色，将其破坏：',
+                        filter: { maxEffectivePP: 3000 },
+                        min: 1,
+                        max: 1,
+                        saveToVar: 'victim',
+                        choiceEffectType: 'DSL_BP04_015_DESTROY',
+                      },
+                      { op: 'DESTROY_ROLES', target: { kind: 'VAR', varName: 'victim' } },
+                    ],
+                  },
+                  {
+                    id: 'charge_pp_next',
+                    label: '直到下个回合结束为止，该牌获得【充能+1】，PP+1000',
+                    steps: [
+                      {
+                        op: 'MODIFY_STATS',
+                        target: { kind: 'SELF' },
+                        charge: 1,
+                        pp: 1000,
+                        duration: 'END_OF_NEXT_TURN',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ];
+            return {
+              op: 'IF',
+              condition: {
+                kind: 'ALL',
+                conditions: [
+                  { kind: 'HAS_ELIMINABLE_ORBS', filter: 'BLUE', count: 1 },
+                  { kind: 'HAS_ELIMINABLE_ORBS', filter: 'ANY', count: 2 },
+                ],
+              },
+              then: [
+                {
+                  op: 'CHOOSE_MODE',
+                  prompt: '【薇拉·灼惘】【自】【回合2】我方受到伤害，选择支付的信号球代价（可不发动）：',
+                  min: 1,
+                  max: 1,
+                  choiceEffectType: 'DSL_BP04_015_COST_MODE',
+                  modes: [
+                    {
+                      id: 'blue1',
+                      label: '消除【蓝色信号球】',
+                      steps: [
+                        {
+                          op: 'ELIMINATE_ORB_COST',
+                          filter: 'BLUE',
+                          count: 1,
+                          optional: false,
+                          prompt: '【薇拉·灼惘】选择消除 1 个【蓝色信号球】：',
+                          choiceEffectType: 'DSL_BP04_015_BLUE',
+                          onPaid: onPaidSteps,
+                        },
+                      ],
+                    },
+                    {
+                      id: 'any2',
+                      label: '消除【2任意信号球】',
+                      steps: [
+                        {
+                          op: 'ELIMINATE_ORB_COST',
+                          filter: 'ANY',
+                          count: 2,
+                          optional: false,
+                          prompt: '【薇拉·灼惘】选择消除【2任意信号球】：',
+                          choiceEffectType: 'DSL_BP04_015_ANY2',
+                          onPaid: onPaidSteps,
+                        },
+                      ],
+                    },
+                    { id: 'skip', label: '不发动', steps: [] },
+                  ],
+                },
+              ],
+              else: [
+                {
+                  op: 'IF',
+                  condition: { kind: 'HAS_ELIMINABLE_ORBS', filter: 'BLUE', count: 1 },
+                  then: [
+                    {
+                      op: 'ELIMINATE_ORB_COST',
+                      filter: 'BLUE',
+                      count: 1,
+                      optional: true,
+                      prompt: '【薇拉·灼惘】【自】【回合2】是否消除【蓝色信号球】？',
+                      choiceEffectType: 'DSL_BP04_015_BLUE_OPT',
+                      onPaid: onPaidSteps,
+                    },
+                  ],
+                  else: [
+                    {
+                      op: 'ELIMINATE_ORB_COST',
+                      filter: 'ANY',
+                      count: 2,
+                      optional: true,
+                      prompt: '【薇拉·灼惘】【自】【回合2】是否消除【2任意信号球】？',
+                      choiceEffectType: 'DSL_BP04_015_ANY2_OPT',
+                      onPaid: onPaidSteps,
+                    },
+                  ],
+                },
+              ],
+            } as EffectStep;
+          })(),
+        ],
+      },
+    ],
   },
 
   // BP04-016 薇拉·灼惘 (5费)
@@ -2097,9 +2245,18 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
             filter: 'ANY',
             count: 3,
             optional: true,
-            prompt: '【卡列尼娜·辉晓】【协战自】是否消除【3任意信号球】？（于那次攻击结束时将搭档出场；待共享层补齐时限出场原语）',
+            prompt: '【卡列尼娜·辉晓】【协战自】是否消除【3任意信号球】？（于那次攻击结束时将搭档出场，从墓地协战则追加获得【速攻】）',
             choiceEffectType: 'DSL_BP04_035_ORB_COST',
-            onPaid: [{ op: 'MARK_TURN_ABILITY_USED', abilityKey: '__TRIGGER_ONCE_KEY__' }],
+            onPaid: [
+              { op: 'MARK_TURN_ABILITY_USED', abilityKey: '__TRIGGER_ONCE_KEY__' },
+              {
+                op: 'REGISTER_DELAYED_TRIGGER',
+                target: { kind: 'SELF_PARTNER' },
+                eventType: 'ATTACK_ENDED',
+                abilityId: 'DELAYED_ATTACK_END_DEPLOY_PARTNER',
+                grantRushIfPartnerFromZone: 'GRAVEYARD',
+              },
+            ],
           },
         ],
       },
@@ -2339,6 +2496,7 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
             filter: 'ANY',
             count: 3,
             optional: true,
+            excludeFromAbilityOrbCount: true,
             prompt: '【卡列尼娜·辉晓】【出】是否消除【3任意信号球】，从墓地出场 1 张费用<=4的<工程部队>角色？',
             choiceEffectType: 'DSL_BP04_040_ORB',
             onPaid: reviveSteps,
@@ -2381,6 +2539,7 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
                         filter: 'ANY',
                         count: 3,
                         optional: false,
+                        excludeFromAbilityOrbCount: true,
                         prompt: '【卡列尼娜·辉晓】请选择消除【3任意信号球】：',
                         choiceEffectType: 'DSL_BP04_040_ORB_FORCED',
                         onPaid: reviveSteps,
@@ -2731,6 +2890,124 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
       },
       flatDiscount: 1,
     },
+    triggers: [
+      {
+        abilityId: 'dsl:BP04-047:gy_bodyguard_redirect',
+        eventType: 'ATTACK_DECLARED',
+        matcher: {
+          kind: 'SELF_IN_GRAVEYARD_ON_FRIENDLY_ROLE_ATTACKED',
+          targetFilter: { exactName: '亚里莎·回音', hasPartner: false },
+        },
+        condition: {
+          kind: 'ALL',
+          conditions: [
+            { kind: 'GAME_ABILITY_UNUSED', abilityKey: 'BP04_047_BODYGUARD' },
+            { kind: 'SELF_MATCHES_FILTER', filter: { inZone: 'GRAVEYARD' } },
+            { kind: 'NOT', condition: { kind: 'HAS_ROLE', side: 'SELF', filter: { trait: '塞西莉' } } },
+          ],
+        },
+        label: '【塞西莉】【自】【游戏1】非协战《亚里莎·回音》被攻击时，可从墓地消球出场代替成为攻击对象',
+        steps: [
+          (() => {
+            const onPaidSteps: EffectStep[] = [
+              { op: 'MARK_GAME_ABILITY_USED', abilityKey: 'BP04_047_BODYGUARD' },
+              {
+                op: 'MOVE_CARDS',
+                target: { kind: 'SELF' },
+                toZone: 'BATTLEFIELD',
+                triggerEntry: true,
+                saveMovedToVar: 'deployed',
+              },
+              {
+                op: 'IF',
+                condition: { kind: 'VAR_NON_EMPTY', varName: 'deployed' },
+                then: [{ op: 'REDIRECT_ATTACK', targetType: 'CHARACTER', target: { kind: 'SELF' } }],
+              },
+            ];
+            return {
+              op: 'IF',
+              condition: {
+                kind: 'ALL',
+                conditions: [
+                  { kind: 'HAS_ELIMINABLE_ORBS', filter: 'YELLOW', count: 1 },
+                  { kind: 'HAS_ELIMINABLE_ORBS', filter: 'ANY', count: 2 },
+                ],
+              },
+              then: [
+                {
+                  op: 'CHOOSE_MODE',
+                  prompt: '【塞西莉】【自】【游戏1】是否消除信号球从墓地出场并代替成为攻击对象？',
+                  min: 1,
+                  max: 1,
+                  choiceEffectType: 'DSL_BP04_047_COST_MODE',
+                  modes: [
+                    {
+                      id: 'yellow1',
+                      label: '消除【黄色信号球】',
+                      steps: [
+                        {
+                          op: 'ELIMINATE_ORB_COST',
+                          filter: 'YELLOW',
+                          count: 1,
+                          optional: false,
+                          prompt: '【塞西莉】选择消除 1 个【黄色信号球】：',
+                          choiceEffectType: 'DSL_BP04_047_YELLOW',
+                          onPaid: onPaidSteps,
+                        },
+                      ],
+                    },
+                    {
+                      id: 'any2',
+                      label: '消除【2任意信号球】',
+                      steps: [
+                        {
+                          op: 'ELIMINATE_ORB_COST',
+                          filter: 'ANY',
+                          count: 2,
+                          optional: false,
+                          prompt: '【塞西莉】选择消除【2任意信号球】：',
+                          choiceEffectType: 'DSL_BP04_047_ANY2',
+                          onPaid: onPaidSteps,
+                        },
+                      ],
+                    },
+                    { id: 'skip', label: '不发动', steps: [] },
+                  ],
+                },
+              ],
+              else: [
+                {
+                  op: 'IF',
+                  condition: { kind: 'HAS_ELIMINABLE_ORBS', filter: 'YELLOW', count: 1 },
+                  then: [
+                    {
+                      op: 'ELIMINATE_ORB_COST',
+                      filter: 'YELLOW',
+                      count: 1,
+                      optional: true,
+                      prompt: '【塞西莉】【自】【游戏1】是否消除【黄色信号球】从墓地出场代替成为攻击对象？',
+                      choiceEffectType: 'DSL_BP04_047_YELLOW_OPT',
+                      onPaid: onPaidSteps,
+                    },
+                  ],
+                  else: [
+                    {
+                      op: 'ELIMINATE_ORB_COST',
+                      filter: 'ANY',
+                      count: 2,
+                      optional: true,
+                      prompt: '【塞西莉】【自】【游戏1】是否消除【2任意信号球】从墓地出场代替成为攻击对象？',
+                      choiceEffectType: 'DSL_BP04_047_ANY2_OPT',
+                      onPaid: onPaidSteps,
+                    },
+                  ],
+                },
+              ],
+            } as EffectStep;
+          })(),
+        ],
+      },
+    ],
   },
 
   // BP04-048 亚里莎·回音 (4费 协战)
@@ -3463,6 +3740,39 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
       zones: ['BATTLEFIELD'],
       targetTrait: '神寂启示录',
     },
+    triggers: [
+      {
+        abilityId: 'dsl:BP04-059:gy_to_bottom_tuck_deck_bottom',
+        eventType: 'CARD_MOVED_GY_TO_DECK_BOTTOM',
+        oncePerTurn: true,
+        deferOncePerTurnUntilCostPaid: true,
+        matcher: {
+          kind: 'FRIENDLY_CARD_MOVED_GY_TO_DECK_BOTTOM',
+          filter: { cardType: CardType.ROLE, trait: '神寂启示录' },
+        },
+        condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'DECK', op: '>=', value: 1 },
+        label: '【神寂启示录】【自】【回合1】<神寂启示录>角色从墓地置入牌组底时，可将牌组底1张牌正面置入该牌下方',
+        steps: [
+          {
+            op: 'CONFIRM_YES_NO',
+            prompt: '【神寂启示录】【自】【回合1】是否将我方牌组底 1 张牌以正面表示放置到该牌下方？',
+            yesLabel: '置入下方',
+            noLabel: '不执行',
+            choiceEffectType: 'DSL_BP04_059_TUCK_CONFIRM',
+            onYes: [
+              { op: 'MARK_TURN_ABILITY_USED', abilityKey: '__TRIGGER_ONCE_KEY__' },
+              {
+                op: 'MOVE_CARDS',
+                target: { kind: 'ZONE_BOTTOM_CARD', side: 'SELF', zone: 'DECK' },
+                toZone: 'UNDERNEATH',
+                underneathHost: { kind: 'SELF' },
+                isFaceUp: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
     activate: {
       cost: {
         kind: 'TAP_SELF_AND_ELIMINATE_ORBS',
@@ -3474,8 +3784,13 @@ export const BP04_EFFECT_SPECS: readonly CardEffectSpec[] = [
       steps: [
         {
           op: 'ADD_COST_MODIFIER',
-          amount: { kind: 'UNDERNEATH_COUNT_MULT', multiplier: 1, uniqueNames: true },
-          targetTrait: '异聚体',
+          amount: {
+            kind: 'UNDERNEATH_COUNT_MULT',
+            multiplier: 1,
+            uniqueNames: true,
+            filter: { cardType: CardType.ROLE, trait: '神寂启示录' },
+          },
+          targetTrait: '神寂启示录',
           cardType: CardType.ROLE,
           remainingCount: 1,
           logText: '下1张<神寂启示录>角色费用减少',

@@ -10,7 +10,12 @@ import {
 import { ICardDatabase } from '../database/card-registry.js';
 import { ZoneManager } from '../zone/zone-manager.js';
 import { BattlefieldManager, getAttachedEquipmentIds } from '../zone/battlefield-manager.js';
-import { ContinuousEffectEngine, expandBaseTraits, nextEffectTimestamp } from '../effects/continuous-effects.js';
+import {
+  ContinuousEffectEngine,
+  addCardModifier,
+  expandBaseTraits,
+  nextEffectTimestamp,
+} from '../effects/continuous-effects.js';
 
 /**
  * 8.7.4 触发瞬间卡牌快照 (可 JSON 序列化，供区域移动触发及离场后结算参照)
@@ -29,6 +34,7 @@ export interface CardTriggerSnapshot {
   abilitiesLost?: boolean;
   hasAttachedEquipment?: boolean;
   attachedEquipmentTraits?: string[];
+  grantedTriggerEntries?: Array<{ triggerId: string; grantKey: string }>;
 }
 
 export interface TriggerEvent {
@@ -58,6 +64,7 @@ export interface TriggerMatch {
   controllerPlayerId: string;
   label: string;
   oncePerTurn?: boolean;
+  maxPerTurn?: number;
   oncePerTurnKey?: string;
   deferOncePerTurnUntilCostPaid?: boolean;
   oncePerTurnByPlayer?: boolean;
@@ -91,6 +98,7 @@ export interface TriggerDefinition {
   abilityId: string;
   eventTypes: TriggerEventType[];
   oncePerTurn?: boolean;
+  maxPerTurn?: number;
   deferOncePerTurnUntilCostPaid?: boolean;
   oncePerTurnByPlayer?: boolean;
   maxPerTurnByPlayer?: number;
@@ -107,6 +115,11 @@ export interface TriggerDefinition {
  */
 export class TriggerManager {
   private definitions = new Map<string, TriggerDefinition>();
+  private onDelayedDeployCallback?: (playerId: string, cardInstanceId: string) => void;
+
+  setOnDelayedDeployCallback(cb: (playerId: string, cardInstanceId: string) => void): void {
+    this.onDelayedDeployCallback = cb;
+  }
 
   constructor(
     private state: GameState,
@@ -179,6 +192,9 @@ export class TriggerManager {
       abilitiesLost: evalStats.abilitiesLost,
       ...(attachedEqIds.length > 0 ? { hasAttachedEquipment: true } : {}),
       ...(eqTraitsSet.size > 0 ? { attachedEquipmentTraits: Array.from(eqTraitsSet) } : {}),
+      ...(evalStats.grantedTriggerEntries && evalStats.grantedTriggerEntries.length > 0
+        ? { grantedTriggerEntries: evalStats.grantedTriggerEntries.map((e) => ({ ...e })) }
+        : {}),
     };
   }
 
@@ -234,6 +250,7 @@ export class TriggerManager {
           controllerPlayerId: m.controllerPlayerId,
           label: m.label,
           oncePerTurn: m.oncePerTurn ?? def.oncePerTurn,
+          maxPerTurn: m.maxPerTurn ?? def.maxPerTurn,
           oncePerTurnKey: m.oncePerTurnKey,
           deferOncePerTurnUntilCostPaid: m.deferOncePerTurnUntilCostPaid ?? def.deferOncePerTurnUntilCostPaid,
           oncePerTurnByPlayer: m.oncePerTurnByPlayer ?? def.oncePerTurnByPlayer,
@@ -344,12 +361,13 @@ export class TriggerManager {
       return;
     }
 
-    // 10.1 【回合1】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 或自定义 oncePerTurnKey 计数，移区自动清空)
-    if (trigger.oncePerTurn) {
+    // 10.1 【回合1】/【回合N】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 或自定义 oncePerTurnKey 计数，移区自动清空)
+    const maxPerCard = trigger.maxPerTurn ?? (trigger.oncePerTurn ? 1 : undefined);
+    if (maxPerCard !== undefined) {
       const player = this.state.players[trigger.controllerPlayerId];
       if (!player) return;
       const usageKey = trigger.oncePerTurnKey ?? `${trigger.sourceCardInstanceId}:${trigger.abilityId}`;
-      if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) {
+      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxPerCard) {
         return;
       }
       if (!trigger.deferOncePerTurnUntilCostPaid) {
@@ -456,6 +474,39 @@ export class TriggerManager {
           isFaceUp: true,
           isReady: true,
         });
+      },
+    });
+
+    // 8.7.5 时限触发：BP04-035「那次攻击结束时，将该牌的协战搭档出场；若从墓地选择协战搭档，直到回合结束获得【速攻】」
+    this.registerTrigger({
+      abilityId: 'DELAYED_ATTACK_END_DEPLOY_PARTNER',
+      eventTypes: [],
+      collect: () => [],
+      execute: (trigger, ctx) => {
+        const hostId = (trigger.triggerContext?.hostCardId as string | undefined) ?? trigger.sourceCardInstanceId;
+        const host = ctx.state.cards[hostId];
+        const partnerId = (trigger.triggerContext?.partnerCardId as string | undefined) ?? host?.partnerCardId;
+        const partner = partnerId ? ctx.state.cards[partnerId] : undefined;
+        if (!host || !partner || host.partnerCardId !== partner.instanceId) return;
+        const controllerId = trigger.controllerPlayerId;
+        const slot = ctx.fieldMgr.findFirstEmptySlot(controllerId);
+        if (slot === undefined) return;
+        host.partnerCardId = undefined;
+        partner.partnerOfCardId = undefined;
+        partner.cannotReleasePartnerUntilTurn = undefined;
+        partner.releasePartnerToDeckBottom = undefined;
+        if (ctx.fieldMgr.playRoleCard(controllerId, partner.instanceId, slot)) {
+          if (trigger.triggerContext?.grantRush) {
+            addCardModifier(ctx.state, partner, {
+              keywords: ['速攻'],
+              untilTurn: ctx.state.turnNumber,
+              source: trigger.sourceCardNumber ?? 'BP04-035',
+              sourceCardInstanceId: host.instanceId,
+              appliedByPlayerId: controllerId,
+            });
+          }
+          this.onDelayedDeployCallback?.(controllerId, partner.instanceId);
+        }
       },
     });
   }

@@ -174,6 +174,11 @@ export class GameEngine {
 
     this.checkTimingMgr = new CheckTimingManager(this.state, this.sbaEngine);
     this.checkTimingMgr.setTriggerManager(this.triggerMgr);
+    this.triggerMgr.setOnDelayedDeployCallback((pid, cid) => {
+      const deployed = this.state.cards[cid];
+      const def = deployed ? this.cardDb.getCard(deployed.cardNumber) : undefined;
+      if (def) this.effectEngine.handleRoleEntryEffect(pid, cid, def);
+    });
 
     this.combatMgr = new CombatManager(
       this.state,
@@ -975,15 +980,24 @@ export class GameEngine {
       }
     }
 
-    // BP01-067 最后的晚空：使用时可丢弃手牌任意张符合条件的卡牌来减费
+    // BP01-067 最后的晚空 / BP03-075 露西亚·深红之渊：使用时可将手牌或信号球区任意张符合条件的卡牌放置到墓地来减费
     const playDiscardRule = !action.isAscension
       ? this.effectEngine.presets.getSpec(cardDef.cardNumber)?.playDiscardDiscount
       : undefined;
     if (playDiscardRule) {
+      const sourceZone = playDiscardRule.sourceZone ?? 'HAND';
       const handCandidates = this.zoneMgr
-        .getCardsInZone(action.playerId, 'HAND')
+        .getCardsInZone(action.playerId, sourceZone)
         .filter((c) => {
           if (c.instanceId === action.cardInstanceId) return false;
+          if (sourceZone === 'SIGNAL_ORB') {
+            if (!c.isFaceUp) return false;
+            const orbInfo = this.continuousEffects.getEffectiveOrbInfo(c.instanceId);
+            if (!orbInfo.isOrb) return false;
+            if (playDiscardRule.signalOrbColor && !orbInfo.colors.includes(playDiscardRule.signalOrbColor)) {
+              return false;
+            }
+          }
           const d = this.cardDb.getCard(c.cardNumber) || (c.cardId ? this.cardDb.getCard(c.cardId) : undefined);
           if (!d) return false;
           if (playDiscardRule.filter.exactName && d.name !== playDiscardRule.filter.exactName) return false;
@@ -1011,7 +1025,7 @@ export class GameEngine {
           choiceType: 'SELECT_CARDS',
           prompt:
             playDiscardRule.prompt ??
-            `【${cardDef.name}】可选择丢弃手牌中任意数量的指定卡牌来减费（当前基础费用 ${costToPay}，每弃1张费用-${playDiscardRule.discountPerCard}）：`,
+            `【${cardDef.name}】可选择将任意数量的指定卡牌放置到墓地来减费（当前基础费用 ${costToPay}，每张费用-${playDiscardRule.discountPerCard}）：`,
           options: handCandidates.map((c) => this.effectEngine.createGeneralCardChoiceOption(c)),
           effectType: 'PLAY_CARD_DISCARD_DISCOUNT',
           sourceCardInstanceId: action.cardInstanceId,
@@ -1021,6 +1035,8 @@ export class GameEngine {
             cardInstanceId: action.cardInstanceId,
             baseCostToPay: costToPay,
             discountPerCard: playDiscardRule.discountPerCard,
+            sourceZone,
+            targetSlotIndex: action.targetSlotIndex,
             appliedModifierIds: appliedModifiers.map((m) => m.id),
             isTimingWindow: Boolean(timingWindow),
           },
@@ -1165,11 +1181,17 @@ export class GameEngine {
         });
       }
     } else if (cardDef.cardType === CardType.ASSIST) {
-      // 8.6.2.b.2 需要存在空余卡位或已有辅助机 (替换其所占卡位)
+      // 8.6.2.b.2 需要存在空余卡位或已有辅助机 (替换其所占卡位；PR-041 变为角色期间不可视为可替换辅助机)
       const slotIndex =
         action.targetSlotIndex ??
         this.fieldMgr.findFirstEmptySlot(action.playerId) ??
-        this.fieldMgr.getSlots(action.playerId).find((s) => s.assistCardId)?.slotIndex;
+        this.fieldMgr
+          .getSlots(action.playerId)
+          .find(
+            (s) =>
+              Boolean(s.assistCardId) &&
+              this.continuousEffects.getEffectiveCardType(s.assistCardId!) === CardType.ASSIST
+          )?.slotIndex;
       if (slotIndex === undefined) {
         return { success: false, error: '战场没有空余卡位，也没有可替换的辅助机 (8.6.2.b.2)' };
       }
@@ -1744,6 +1766,8 @@ export class GameEngine {
         cardInstanceId: string;
         baseCostToPay: number;
         discountPerCard: number;
+        sourceZone?: 'HAND' | 'SIGNAL_ORB';
+        targetSlotIndex?: number;
         appliedModifierIds?: string[];
         isTimingWindow?: boolean;
       };
@@ -1755,7 +1779,12 @@ export class GameEngine {
       if (!card || !cardDef) {
         return { success: false, error: '待使用的卡牌不存在' };
       }
+      const expectedZone = meta.sourceZone ?? 'HAND';
       for (const id of action.selectedIds) {
+        const picked = this.state.cards[id];
+        if (!picked || picked.zone !== expectedZone) {
+          return { success: false, error: '所选减费卡牌已不在预期区域' };
+        }
         this.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
       }
       const finalCost = Math.max(0, meta.baseCostToPay - action.selectedIds.length * meta.discountPerCard);
@@ -1773,6 +1802,7 @@ export class GameEngine {
           type: 'PLAY_CARD',
           playerId: action.playerId,
           cardInstanceId: meta.cardInstanceId,
+          targetSlotIndex: meta.targetSlotIndex,
         },
         card,
         cardDef,
@@ -2397,6 +2427,7 @@ export class GameEngine {
       playerId: action.playerId,
       cardInstanceId: host.instanceId,
       targetCardId: partner.instanceId,
+      fromZone: partnerFromZone,
     });
 
     // 轮流优先权移交对方

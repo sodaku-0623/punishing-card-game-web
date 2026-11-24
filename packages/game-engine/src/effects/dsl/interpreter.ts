@@ -37,7 +37,7 @@ type ChoiceAction = Extract<GameAction, { type: 'SELECT_CHOICE_OPTION' }>;
 
 type PendingDslAction =
   | { kind: 'COST_DISCARD'; onPaid: EffectStep[]; optional: boolean; requiredMin?: number; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
-  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string }
+  | { kind: 'COST_ORB'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string; savePaidToVar?: string; excludeFromAbilityOrbCount?: boolean }
   | { kind: 'COST_ORB_OR_DISCARD'; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string }
   | { kind: 'COST_PAY_COST'; amount: number; onPaid: EffectStep[]; optional: boolean; markUsed?: boolean; markUsedKey?: string }
   | { kind: 'COST_TAP_FIELD'; onPaid: EffectStep[]; optional: boolean }
@@ -549,6 +549,7 @@ export class DeclarativeEffectInterpreter {
           abilityId: trig.abilityId,
           eventTypes: trig.eventTypes && trig.eventTypes.length > 0 ? trig.eventTypes : [trig.eventType],
           oncePerTurn: trig.oncePerTurn,
+          maxPerTurn: trig.maxPerTurn,
           deferOncePerTurnUntilCostPaid: trig.deferOncePerTurnUntilCostPaid,
           oncePerTurnByPlayer: trig.oncePerTurnByPlayer,
           maxPerTurnByPlayer: trig.maxPerTurnByPlayer,
@@ -1238,6 +1239,7 @@ export class DeclarativeEffectInterpreter {
                       hostCardId: host.instanceId,
                       partnerCardId: partner.instanceId,
                       targetCardId: partner.instanceId,
+                      ...(event.fromZone ? { partnerFromZone: event.fromZone } : {}),
                     },
                   },
                 ];
@@ -1267,6 +1269,86 @@ export class DeclarativeEffectInterpreter {
                   },
                 ];
               }
+              case 'GRANTED_SELF_LEFT_FIELD': {
+                const leftId = event.cardInstanceId;
+                const playerId = event.playerId;
+                if (!leftId || !playerId) return [];
+                if (event.subjectSnapshot?.abilitiesLost) return [];
+                const card = state.cards[leftId];
+                if (!card) return [];
+                const grantKeys = (event.subjectSnapshot?.grantedTriggerEntries ?? [])
+                  .filter((e) => e.triggerId === trig.abilityId)
+                  .map((e) => e.grantKey);
+                if (grantKeys.length === 0) return [];
+                if (!condOk(playerId, card.instanceId)) return [];
+                return grantKeys.map((grantKey, idx) => {
+                  const onceKey = `${card.instanceId}:${trig.abilityId}:${grantKey}`;
+                  return {
+                    sourceCardInstanceId: card.instanceId,
+                    sourceCardNumber: card.cardNumber,
+                    controllerPlayerId: playerId,
+                    label: grantKeys.length > 1 ? `${trig.label} (#${idx + 1})` : trig.label,
+                    oncePerTurnKey: onceKey,
+                    triggerContext: {
+                      targetCardId: leftId,
+                      oncePerTurnKey: onceKey,
+                      sourceAbilitiesLostAtTrigger: false,
+                    },
+                  };
+                });
+              }
+              case 'SELF_PLAYER_DAMAGED': {
+                const damagedPlayerId = event.playerId;
+                if (!damagedPlayerId) return [];
+                if (trig.matcher.onlySelfTurn && state.activePlayerId !== damagedPlayerId) return [];
+                const matches = [];
+                for (const slot of fieldMgr.getSlots(damagedPlayerId)) {
+                  const slotIds = [slot.roleCardId, slot.assistCardId].filter((x): x is string => Boolean(x));
+                  for (const sid of slotIds) {
+                    const card = state.cards[sid];
+                    if (!card || card.cardNumber !== spec.cardNumber) continue;
+                    if (!condOk(damagedPlayerId, card.instanceId)) continue;
+                    matches.push({
+                      sourceCardInstanceId: card.instanceId,
+                      sourceCardNumber: spec.cardNumber,
+                      controllerPlayerId: damagedPlayerId,
+                      label: trig.label,
+                      triggerContext: {},
+                    });
+                  }
+                }
+                return matches;
+              }
+              case 'SELF_IN_GRAVEYARD_ON_FRIENDLY_ROLE_ATTACKED': {
+                if (event.targetType !== 'CHARACTER' || !event.targetCardId) return [];
+                const defenderRole = state.cards[event.targetCardId];
+                if (!defenderRole || !fieldMgr.isSlotRole(defenderRole.controllerPlayerId, defenderRole.instanceId)) {
+                  return [];
+                }
+                const defenderPlayerId = defenderRole.controllerPlayerId;
+                if (
+                  trig.matcher.targetFilter &&
+                  !this.matchesFilter(defenderRole, trig.matcher.targetFilter, defenderRole.instanceId)
+                ) {
+                  return [];
+                }
+                const matches = [];
+                for (const gyCard of zoneMgr.getCardsInZone(defenderPlayerId, 'GRAVEYARD')) {
+                  if (gyCard.cardNumber !== spec.cardNumber) continue;
+                  if (!condOk(defenderPlayerId, gyCard.instanceId)) continue;
+                  matches.push({
+                    sourceCardInstanceId: gyCard.instanceId,
+                    sourceCardNumber: spec.cardNumber,
+                    controllerPlayerId: defenderPlayerId,
+                    label: trig.label,
+                    triggerContext: {
+                      attackerCardId: event.cardInstanceId,
+                      targetCardId: defenderRole.instanceId,
+                    },
+                  });
+                }
+                return matches;
+              }
             }
           },
           execute: (pending) => {
@@ -1275,6 +1357,7 @@ export class DeclarativeEffectInterpreter {
             const blockerId = pending.triggerContext.blockerCardId as string | undefined;
             const hostId = pending.triggerContext.hostCardId as string | undefined;
             const targetId = pending.triggerContext.targetCardId as string | undefined;
+            const partnerFromZone = pending.triggerContext.partnerFromZone as string | undefined;
             const onceKey =
               (pending.triggerContext.oncePerTurnKey as string | undefined) ??
               pending.oncePerTurnKey ??
@@ -1283,6 +1366,7 @@ export class DeclarativeEffectInterpreter {
             if (blockerId) initialVars.__triggerBlocker = [blockerId];
             if (hostId) initialVars.__triggerHost = [hostId];
             if (targetId) initialVars.__triggerTarget = [targetId];
+            if (partnerFromZone) initialVars.__partnerFromZone = [partnerFromZone];
             if (pending.triggerContext.combatChargedAuto) initialVars.__combatChargedAuto = ['1'];
             initialVars.__oncePerTurnKey = [onceKey];
             if (trig.condition && !this.evalCondition(trig.condition, pending.controllerPlayerId, pending.sourceCardInstanceId, initialVars)) {
@@ -1323,6 +1407,7 @@ export class DeclarativeEffectInterpreter {
             eff.orbValue !== undefined ||
             eff.treatedAsNames?.length ||
             eff.unblockableMaxPP !== undefined ||
+            eff.grantedTriggerIds?.length ||
             eff.canDualEquipFengren === true
         );
         const hasStat =
@@ -1431,6 +1516,7 @@ export class DeclarativeEffectInterpreter {
                 ...(eff.orbValue !== undefined ? { orbValue: eff.orbValue } : {}),
                 ...(eff.treatedAsNames ? { treatedAsNames: eff.treatedAsNames } : {}),
                 ...(eff.unblockableMaxPP !== undefined ? { unblockableMaxPP: eff.unblockableMaxPP } : {}),
+                ...(eff.grantedTriggerIds?.length ? { grantedTriggerIds: eff.grantedTriggerIds } : {}),
                 ...(eff.canDualEquipFengren ? { canDualEquipFengren: true } : {}),
               };
             },
@@ -1548,7 +1634,7 @@ export class DeclarativeEffectInterpreter {
           return { success: false, error: '必须支付消除信号球代价' };
         }
         const paidIds = group.split(',');
-        this.eliminate(playerId, paidIds, sourceCardInstanceId);
+        this.eliminate(playerId, paidIds, sourceCardInstanceId, pending.excludeFromAbilityOrbCount);
         if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...paidIds];
         if (pending.markUsed) this.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [...pending.onPaid, ...remaining]);
@@ -1967,8 +2053,11 @@ export class DeclarativeEffectInterpreter {
           }
           if (sub.kind === 'SELF_AIRBORNE') {
             const hasAirborne = this.zone(playerId, 'PROCESSING').some((c) => c.isAirborne === true);
-            if (hasAirborne || !this.ctx.fieldMgr.isSlotRole(playerId, sourceId)) {
-              return { success: false, error: '处理区已存在浮空模式卡牌或该牌不在战场角色位' };
+            const srcCard = this.ctx.state.cards[sourceId];
+            const canAirborneFromZone =
+              this.ctx.fieldMgr.isSlotRole(playerId, sourceId) || srcCard?.zone === 'HAND';
+            if (hasAirborne || !canAirborneFromZone) {
+              return { success: false, error: '处理区已存在浮空模式卡牌或该牌无法从当前区域【浮空】' };
             }
           }
           if (sub.kind === 'DISCARD_HAND' && !sub.optional) {
@@ -2374,6 +2463,14 @@ export class DeclarativeEffectInterpreter {
                   }
                 }
               }
+            } else if (z === 'SELF_UNDERNEATH') {
+              const selfCard = this.ctx.state.cards[sourceId];
+              for (const uid of selfCard?.underneathCardIds ?? []) {
+                if (!seenIds.has(uid) && this.ctx.state.cards[uid]) {
+                  seenIds.add(uid);
+                  rawPool.push(this.ctx.state.cards[uid]!);
+                }
+              }
             } else if (z === 'HOST_UNDERNEATH') {
               for (const host of this.fieldTopHosts(targetPlayer)) {
                 if (step.hostFilter && !this.matchesFilter(host, step.hostFilter, sourceId)) continue;
@@ -2572,7 +2669,7 @@ export class DeclarativeEffectInterpreter {
             break;
           }
           if (!optional && groups.length === 1) {
-            this.eliminate(playerId, groups[0]!, sourceId);
+            this.eliminate(playerId, groups[0]!, sourceId, step.excludeFromAbilityOrbCount);
             if (step.savePaidToVar) vars[step.savePaidToVar] = [...groups[0]!];
             queue.unshift(...step.onPaid);
             break;
@@ -2608,6 +2705,7 @@ export class DeclarativeEffectInterpreter {
                 onPaid: [...step.onPaid],
                 optional,
                 savePaidToVar: step.savePaidToVar,
+                excludeFromAbilityOrbCount: step.excludeFromAbilityOrbCount,
               },
             }
           );
@@ -2929,6 +3027,11 @@ export class DeclarativeEffectInterpreter {
               }
               const wasTopLevelField =
                 card.zone === 'BATTLEFIELD' && this.ctx.fieldMgr.isTopLevelFieldCard(card.controllerPlayerId, id);
+              // PR-041：includeUnderneath=true 时连同原下方卡牌一并转移至新宿主下方，不因 handleCardLeaveField 送墓
+              const carriedUnderIds = step.includeUnderneath ? [...(card.underneathCardIds ?? [])] : [];
+              if (step.includeUnderneath && carriedUnderIds.length > 0) {
+                card.underneathCardIds = [];
+              }
               if (wasTopLevelField) {
                 const prevController = card.controllerPlayerId;
                 const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
@@ -2975,6 +3078,19 @@ export class DeclarativeEffectInterpreter {
               card.slotIndex = undefined;
               if (!host.underneathCardIds.includes(id)) {
                 host.underneathCardIds.push(id);
+              }
+              for (const carriedId of carriedUnderIds) {
+                const cc = this.ctx.state.cards[carriedId];
+                if (!cc || carriedId === host.instanceId) continue;
+                cc.zone = 'BATTLEFIELD';
+                cc.controllerPlayerId = host.controllerPlayerId;
+                cc.isFaceUp = true;
+                cc.isReady = true;
+                cc.slotIndex = undefined;
+                cc.modifiers = undefined;
+                if (!host.underneathCardIds.includes(carriedId)) {
+                  host.underneathCardIds.push(carriedId);
+                }
               }
               moved.push(id);
             } else {
@@ -3137,6 +3253,7 @@ export class DeclarativeEffectInterpreter {
           const partners = this.resolveTargetIds(step.partner, playerId, sourceId, vars);
           const hostId = hosts[0];
           const partnerId = partners[0];
+          const prevPartnerZone = partnerId ? this.ctx.state.cards[partnerId]?.zone : undefined;
           if (
             hostId &&
             partnerId &&
@@ -3149,6 +3266,7 @@ export class DeclarativeEffectInterpreter {
               playerId,
               cardInstanceId: hostId,
               targetCardId: partnerId,
+              fromZone: prevPartnerZone,
             });
           }
           break;
@@ -3361,6 +3479,35 @@ export class DeclarativeEffectInterpreter {
             });
             break;
           }
+          if (step.abilityId === 'DELAYED_ATTACK_END_DEPLOY_PARTNER') {
+            const hostCard = this.ctx.state.cards[sourceId];
+            const partnerId = this.resolveTargetIds(step.target, playerId, sourceId, vars)[0] ?? hostCard?.partnerCardId;
+            const partnerCard = partnerId ? this.ctx.state.cards[partnerId] : undefined;
+            if (hostCard && partnerCard) {
+              const partnerFromZone = vars.__partnerFromZone?.[0];
+              const grantRush = Boolean(
+                step.grantRushIfPartnerFromZone && partnerFromZone === step.grantRushIfPartnerFromZone
+              );
+              this.ctx.triggerMgr?.registerDelayedTrigger({
+                eventType: step.eventType,
+                triggerTurn,
+                sourceCardInstanceId: hostCard.instanceId,
+                sourceCardNumber: cardNumber,
+                controllerPlayerId: hostCard.controllerPlayerId,
+                abilityId: 'DELAYED_ATTACK_END_DEPLOY_PARTNER',
+                label:
+                  step.labelSuffix ??
+                  `【${this.def(partnerCard)?.name ?? partnerCard.cardNumber}】攻击结束时从协战搭档出场${grantRush ? '并获得【速攻】' : ''}`,
+                once: true,
+                payload: {
+                  hostCardId: hostCard.instanceId,
+                  partnerCardId: partnerCard.instanceId,
+                  grantRush,
+                },
+              });
+            }
+            break;
+          }
           const targets = this.resolveTargetIds(step.target, playerId, sourceId, vars);
           const expectedZone = step.expectedZone ?? 'BATTLEFIELD';
           const defaultLabel =
@@ -3435,6 +3582,23 @@ export class DeclarativeEffectInterpreter {
     switch (target.kind) {
       case 'SELF':
         return sourceId ? [sourceId] : [];
+      case 'SELF_UNDERNEATH': {
+        const selfCard = sourceId ? this.ctx.state.cards[sourceId] : undefined;
+        return (selfCard?.underneathCardIds ?? []).filter((uid) => {
+          const uc = this.ctx.state.cards[uid];
+          return Boolean(uc && (!target.filter || this.matchesFilter(uc, target.filter, sourceId)));
+        });
+      }
+      case 'SELF_PARTNER': {
+        const pid = sourceId ? this.ctx.state.cards[sourceId]?.partnerCardId : undefined;
+        return pid ? [pid] : [];
+      }
+      case 'ZONE_BOTTOM_CARD': {
+        const sidePlayer = this.resolveSide(playerId, target.side);
+        const list = this.zone(sidePlayer, target.zone);
+        const last = list.length > 0 ? list[list.length - 1] : undefined;
+        return last ? [last.instanceId] : [];
+      }
       case 'TRIGGER_ATTACKER':
         return vars.__triggerAttacker ?? [];
       case 'TRIGGER_BLOCKER':
@@ -3514,7 +3678,10 @@ export class DeclarativeEffectInterpreter {
         return count * expr.multiplier;
       }
       case 'UNDERNEATH_COUNT_MULT': {
-        const ids = this.ctx.state.cards[sourceId]?.underneathCardIds ?? [];
+        const ids = (this.ctx.state.cards[sourceId]?.underneathCardIds ?? []).filter((id) => {
+          const c = this.ctx.state.cards[id];
+          return Boolean(c && (!expr.filter || checkFilter(c, expr.filter)));
+        });
         if (!expr.uniqueNames) return ids.length * expr.multiplier;
         const names = new Set<string>();
         for (const id of ids) {
@@ -3563,6 +3730,15 @@ export class DeclarativeEffectInterpreter {
       }
       case 'VAR_COUNT_MULT':
         return (vars[expr.varName]?.length ?? 0) * expr.multiplier;
+      case 'VAR_DISTINCT_COST_MULT': {
+        const distinctCosts = new Set<number>();
+        for (const id of vars[expr.varName] ?? []) {
+          const c = this.ctx.state.cards[id];
+          const d = c ? this.def(c) : undefined;
+          if (d !== undefined) distinctCosts.add(d.cost);
+        }
+        return distinctCosts.size * expr.multiplier;
+      }
       case 'FLOOR_DIV':
         return Math.floor(this.evalNumberExpr(expr.expr, playerId, sourceId, vars, staticCtx) / expr.divisor);
       case 'ADD':
@@ -3767,6 +3943,21 @@ export class DeclarativeEffectInterpreter {
           const card = state.cards[id];
           return Boolean(card && matchCard(card, cond.filter));
         });
+      case 'VAR_HAS_DUPLICATE_COST': {
+        const seen = new Set<number>();
+        for (const id of vars[cond.varName] ?? []) {
+          const c = state.cards[id];
+          const d = c ? this.def(c) : undefined;
+          if (d === undefined) continue;
+          if (seen.has(d.cost)) return true;
+          seen.add(d.cost);
+        }
+        return false;
+      }
+      case 'HAS_ELIMINABLE_ORBS':
+        return this.orbGroups(playerId, cond.count, cond.filter).length > 0;
+      case 'IS_STANDALONE_EQUIPMENT':
+        return Boolean(sourceId && this.ctx.fieldMgr.isStandaloneEquipment(playerId, sourceId));
       case 'ALL':
         return cond.conditions.every((c) =>
           this.evalConditionWithResolvers(c, playerId, sourceId, vars, state, getCardsInZone, getFieldRoles, hasTraitFn, inStaticEval)
@@ -3950,6 +4141,7 @@ export class DeclarativeEffectInterpreter {
     if (filter.isFaceUp !== undefined && card.isFaceUp !== filter.isFaceUp) return false;
     if (filter.isReady !== undefined && card.isReady !== filter.isReady) return false;
     if (filter.isFrozen !== undefined && Boolean(card.isFrozen) !== filter.isFrozen) return false;
+    if (filter.isAirborne !== undefined && Boolean(card.isAirborne) !== filter.isAirborne) return false;
     if (filter.hasAssistConfig !== undefined && Boolean(def?.assistConfig) !== filter.hasAssistConfig) return false;
     if (filter.hasEquipment !== undefined && (getAttachedEquipmentIds(card).length > 0) !== filter.hasEquipment) {
       return false;
@@ -4194,7 +4386,7 @@ export class DeclarativeEffectInterpreter {
     return groups;
   }
 
-  private eliminate(playerId: string, ids: string[], sourceId?: string): void {
+  private eliminate(playerId: string, ids: string[], sourceId?: string, excludeFromAbilityOrbCount = false): void {
     let eliminatedOrbValue = 0;
     const orbColors = ids.map((id) => {
       if (this.ctx.continuousEffects) {
@@ -4211,7 +4403,7 @@ export class DeclarativeEffectInterpreter {
       if (eliminatedOrbValue >= 3) {
         player.eliminatedThreeOrbsThisTurn = true;
       }
-      if (sourceId) {
+      if (sourceId && !excludeFromAbilityOrbCount) {
         const src = this.ctx.state.cards[sourceId];
         const isKarenina =
           src &&
@@ -4274,7 +4466,14 @@ export class DeclarativeEffectInterpreter {
     const slot =
       this.ctx.fieldMgr.findFirstEmptySlot(playerId) ??
       (targetDef.cardType === 'ASSIST'
-        ? this.ctx.fieldMgr.getSlots(playerId).find((s) => s.assistCardId)?.slotIndex
+        ? this.ctx.fieldMgr
+            .getSlots(playerId)
+            .find(
+              (s) =>
+                Boolean(s.assistCardId) &&
+                (!this.ctx.continuousEffects ||
+                  this.ctx.continuousEffects.getEffectiveCardType(s.assistCardId!) === 'ASSIST')
+            )?.slotIndex
         : undefined);
     if (slot === undefined) return false;
     let deployedFromHostCardId: string | undefined;

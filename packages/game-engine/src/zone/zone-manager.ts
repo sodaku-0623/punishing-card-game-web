@@ -212,6 +212,14 @@ export class ZoneManager {
         card.ascendedFromAirborne = undefined;
         card.paidHiddenCostOnPlay = undefined;
       }
+      const airborneOrphanIds =
+        fromZone === 'PROCESSING' && card.isAirborne && effectiveToZone !== 'BATTLEFIELD' && !options?.preserveAttachments
+          ? [
+              ...(card.underneathCardIds ?? []),
+              ...(card.attachedEquipmentId ? [card.attachedEquipmentId] : []),
+              ...(card.extraAttachedEquipmentIds ?? []),
+            ]
+          : [];
       if (!(card.isAirborne && effectiveToZone === 'PROCESSING')) {
         card.isAirborne = undefined;
       }
@@ -221,6 +229,12 @@ export class ZoneManager {
         card.underneathCardIds = [];
         card.attachedEquipmentId = undefined;
         card.extraAttachedEquipmentIds = undefined;
+      }
+      // 10.18.2.d.3 浮空模式卡牌离开处理区前往非战场区域时，原附着的下方牌与装备进入墓地
+      for (const orphanId of airborneOrphanIds) {
+        if (this.state.cards[orphanId] && orphanId !== cardInstanceId) {
+          this.moveCard(orphanId, 'GRAVEYARD', { isFaceUp: true, isOrphanCleanup: true, orphanHostCardId: cardInstanceId });
+        }
       }
       card.enteredZoneTimestamp = nextEffectTimestamp(this.state);
       this.replacementEngine?.cleanupForCard(cardInstanceId);

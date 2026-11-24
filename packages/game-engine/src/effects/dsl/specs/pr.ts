@@ -365,6 +365,56 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
     cardNumber: 'PR-015',
     name: '七实·遥星之座',
     vanillaEntry: true,
+    staticEffects: [
+      {
+        id: 'PR_015_UNDER_NANAMI_LEAVE_TRIGGER',
+        scope: 'UNDERNEATH_HOST',
+        targetFilter: { exactName: '七实·遥星之座' },
+        grantedTriggerIds: ['PR_015_GRANTED_HOST_LEFT_FIELD'],
+      },
+    ],
+    triggers: [
+      {
+        abilityId: 'PR_015_GRANTED_HOST_LEFT_FIELD',
+        eventType: 'CARD_LEFT_FIELD',
+        matcher: { kind: 'GRANTED_SELF_LEFT_FIELD' },
+        label: '【七实·遥星之座】赋予离场【自】：可消【2任意信号球】，从墓地出场费用<=3的《七实·遥星之座》或《帕瓦》',
+        steps: [
+          {
+            op: 'ELIMINATE_ORB_COST',
+            filter: 'ANY',
+            count: 2,
+            optional: true,
+            prompt: '【七实·遥星之座】离场【自】是否消除【2任意信号球】，从墓地出场 1 张费用为 3 及以下的《七实·遥星之座》或《帕瓦》？',
+            choiceEffectType: 'PRESET_PR_015_ORB',
+            onPaid: [
+              {
+                op: 'CHOOSE_ZONE_CARDS',
+                side: 'SELF',
+                zone: 'GRAVEYARD',
+                prompt: '【七实·遥星之座】选择我方墓地 1 张费用为 3 及以下的《七实·遥星之座》或《帕瓦》，将其出场',
+                filter: {
+                  cardType: CardType.ROLE,
+                  maxCost: 3,
+                  anyFilters: [{ exactName: '七实·遥星之座' }, { exactName: '帕瓦' }],
+                },
+                requireEmptySlot: true,
+                min: 1,
+                max: 1,
+                saveToVar: 'revived',
+                choiceEffectType: 'PRESET_PR_015_REVIVE',
+              },
+              {
+                op: 'MOVE_CARDS',
+                target: { kind: 'VAR', varName: 'revived' },
+                toZone: 'BATTLEFIELD',
+                triggerEntry: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
   },
 
   // PR-016 露西亚·深红囚影
@@ -687,7 +737,7 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
             },
             {
               id: 'swap_asc_from_underneath',
-              label: '将我方战场1张非空属性升变角色送墓，从该牌下方效果无效出场升变角色 (尚缺辅助机下方区域检索)',
+              label: '将我方战场1张非空属性升变角色送墓，从该牌下方效果无效出场升变角色',
               steps: [
                 {
                   op: 'CHOOSE_ROLES',
@@ -705,6 +755,31 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
                   toZone: 'GRAVEYARD',
                   isFaceUp: true,
                   saveMovedToVar: 'sacMoved',
+                },
+                {
+                  op: 'IF',
+                  condition: { kind: 'VAR_NON_EMPTY', varName: 'sacMoved' },
+                  then: [
+                    {
+                      op: 'CHOOSE_ZONE_CARDS',
+                      side: 'SELF',
+                      zone: 'SELF_UNDERNEATH',
+                      prompt: '【杼菱】选择该牌下方 1 张费用不大于我方明费上限的升变角色，将其效果无效出场',
+                      filter: { cardType: CardType.ROLE, isAscended: true, maxCostOpenCostLimit: true },
+                      requireEmptySlot: true,
+                      min: 1,
+                      max: 1,
+                      saveToVar: 'underAsc',
+                      choiceEffectType: 'PRESET_PR_020_DEPLOY',
+                    },
+                    {
+                      op: 'MOVE_CARDS',
+                      target: { kind: 'VAR', varName: 'underAsc' },
+                      toZone: 'BATTLEFIELD',
+                      loseAbilities: true,
+                      triggerEntry: false,
+                    },
+                  ],
                 },
               ],
             },
@@ -1245,7 +1320,7 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
                     kind: 'ZONE_COUNT',
                     side: 'SELF',
                     zone: 'PROCESSING',
-                    filter: { exactName: '露西亚·誓焰' },
+                    filter: { exactName: '露西亚·誓焰', isAirborne: true },
                     op: '>=',
                     value: 1,
                   },
@@ -1255,8 +1330,26 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
             },
             {
               id: 'return_airborne_to_hand',
-              label: '选择我方处理区1张浮空模式的《露西亚·誓焰》加入手牌 (尚缺 PROCESSING 区域选择与 isAirborne 过滤)',
-              steps: [],
+              label: '选择我方处理区1张浮空模式的《露西亚·誓焰》，将其加入手牌',
+              steps: [
+                {
+                  op: 'CHOOSE_ZONE_CARDS',
+                  side: 'SELF',
+                  zone: 'PROCESSING',
+                  prompt: '【熠空】选择我方处理区 1 张浮空模式的《露西亚·誓焰》，将其加入手牌',
+                  filter: { exactName: '露西亚·誓焰', isAirborne: true },
+                  min: 1,
+                  max: 1,
+                  saveToVar: 'airborneFire',
+                  choiceEffectType: 'PRESET_PR_028_RETURN',
+                },
+                {
+                  op: 'MOVE_CARDS',
+                  target: { kind: 'VAR', varName: 'airborneFire' },
+                  toZone: 'HAND',
+                  isFaceUp: true,
+                },
+              ],
             },
           ],
         },
@@ -1989,6 +2082,7 @@ export const PR_EFFECT_SPECS: readonly CardEffectSpec[] = [
           target: { kind: 'SELF' },
           toZone: 'UNDERNEATH',
           underneathHost: { kind: 'VAR', varName: 'luna' },
+          includeUnderneath: true,
           isFaceUp: true,
         },
       ],
