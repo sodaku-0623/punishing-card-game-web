@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { getTimingStatus } from '@/lib/timing';
 import {
   PublicGameState,
@@ -17,7 +17,11 @@ import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
 import {
   getSlotOccupancy,
   isBattlefieldSlotEmpty,
+  isSlotEffectiveRoleCard,
+  canPlayAssistOnSlot,
   canRolePerformAssist,
+  getCardActivatedAbilityOptions,
+  getAscensionPlan,
   NonTacticsInstantOption,
 } from '@/lib/battle-actions';
 
@@ -48,7 +52,8 @@ interface BattlefieldArenaViewProps {
   onRoleLongPress: (card: CardInstance) => void;
   onRoleHover: (card: CardInstance | null) => void;
   onSlotClick: (slotIndex: number) => void;
-  onActivateAbility: (cardId: string) => void;
+  onActivateAbility: (cardId: string, abilityIndex?: number) => void;
+  onOpenUnderneath?: (card: CardInstance) => void;
   onAttackClick: (cardId: string) => void;
   onBlockClick: (cardId: string) => void;
   onEquipStartClick?: (equipmentCardId: string) => void;
@@ -98,6 +103,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   onRoleHover,
   onSlotClick,
   onActivateAbility,
+  onOpenUnderneath,
   onAttackClick,
   onBlockClick,
   onEquipStartClick,
@@ -119,10 +125,23 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   const selectedHandDef = selectedHandCard
     ? findCardByNumberOrId(selectedHandCard.cardNumber || selectedHandCard.cardId)
     : null;
-  const hasFriendlyRole = mySlots.some((s) => Boolean(s.roleCardId));
+  const hasFriendlyRole = mySlots.some(
+    (s) => getSlotOccupancy(s, gameState.publicCards).kind === 'ROLE'
+  );
   const isSelectedStandaloneEquip = Boolean(
     selectedBattlefieldCardId &&
       mySlots.some((s) => s.standaloneEquipmentId === selectedBattlefieldCardId)
+  );
+  const isSelectedFriendlyRole = Boolean(
+    selectedBattlefieldCardId &&
+      mySlots.some((s) =>
+        isSlotEffectiveRoleCard(s, gameState.publicCards, selectedBattlefieldCardId)
+      )
+  );
+
+  const handAscensionPlan = useMemo(
+    () => (selectedHandCard ? getAscensionPlan(gameState, resolvedMyUserId, selectedHandCard) : null),
+    [gameState, resolvedMyUserId, selectedHandCard]
   );
 
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -195,7 +214,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         const isLegalAttackTarget =
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&
-          !!selectedBattlefieldCardId &&
+          isSelectedFriendlyRole &&
           !isSelectedStandaloneEquip &&
           occupancy.kind === 'ROLE' &&
           !!slotCard;
@@ -224,6 +243,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               slotIndex={slot.slotIndex}
               roleCard={slotCard}
               slotCardKind={occupancy.kind}
+              isTransformed={occupancy.isTransformed}
               isOpponent
               isSelected={selectedBattlefieldCardId === slotCard?.instanceId}
               isLegalAttackTarget={isLegalAttackTarget}
@@ -235,6 +255,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               onRoleContextMenu={onRoleContextMenu}
               onRoleLongPress={onRoleLongPress}
               onRoleHover={onRoleHover}
+              onOpenUnderneath={onOpenUnderneath}
               onDropAttackTarget={onDropAttackTarget}
             />
           </div>
@@ -329,27 +350,35 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         const slotCard = occupancy.card;
         const isEmptySlot = isBattlefieldSlotEmpty(slot);
 
+        const isAscensionTargetSlot = Boolean(
+          handAscensionPlan &&
+            slotCard &&
+            handAscensionPlan.targets.some(
+              (t) => t.zone === 'BATTLEFIELD' && t.card.instanceId === slotCard.instanceId
+            )
+        );
+
         const isPlayTargetable = Boolean(
           selectedHandCardId &&
-            (selectedHandDef?.cardType === CardType.ASSIST
-              ? !slot.roleCardId && !slot.standaloneEquipmentId
-              : selectedHandDef?.cardType === CardType.EQUIPMENT
-              ? isEmptySlot || occupancy.kind === 'ROLE'
-              : isEmptySlot)
+            (isAscensionTargetSlot ||
+              (selectedHandDef?.cardType === CardType.ASSIST
+                ? canPlayAssistOnSlot(slot, gameState.publicCards)
+                : selectedHandDef?.cardType === CardType.EQUIPMENT
+                ? isEmptySlot || occupancy.kind === 'ROLE'
+                : isEmptySlot))
         );
         const isEquipTargetable = isSelectedStandaloneEquip && occupancy.kind === 'ROLE';
 
         const cardDef = slotCard ? findCardByNumberOrId(slotCard.cardNumber || slotCard.cardId) : null;
-        const hasAbility = !!(
-          cardDef?.rulesText?.includes('【起】') ||
-          cardDef?.rulesText?.includes('起动')
-        );
-        const canActivateAbility =
-          isMyTurn &&
-          gameState.phase === 'MAIN_PHASE' &&
-          !gameState.currentCombat &&
-          (occupancy.kind === 'ROLE' || occupancy.kind === 'ASSIST') &&
-          hasAbility;
+        const activateOptions =
+          (occupancy.kind === 'ROLE' ||
+            occupancy.kind === 'ASSIST' ||
+            occupancy.kind === 'STANDALONE_EQUIPMENT') &&
+          slotCard
+            ? getCardActivatedAbilityOptions(gameState, resolvedMyUserId, slotCard, 'BATTLEFIELD')
+            : [];
+        const hasAbility = activateOptions.length > 0;
+        const canActivateAbility = activateOptions.some((o) => !o.disabled);
         const canEquipStandalone =
           isMyTurn &&
           gameState.phase === 'MAIN_PHASE' &&
@@ -398,10 +427,12 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               slotIndex={slot.slotIndex}
               roleCard={slotCard}
               slotCardKind={occupancy.kind}
+              isTransformed={occupancy.isTransformed}
               isSelected={selectedBattlefieldCardId === slotCard?.instanceId}
               isPlayTargetable={isPlayTargetable}
               isEquipTargetable={isEquipTargetable}
               canActivateAbility={canActivateAbility}
+              activateOptions={activateOptions}
               canAttack={canAttack}
               canBlock={canBlock}
               canEquipStandalone={canEquipStandalone}
@@ -417,6 +448,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               onRoleLongPress={onRoleLongPress}
               onRoleHover={onRoleHover}
               onActivateAbility={onActivateAbility}
+              onOpenUnderneath={onOpenUnderneath}
               onAttackClick={onAttackClick}
               onBlockClick={onBlockClick}
               onEquipStartClick={onEquipStartClick}
@@ -430,7 +462,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
 
       {/* ================= 左翼：官方战术处理区 ================= */}
       <div
-        className="absolute z-15 flex flex-col items-center justify-center"
+        className="absolute z-10 flex flex-col items-center justify-center"
         style={{
           left: '2.34%',
           top: '38.88%',
@@ -451,7 +483,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
 
       {/* ================= 敌方牌库与墓地 (右侧上方) ================= */}
       <div
-        className="absolute z-15 flex flex-col items-center justify-center gap-1"
+        className="absolute z-10 flex flex-col items-center justify-center gap-1"
         style={{
           left: '85.15%',
           top: '11.11%',
@@ -469,7 +501,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
       </div>
 
       <div
-        className="absolute z-15 flex flex-col items-center justify-center gap-1"
+        className="absolute z-10 flex flex-col items-center justify-center gap-1"
         style={{
           left: '85.15%',
           top: '28.47%',
@@ -486,7 +518,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
 
       {/* ================= 我方牌库与墓地 (右侧下方) ================= */}
       <div
-        className="absolute z-15 flex flex-col items-center justify-center gap-1"
+        className="absolute z-10 flex flex-col items-center justify-center gap-1"
         style={{
           left: '85.15%',
           top: '54.86%',
@@ -502,7 +534,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
       </div>
 
       <div
-        className="absolute z-15 flex flex-col items-center justify-center gap-1"
+        className="absolute z-10 flex flex-col items-center justify-center gap-1"
         style={{
           left: '85.15%',
           top: '72.22%',

@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { CardInstance } from '@zhanshuang/shared';
 import { Layers, Zap, Lock } from 'lucide-react';
+import { findCardByNumberOrId } from '@/lib/cards-data';
 import {
   OrbColorType,
   OrbDisplayInfo,
@@ -10,6 +11,7 @@ import {
   validateOrbElimination,
   findAvailableOrbTriple,
 } from '@/lib/signal-orbs';
+import type { ActivatedAbilityOption } from '@/lib/battle-actions';
 
 export type { OrbColorType, OrbDisplayInfo };
 
@@ -20,6 +22,10 @@ interface SignalOrbQueueViewProps {
   onEliminate?: (orbIds: string[]) => void;
   isOpponent?: boolean;
   compact?: boolean;
+  abilityOptionsByCardId?: Record<string, ActivatedAbilityOption[]>;
+  onActivateAbility?: (card: CardInstance, abilityIndex: number) => void;
+  onInspectCard?: (card: CardInstance) => void;
+  onContextMenu?: (card: CardInstance, e: React.MouseEvent) => void;
 }
 
 const ORB_HOTKEYS = ['Q', 'W', 'E', 'R', 'T', 'Y'] as const;
@@ -31,6 +37,10 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
   onEliminate,
   isOpponent = false,
   compact = false,
+  abilityOptionsByCardId,
+  onActivateAbility,
+  onInspectCard,
+  onContextMenu,
 }) => {
   // 解析信号球颜色、等效球数、禁止状态与正背面信息
   const orbList: OrbDisplayInfo[] = useMemo(() => {
@@ -59,6 +69,23 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
     () => validateOrbElimination(orbs, selectedOrbIds),
     [orbs, selectedOrbIds]
   );
+
+  // 己方正面信号球卡的【起】动能力列表（如 BP04-061）
+  const orbAbilityEntries = useMemo(() => {
+    if (isOpponent || !abilityOptionsByCardId) return [];
+    const list: Array<{ card: CardInstance; option: ActivatedAbilityOption; name: string }> = [];
+    for (const orb of orbs) {
+      if (!orb.isFaceUp) continue;
+      const opts = abilityOptionsByCardId[orb.instanceId];
+      if (!opts?.length) continue;
+      const def = findCardByNumberOrId(orb.cardNumber || orb.cardId);
+      const name = def?.name || orb.cardNumber;
+      for (const option of opts) {
+        list.push({ card: orb, option, name });
+      }
+    }
+    return list;
+  }, [isOpponent, abilityOptionsByCardId, orbs]);
 
   const canEliminateSelected = Boolean(onEliminate && selectionCheck.valid);
   const sortedSelectedIds = selectionCheck.valid ? selectionCheck.sortedIds : null;
@@ -97,7 +124,13 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
   }
 
   function handleOrbClick(orb: OrbDisplayInfo) {
-    if (isOpponent || !orb.isEliminatable) return;
+    const rawOrb = orbs[orb.index];
+    if (isOpponent || !orb.isEliminatable) {
+      if (orb.isFaceUp && rawOrb) {
+        onInspectCard?.(rawOrb);
+      }
+      return;
+    }
     onToggleSelectOrb?.(orb.instanceId);
   }
 
@@ -144,58 +177,85 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
             <span className="text-hud text-fg-muted">空 · 通过战术或出牌充能</span>
           ) : (
             orbList.map((orb) => {
+              const rawOrb = orbs[orb.index];
               const isSelected = selectedOrbIds.includes(orb.instanceId);
               const isPartOfAvailableTriple =
                 availableTriple?.orbIds.includes(orb.instanceId);
+              const buttonDisabled =
+                (!onInspectCard || !orb.isFaceUp) && (isOpponent || !orb.isEliminatable);
 
               return (
-                <button
+                <div
                   key={orb.instanceId}
-                  type="button"
-                  disabled={isOpponent || !orb.isEliminatable}
-                  onClick={() => handleOrbClick(orb)}
-                  className={`relative w-7 h-7 rounded-full border transition-all duration-fast flex items-center justify-center font-bold text-hud font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
-                    orb
-                  )} ${
-                    isSelected
-                      ? 'ring-2 ring-fg scale-110 z-10'
-                      : isPartOfAvailableTriple
-                      ? 'ring-1 ring-gold-300/80 hover:scale-105'
-                      : orb.isEliminatable
-                      ? 'opacity-90 hover:opacity-100 hover:scale-105'
-                      : ''
-                  }`}
-                  title={buildOrbTitle(orb)}
+                  onContextMenu={(e) => {
+                    if (orb.isFaceUp && rawOrb && onContextMenu) {
+                      e.preventDefault();
+                      onContextMenu(rawOrb, e);
+                    }
+                  }}
+                  className="inline-flex shrink-0"
                 >
-                  <span className="leading-none">{orb.label}</span>
-                  {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
-                    <span className="absolute -bottom-1 -left-1 px-0.5 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
-                      {ORB_HOTKEYS[orb.index]}
-                    </span>
-                  )}
-                  {orb.orbValue > 1 && orb.isFaceUp && (
-                    <span className="absolute -top-1 -right-1 px-1 bg-ink-950 border border-gold-300 text-gold-300 font-num text-hud font-bold leading-none pointer-events-none scale-75 origin-top-right">
-                      x{orb.orbValue}
-                    </span>
-                  )}
-                  {orb.isFaceUp && orb.cannotEliminate && (
-                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
-                      <Lock className="w-2 h-2 text-crimson-400" />
-                    </span>
-                  )}
-                  {isPartOfAvailableTriple && !isSelected && orb.orbValue <= 1 && (
-                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-gold-300 border border-ink-950" />
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    disabled={buttonDisabled}
+                    onClick={() => handleOrbClick(orb)}
+                    className={`relative w-7 h-7 rounded-full border transition-all duration-fast flex items-center justify-center font-bold text-hud font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
+                      orb
+                    )} ${
+                      isSelected
+                        ? 'ring-2 ring-fg scale-110 z-10'
+                        : isPartOfAvailableTriple
+                        ? 'ring-1 ring-gold-300/80 hover:scale-105'
+                        : orb.isEliminatable
+                        ? 'opacity-90 hover:opacity-100 hover:scale-105'
+                        : ''
+                    }`}
+                    title={buildOrbTitle(orb)}
+                  >
+                    <span className="leading-none">{orb.label}</span>
+                    {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
+                      <span className="absolute -bottom-1 -left-1 px-0.5 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
+                        {ORB_HOTKEYS[orb.index]}
+                      </span>
+                    )}
+                    {orb.orbValue > 1 && orb.isFaceUp && (
+                      <span className="absolute -top-1 -right-1 px-1 bg-ink-950 border border-gold-300 text-gold-300 font-num text-hud font-bold leading-none pointer-events-none scale-75 origin-top-right">
+                        x{orb.orbValue}
+                      </span>
+                    )}
+                    {orb.isFaceUp && orb.cannotEliminate && (
+                      <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
+                        <Lock className="w-2 h-2 text-crimson-400" />
+                      </span>
+                    )}
+                    {isPartOfAvailableTriple && !isSelected && orb.orbValue <= 1 && (
+                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-gold-300 border border-ink-950" />
+                    )}
+                  </button>
+                </div>
               );
             })
           )}
         </div>
 
-        {/* 右侧：紧凑三消按钮 */}
-        {!isOpponent && onEliminate && (
+        {/* 右侧：紧凑三消按钮 & 信号球【起】触发按钮 */}
+        {!isOpponent && (onEliminate || (onActivateAbility && orbAbilityEntries.length > 0)) && (
           <div className="flex items-center gap-1.5 shrink-0">
-            {canEliminateSelected && sortedSelectedIds && (
+            {onActivateAbility &&
+              orbAbilityEntries.map(({ card, option, name }) => (
+                <button
+                  key={`orb-act-compact-${card.instanceId}-${option.abilityIndex}`}
+                  type="button"
+                  disabled={option.disabled}
+                  onClick={() => onActivateAbility(card, option.abilityIndex)}
+                  title={option.disabled ? option.reason : `${name}：${option.label}`}
+                  className="px-2 py-1 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud font-sans flex items-center gap-1 active:scale-95 transition-all duration-fast cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Zap className="w-3 h-3 fill-current" />
+                  <span>信号球【起】</span>
+                </button>
+              ))}
+            {onEliminate && canEliminateSelected && sortedSelectedIds && (
               <button
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
@@ -206,7 +266,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
                 <span>三消抽牌 [X]</span>
               </button>
             )}
-            {!canEliminateSelected && availableTriple && (
+            {onEliminate && !canEliminateSelected && availableTriple && (
               <button
                 type="button"
                 onClick={() => onEliminate(availableTriple.orbIds)}
@@ -287,60 +347,88 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
           </span>
         ) : (
           orbList.map((orb) => {
+            const rawOrb = orbs[orb.index];
             const isSelected = selectedOrbIds.includes(orb.instanceId);
             const isPartOfAvailableTriple =
               availableTriple?.orbIds.includes(orb.instanceId);
+            const buttonDisabled =
+              (!onInspectCard || !orb.isFaceUp) && (isOpponent || !orb.isEliminatable);
 
             return (
-              <button
+              <div
                 key={orb.instanceId}
-                type="button"
-                disabled={isOpponent || !orb.isEliminatable}
-                onClick={() => handleOrbClick(orb)}
-                className={`relative w-9 h-9 rounded-full border-2 transition-all duration-fast flex flex-col items-center justify-center font-bold text-caption font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
-                  orb
-                )} ${
-                  isSelected
-                    ? 'ring-2 ring-fg scale-110 -translate-y-1 z-10'
-                    : isPartOfAvailableTriple
-                    ? 'hover:scale-105 ring-1 ring-gold-300/80'
-                    : orb.isEliminatable
-                    ? 'hover:scale-105 opacity-90 hover:opacity-100'
-                    : ''
-                }`}
-                title={buildOrbTitle(orb)}
+                onContextMenu={(e) => {
+                  if (orb.isFaceUp && rawOrb && onContextMenu) {
+                    e.preventDefault();
+                    onContextMenu(rawOrb, e);
+                  }
+                }}
+                className="inline-flex shrink-0"
               >
-                <span className="text-hud font-bold leading-none">
-                  {orb.label}
-                </span>
-                <span className="text-hud font-num opacity-80 leading-none scale-75">
-                  {orb.orbValue > 1 && orb.isFaceUp ? `x${orb.orbValue}` : orb.index + 1}
-                </span>
-
-                {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
-                  <span className="absolute -bottom-1 -left-1 px-1 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
-                    {ORB_HOTKEYS[orb.index]}
+                <button
+                  type="button"
+                  disabled={buttonDisabled}
+                  onClick={() => handleOrbClick(orb)}
+                  className={`relative w-9 h-9 rounded-full border-2 transition-all duration-fast flex flex-col items-center justify-center font-bold text-caption font-sans select-none shrink-0 cursor-pointer disabled:cursor-not-allowed ${getOrbStyle(
+                    orb
+                  )} ${
+                    isSelected
+                      ? 'ring-2 ring-fg scale-110 -translate-y-1 z-10'
+                      : isPartOfAvailableTriple
+                      ? 'hover:scale-105 ring-1 ring-gold-300/80'
+                      : orb.isEliminatable
+                      ? 'hover:scale-105 opacity-90 hover:opacity-100'
+                      : ''
+                  }`}
+                  title={buildOrbTitle(orb)}
+                >
+                  <span className="text-hud font-bold leading-none">
+                    {orb.label}
                   </span>
-                )}
-
-                {orb.isFaceUp && orb.cannotEliminate && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
-                    <Lock className="w-2.5 h-2.5 text-crimson-400" />
+                  <span className="text-hud font-num opacity-80 leading-none scale-75">
+                    {orb.orbValue > 1 && orb.isFaceUp ? `x${orb.orbValue}` : orb.index + 1}
                   </span>
-                )}
 
-                {isPartOfAvailableTriple && !isSelected && !orb.cannotEliminate && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gold-300 border border-ink-950" />
-                )}
-              </button>
+                  {!isOpponent && orb.isEliminatable && orb.index < ORB_HOTKEYS.length && (
+                    <span className="absolute -bottom-1 -left-1 px-1 bg-ink-950 border border-teal-400/60 text-hud text-teal-400 font-num font-bold leading-none pointer-events-none scale-75 origin-bottom-left">
+                      {ORB_HOTKEYS[orb.index]}
+                    </span>
+                  )}
+
+                  {orb.isFaceUp && orb.cannotEliminate && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-ink-950 border border-crimson-500/80 flex items-center justify-center pointer-events-none">
+                      <Lock className="w-2.5 h-2.5 text-crimson-400" />
+                    </span>
+                  )}
+
+                  {isPartOfAvailableTriple && !isSelected && !orb.cannotEliminate && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gold-300 border border-ink-950" />
+                  )}
+                </button>
+              </div>
             );
           })
         )}
 
         {/* 操作按钮区 */}
-        {!isOpponent && onEliminate && (
+        {!isOpponent && (onEliminate || (onActivateAbility && orbAbilityEntries.length > 0)) && (
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            {canEliminateSelected && sortedSelectedIds && (
+            {onActivateAbility &&
+              orbAbilityEntries.map(({ card, option, name }) => (
+                <button
+                  key={`orb-act-${card.instanceId}-${option.abilityIndex}`}
+                  type="button"
+                  disabled={option.disabled}
+                  onClick={() => onActivateAbility(card, option.abilityIndex)}
+                  title={option.disabled ? option.reason : `${name}：${option.label}`}
+                  className="px-3 py-1.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-caption font-sans flex items-center gap-1.5 transition-all duration-fast active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-current" />
+                  <span>信号球【起】· {name}</span>
+                </button>
+              ))}
+
+            {onEliminate && canEliminateSelected && sortedSelectedIds && (
               <button
                 type="button"
                 onClick={() => onEliminate(sortedSelectedIds)}
@@ -352,7 +440,7 @@ export const SignalOrbQueueView: React.FC<SignalOrbQueueViewProps> = React.memo(
               </button>
             )}
 
-            {!canEliminateSelected && availableTriple && (
+            {onEliminate && !canEliminateSelected && availableTriple && (
               <button
                 type="button"
                 onClick={() => onEliminate(availableTriple.orbIds)}

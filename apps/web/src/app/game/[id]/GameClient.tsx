@@ -24,6 +24,8 @@ import { PendingChoiceModal } from '@/components/game/PendingChoiceModal';
 import { MulliganModal } from '@/components/game/MulliganModal';
 import { GraveyardModal } from '@/components/game/GraveyardModal';
 import { AssistModal } from '@/components/game/AssistModal';
+import { AscensionModal } from '@/components/game/AscensionModal';
+import { UnderneathCardsModal } from '@/components/game/UnderneathCardsModal';
 import { TurnFlowView } from '@/components/game/TurnFlowView';
 import { RuleGuideModal } from '@/components/game/RuleGuideModal';
 import { Button, HudBrackets } from '@/components/ui';
@@ -32,9 +34,18 @@ import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
 import { resolveOrbDisplayInfo, validateOrbElimination } from '@/lib/signal-orbs';
 import {
   isBattlefieldSlotEmpty,
+  getSlotOccupancy,
+  isSlotEffectiveRoleCard,
+  canPlayAssistOnSlot,
   getUsableNonTacticsInstants,
   canRolePerformAssist,
   getAssistPartnerCandidates,
+  getCardActivatedAbilityOptions,
+  getZoneActivatedAbilityCardMap,
+  getNonHandPlayAction,
+  getAscensionPlan,
+  type AscensionPlan,
+  type NonHandPlayAction,
 } from '@/lib/battle-actions';
 import { sfx } from '@/lib/audio';
 import {
@@ -63,6 +74,7 @@ import {
   ArrowUpRight,
   BookOpen,
   Cpu,
+  Play,
 } from 'lucide-react';
 
 export default function GameTabletopPage() {
@@ -104,10 +116,16 @@ export default function GameTabletopPage() {
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   // 是否打开官方规则手册/新手指南弹窗
   const [isRuleGuideModalOpen, setIsRuleGuideModalOpen] = useState(false);
-  // 墓地检视弹窗控制
-  const [isGraveyardOpen, setIsGraveyardOpen] = useState(false);
-  const [graveyardCards, setGraveyardCards] = useState<CardInstance[]>([]);
-  const [graveyardTitle, setGraveyardTitle] = useState('我方墓地');
+  // 墓地检视弹窗控制（实时从 gameState 派生，避免操作后快照陈旧）
+  const [graveyardOwner, setGraveyardOwner] = useState<'MY' | 'OPPONENT' | null>(null);
+  // 下方牌检视弹窗宿主卡牌 ID
+  const [underneathHostCardId, setUnderneathHostCardId] = useState<string | null>(null);
+  // 统一升变确认弹窗状态
+  const [ascensionModalState, setAscensionModalState] = useState<{
+    card: CardInstance;
+    initialTargetCardId?: string | null;
+    initialSlotIndex?: number | null;
+  } | null>(null);
   // 对手掉线或失去连接状态
   const [isOpponentDisconnected, setIsOpponentDisconnected] = useState(false);
   // 当前战场选中的角色/独立装备卡 (点击后展开操作按钮或目标高亮)
@@ -212,8 +230,9 @@ export default function GameTabletopPage() {
     setHoveredCard(null);
     setInspectedCard(null);
     setIsDetailModalOpen(false);
-    setIsGraveyardOpen(false);
-    setGraveyardCards([]);
+    setGraveyardOwner(null);
+    setUnderneathHostCardId(null);
+    setAscensionModalState(null);
     setContextMenu(null);
 
     const authId = user?.id || getSocketUserId();
@@ -341,13 +360,55 @@ export default function GameTabletopPage() {
     [usableNonTacticsInstants]
   );
 
-  // 是否正在拉取攻击指示箭头 (我方准备就绪的角色被选中且处于主要阶段)
+  // 全区域【起】动能力映射（手牌 / 战场 / 下方 / 墓地 / 明费 / 正面信号球）
+  const zoneAbilityMap = useMemo(
+    () => (gameState ? getZoneActivatedAbilityCardMap(gameState, resolvedMyUserId) : {}),
+    [gameState, resolvedMyUserId]
+  );
+
+  // 墓地非手牌区出牌映射（BP02-026 墓地升变 / BP02-036 墓地使用战术）
+  const graveyardNonHandActions = useMemo(() => {
+    const map: Record<string, NonHandPlayAction> = {};
+    if (!gameState) return map;
+    for (const card of Object.values(gameState.publicCards || {})) {
+      if (card.controllerPlayerId === resolvedMyUserId && card.zone === 'GRAVEYARD') {
+        const act = getNonHandPlayAction(gameState, resolvedMyUserId, card);
+        if (act) map[card.instanceId] = act;
+      }
+    }
+    return map;
+  }, [gameState, resolvedMyUserId]);
+
+  // 当前打开的升变弹窗的实时升变计划
+  const activeAscensionPlan = useMemo(() => {
+    if (!gameState || !ascensionModalState) return null;
+    const freshCard =
+      gameState.myHandCards?.find((c) => c.instanceId === ascensionModalState.card.instanceId) ??
+      gameState.publicCards?.[ascensionModalState.card.instanceId] ??
+      ascensionModalState.card;
+    return getAscensionPlan(gameState, resolvedMyUserId, freshCard);
+  }, [gameState, resolvedMyUserId, ascensionModalState]);
+
+  // 当前选中手牌的升变计划与手牌【起】列表
+  const selectedHandAscensionPlan = useMemo(() => {
+    if (!gameState || !selectedHandCardId) return null;
+    const handCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
+    return handCard ? getAscensionPlan(gameState, resolvedMyUserId, handCard) : null;
+  }, [gameState, resolvedMyUserId, selectedHandCardId, myHandCards]);
+
+  const selectedHandActivateOptions = useMemo(() => {
+    if (!gameState || !selectedHandCardId) return [];
+    const handCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
+    return handCard ? getCardActivatedAbilityOptions(gameState, resolvedMyUserId, handCard, 'HAND') : [];
+  }, [gameState, resolvedMyUserId, selectedHandCardId, myHandCards]);
+
+  // 是否正在拉取攻击指示箭头 (我方准备就绪的角色被选中且处于主要阶段，兼容 PR-041 变身角色)
   const isAttackTargeting = useMemo(() => {
     if (!selectedBattlefieldCardId || !gameState || !isMyTurn || gameState.phase !== 'MAIN_PHASE') {
       return false;
     }
     const myFieldSlots = gameState.battlefields?.[resolvedMyUserId] || [];
-    if (!myFieldSlots.some((s) => s.roleCardId === selectedBattlefieldCardId)) {
+    if (!myFieldSlots.some((s) => isSlotEffectiveRoleCard(s, gameState.publicCards, selectedBattlefieldCardId))) {
       return false;
     }
     const card = gameState.publicCards?.[selectedBattlefieldCardId];
@@ -477,6 +538,9 @@ export default function GameTabletopPage() {
         clearOrbSelection();
         setContextMenu(null);
         setAssistHostCardId(null);
+        setGraveyardOwner(null);
+        setUnderneathHostCardId(null);
+        setAscensionModalState(null);
         setIsShortcutsModalOpen(false);
         setIsRuleGuideModalOpen(false);
         setIsDetailModalOpen(false);
@@ -641,11 +705,37 @@ export default function GameTabletopPage() {
     setIsDetailModalOpen(true);
   };
 
-  // 打开墓地弹窗
-  const openGraveyardModal = (cards: CardInstance[], title: string) => {
-    setGraveyardCards(cards);
-    setGraveyardTitle(title);
-    setIsGraveyardOpen(true);
+  // 打开墓地弹窗（记录所属方，从最新 gameState 实时派生列表）
+  const openGraveyardModal = (_cards: CardInstance[], title: string) => {
+    setGraveyardOwner(title.includes('敌方') ? 'OPPONENT' : 'MY');
+  };
+
+  // 触发指定战场目标角色的升变：若含多选 / 额外代价 / 受限阻断则打开 AscensionModal 确认，否则直接发送
+  const triggerAscensionForTarget = (
+    card: CardInstance,
+    plan: AscensionPlan,
+    targetCardId: string
+  ) => {
+    if (
+      plan.allowMultiple ||
+      plan.config.extraCost ||
+      plan.extraCostCandidates.length > 0 ||
+      !plan.canAscend
+    ) {
+      sfx.playClick();
+      setAscensionModalState({ card, initialTargetCardId: targetCardId });
+      return;
+    }
+    sfx.playCardPlay();
+    sendAction({
+      type: 'PLAY_CARD',
+      playerId: resolvedMyUserId,
+      cardInstanceId: card.instanceId,
+      isAscension: true,
+      targetAscensionCardId: targetCardId,
+    });
+    setSelectedHandCard(null);
+    setSelectedBattlefieldCardId(null);
   };
 
   // 点击卡位逻辑 (出牌或选目标)
@@ -654,25 +744,28 @@ export default function GameTabletopPage() {
       const handCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
       const def = handCard ? findCardByNumberOrId(handCard.cardNumber || handCard.cardId) : null;
       const targetSlot = mySlots.find((s) => s.slotIndex === slotIndex);
-      const existingRoleId = targetSlot?.roleCardId;
+      const occ = targetSlot ? getSlotOccupancy(targetSlot, gameState.publicCards) : undefined;
+      const existingRoleCard = occ?.kind === 'ROLE' ? occ.card : undefined;
+      const ascPlan = handCard ? getAscensionPlan(gameState, resolvedMyUserId, handCard) : null;
+
+      if (
+        handCard &&
+        existingRoleCard &&
+        ascPlan?.targets.some(
+          (t) => t.zone === 'BATTLEFIELD' && t.card.instanceId === existingRoleCard.instanceId
+        )
+      ) {
+        triggerAscensionForTarget(handCard, ascPlan, existingRoleCard.instanceId);
+        return;
+      }
 
       sfx.playCardPlay();
-
-      if (existingRoleId && def?.rulesText?.includes('升变')) {
-        // 卡位已有角色且所选卡牌具备升变能力 -> 触发升变出场
+      if (existingRoleCard && def?.cardType === CardType.EQUIPMENT) {
         sendAction({
           type: 'PLAY_CARD',
           playerId: resolvedMyUserId,
           cardInstanceId: selectedHandCardId,
-          isAscension: true,
-          targetAscensionCardId: existingRoleId,
-        });
-      } else if (existingRoleId && def?.cardType === CardType.EQUIPMENT) {
-        sendAction({
-          type: 'PLAY_CARD',
-          playerId: resolvedMyUserId,
-          cardInstanceId: selectedHandCardId,
-          targetEquipRoleId: existingRoleId,
+          targetEquipRoleId: existingRoleCard.instanceId,
           targetSlotIndex: slotIndex,
         });
       } else {
@@ -693,25 +786,28 @@ export default function GameTabletopPage() {
     const handCard = myHandCards.find((c) => c.instanceId === cardInstanceId);
     const def = handCard ? findCardByNumberOrId(handCard.cardNumber || handCard.cardId) : null;
     const targetSlot = mySlots.find((s) => s.slotIndex === slotIndex);
-    const existingRoleId = targetSlot?.roleCardId;
+    const occ = targetSlot ? getSlotOccupancy(targetSlot, gameState.publicCards) : undefined;
+    const existingRoleCard = occ?.kind === 'ROLE' ? occ.card : undefined;
+    const ascPlan = handCard ? getAscensionPlan(gameState, resolvedMyUserId, handCard) : null;
+
+    if (
+      handCard &&
+      existingRoleCard &&
+      ascPlan?.targets.some(
+        (t) => t.zone === 'BATTLEFIELD' && t.card.instanceId === existingRoleCard.instanceId
+      )
+    ) {
+      triggerAscensionForTarget(handCard, ascPlan, existingRoleCard.instanceId);
+      return;
+    }
 
     sfx.playCardPlay();
-
-    if (existingRoleId && def?.rulesText?.includes('升变')) {
-      // 拖拽至已有角色卡位 -> 升变出场
+    if (existingRoleCard && def?.cardType === CardType.EQUIPMENT) {
       sendAction({
         type: 'PLAY_CARD',
         playerId: resolvedMyUserId,
         cardInstanceId,
-        isAscension: true,
-        targetAscensionCardId: existingRoleId,
-      });
-    } else if (existingRoleId && def?.cardType === CardType.EQUIPMENT) {
-      sendAction({
-        type: 'PLAY_CARD',
-        playerId: resolvedMyUserId,
-        cardInstanceId,
-        targetEquipRoleId: existingRoleId,
+        targetEquipRoleId: existingRoleCard.instanceId,
         targetSlotIndex: slotIndex,
       });
     } else {
@@ -753,7 +849,9 @@ export default function GameTabletopPage() {
         selectedBattlefieldCardId &&
           mySlots.some((s) => s.standaloneEquipmentId === selectedBattlefieldCardId)
       );
-      const isClickedFriendlyRole = mySlots.some((s) => s.roleCardId === cardId);
+      const isClickedFriendlyRole = mySlots.some((s) =>
+        isSlotEffectiveRoleCard(s, gameState.publicCards, cardId)
+      );
       if (isSelectedStandaloneEquip && isClickedFriendlyRole && selectedBattlefieldCardId) {
         handleEquipItem(selectedBattlefieldCardId, cardId);
         return;
@@ -762,6 +860,7 @@ export default function GameTabletopPage() {
       if (selectedHandCardId) {
         const handCard = myHandCards.find((c) => c.instanceId === selectedHandCardId);
         const def = handCard ? findCardByNumberOrId(handCard.cardNumber || handCard.cardId) : null;
+        const ascPlan = handCard ? getAscensionPlan(gameState, resolvedMyUserId, handCard) : null;
 
         if (isClickedFriendlyRole && def?.cardType === CardType.EQUIPMENT) {
           sfx.playCardPlay();
@@ -774,20 +873,15 @@ export default function GameTabletopPage() {
           });
           setSelectedHandCard(null);
           setSelectedBattlefieldCardId(null);
-        } else if (isClickedFriendlyRole && def?.rulesText?.includes('升变')) {
-          sfx.playCardPlay();
-          sendAction({
-            type: 'PLAY_CARD',
-            playerId: resolvedMyUserId,
-            cardInstanceId: selectedHandCardId,
-            isAscension: true,
-            targetAscensionCardId: cardId,
-          });
-          setSelectedHandCard(null);
-          setSelectedBattlefieldCardId(null);
+        } else if (
+          handCard &&
+          isClickedFriendlyRole &&
+          ascPlan?.targets.some((t) => t.zone === 'BATTLEFIELD' && t.card.instanceId === cardId)
+        ) {
+          triggerAscensionForTarget(handCard, ascPlan, cardId);
         } else if (
           def?.cardType === CardType.ASSIST &&
-          mySlots.some((s) => s.assistCardId === cardId) &&
+          mySlots.some((s) => canPlayAssistOnSlot(s, gameState.publicCards) && s.assistCardId === cardId) &&
           card.slotIndex !== undefined
         ) {
           // 8.6.2.e.3 使用新辅助机替换原有辅助机卡位
@@ -808,9 +902,12 @@ export default function GameTabletopPage() {
         setSelectedBattlefieldCardId((prev) => (prev === cardId ? null : cardId));
       }
     } else {
-      // 点击对手角色卡：宣告攻击
+      // 点击对手角色卡：宣告攻击（兼容 PR-041 变身角色）
       if (isMyTurn && gameState.phase === 'MAIN_PHASE') {
-        if (selectedBattlefieldCardId && mySlots.some((s) => s.roleCardId === selectedBattlefieldCardId)) {
+        if (
+          selectedBattlefieldCardId &&
+          mySlots.some((s) => isSlotEffectiveRoleCard(s, gameState.publicCards, selectedBattlefieldCardId))
+        ) {
           const attacker = gameState.publicCards[selectedBattlefieldCardId];
           if (attacker && attacker.controllerPlayerId === resolvedMyUserId && attacker.isReady) {
             triggerAttackAnimation(selectedBattlefieldCardId, cardId, 'CHARACTER', 'UP');
@@ -828,17 +925,34 @@ export default function GameTabletopPage() {
     }
   };
 
-
-  // 发动角色卡【起】动能力 (8.1.1.c)
-  const handleActivateAbility = (cardId: string) => {
+  // 发动卡牌【起】动能力 (8.1.1.c，支持全区域与精确 abilityIndex)
+  const handleActivateAbility = (cardId: string, abilityIndex = 0) => {
     sfx.playClick();
     sendAction({
       type: 'ACTIVATE_ABILITY',
       playerId: resolvedMyUserId,
       sourceCardId: cardId,
-      abilityIndex: 0,
+      abilityIndex,
     });
     setSelectedBattlefieldCardId(null);
+  };
+
+  // 非手牌区出牌（墓地升变 / 墓地使用战术 / 露娜下方使用战术）
+  const handleNonHandPlay = (card: CardInstance, action: NonHandPlayAction) => {
+    if (action.kind === 'ASCEND_FROM_GRAVEYARD') {
+      setGraveyardOwner(null);
+      setAscensionModalState({ card });
+      sfx.playClick();
+      return;
+    }
+    sfx.playCardPlay();
+    sendAction({
+      type: 'PLAY_CARD',
+      playerId: resolvedMyUserId,
+      cardInstanceId: card.instanceId,
+    });
+    setGraveyardOwner(null);
+    setUnderneathHostCardId(null);
   };
 
   // 角色发起进攻对手玩家 (7.2)
@@ -878,7 +992,7 @@ export default function GameTabletopPage() {
   // 部署辅助机卡 (2.2.2.c.2 / 8.6.2.e.3)
   const handlePlayAssist = (cardInstanceId: string) => {
     const emptySlot = mySlots.find(isBattlefieldSlotEmpty);
-    const replaceSlot = mySlots.find((s) => !s.roleCardId && !s.standaloneEquipmentId);
+    const replaceSlot = mySlots.find((s) => canPlayAssistOnSlot(s, gameState.publicCards));
     const target = emptySlot ?? replaceSlot;
     if (!target) return;
     sfx.playCardPlay();
@@ -976,9 +1090,9 @@ export default function GameTabletopPage() {
     }
   };
 
-  // 双击战场角色快速宣告攻击
+  // 双击战场角色快速宣告攻击（兼容 PR-041 变身角色）
   const handleBattlefieldRoleDoubleClick = (cardId: string) => {
-    if (!mySlots.some((s) => s.roleCardId === cardId)) return;
+    if (!mySlots.some((s) => isSlotEffectiveRoleCard(s, gameState.publicCards, cardId))) return;
     const card = gameState.publicCards[cardId];
     if (
       card &&
@@ -1276,16 +1390,16 @@ export default function GameTabletopPage() {
         <div className="flex items-center justify-between gap-3 px-2 py-0.5 max-w-5xl mx-auto w-full flex-shrink-0 z-20">
           <div
             onClick={() => {
-              if (selectedBattlefieldCardId && isMyTurn && gameState.phase === 'MAIN_PHASE') {
+              if (isAttackTargeting && selectedBattlefieldCardId) {
                 handleAttackClick(selectedBattlefieldCardId);
               }
             }}
             className={`w-44 lg:w-48 flex-shrink-0 transition-all duration-fast ${
-              selectedBattlefieldCardId && isMyTurn && gameState.phase === 'MAIN_PHASE'
+              isAttackTargeting
                 ? 'cursor-crosshair ring-1 ring-crimson-500 shadow-glow-crimson'
                 : ''
             }`}
-            title={selectedBattlefieldCardId ? '点击选定攻击敌方玩家' : undefined}
+            title={isAttackTargeting ? '点击选定攻击敌方玩家' : undefined}
           >
             <ErosionBar current={opponentPlayerState.erosionCount} playerName="对手" isOpponent compact={true} />
           </div>
@@ -1344,6 +1458,7 @@ export default function GameTabletopPage() {
             onRoleHover={setHoveredCard}
             onSlotClick={handleSlotClick}
             onActivateAbility={handleActivateAbility}
+            onOpenUnderneath={(hostCard) => setUnderneathHostCardId(hostCard.instanceId)}
             onAttackClick={handleAttackClick}
             onBlockClick={handleBlockClick}
             onEquipStartClick={(equipId) => setSelectedBattlefieldCardId(equipId)}
@@ -1374,6 +1489,13 @@ export default function GameTabletopPage() {
                 orbs={myOrbs}
                 selectedOrbIds={selectedOrbIds}
                 compact={true}
+                abilityOptionsByCardId={zoneAbilityMap}
+                onActivateAbility={(c, abilityIndex) => handleActivateAbility(c.instanceId, abilityIndex)}
+                onInspectCard={(c) => {
+                  setInspectedCard(c);
+                  sfx.playClick();
+                }}
+                onContextMenu={(c, e) => handleOpenContextMenu(e, c)}
                 onToggleSelectOrb={toggleOrbSelection}
                 onEliminate={(orbIds) => {
                   sfx.playOrbTriple();
@@ -1452,6 +1574,20 @@ export default function GameTabletopPage() {
                   </button>
                 )}
 
+                {selectedHandActivateOptions.map((opt) => (
+                  <button
+                    key={`hand-act-${opt.abilityIndex}`}
+                    type="button"
+                    disabled={opt.disabled}
+                    onClick={() => handleActivateAbility(selectedHandCard.instanceId, opt.abilityIndex)}
+                    title={opt.disabled ? opt.reason : opt.label}
+                    className="px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed max-w-[200px]"
+                  >
+                    <Zap className="w-3 h-3 fill-current shrink-0" />
+                    <span className="truncate">{opt.label}</span>
+                  </button>
+                ))}
+
                 {usableInstantCardIds.has(selectedHandCard.instanceId) && (
                   <button
                     type="button"
@@ -1463,31 +1599,12 @@ export default function GameTabletopPage() {
                   </button>
                 )}
 
-                {selectedHandCardDef?.rulesText?.includes('升变') && (
+                {selectedHandAscensionPlan && (
                   <button
                     type="button"
                     onClick={() => {
-                      const targetRole = mySlots
-                        .map((s) => (s.roleCardId ? gameState?.publicCards[s.roleCardId] : null))
-                        .filter(Boolean)
-                        .find((r) => {
-                          const rDef = r ? findCardByNumberOrId(r.cardNumber || r.cardId) : null;
-                          return (
-                            (selectedHandCardDef.name.includes('露西亚') && rDef?.name.includes('露西亚')) ||
-                            (rDef?.cost ?? 0) <= 5
-                          );
-                        });
-                      if (targetRole) {
-                        sfx.playCardPlay();
-                        sendAction({
-                          type: 'PLAY_CARD',
-                          playerId: resolvedMyUserId,
-                          cardInstanceId: selectedHandCard.instanceId,
-                          isAscension: true,
-                          targetAscensionCardId: targetRole.instanceId,
-                        });
-                        setSelectedHandCard(null);
-                      }
+                      sfx.playClick();
+                      setAscensionModalState({ card: selectedHandCard });
                     }}
                     className="pgr-sweep px-2.5 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
                   >
@@ -1562,7 +1679,7 @@ export default function GameTabletopPage() {
                         } else {
                           const arenaEl = elem?.closest('.ygo-battlefield-mat');
                           if (arenaEl) {
-                            const emptySlot = mySlots.find((s) => !s.roleCardId);
+                            const emptySlot = mySlots.find(isBattlefieldSlotEmpty);
                             if (emptySlot !== undefined) {
                               handleDropCardToSlot(emptySlot.slotIndex, card.instanceId);
                             }
@@ -1696,69 +1813,157 @@ export default function GameTabletopPage() {
                     </button>
                   )}
                 </span>
-                <CardDetailPanel
-                  card={inspectedCard}
-                  onOpenModal={() => setIsDetailModalOpen(true)}
-                  customAction={(() => {
-                    if (
-                      !inspectedCard ||
-                      inspectedCard.controllerPlayerId !== resolvedMyUserId ||
-                      inspectedCard.zone !== 'BATTLEFIELD'
-                    ) {
-                      return undefined;
-                    }
-                    const inspectedDef = findCardByNumberOrId(
-                      inspectedCard.cardNumber || inspectedCard.cardId
-                    );
-                    const hasAbility = !!(
-                      inspectedDef?.rulesText?.includes('【起】') ||
-                      inspectedDef?.rulesText?.includes('起动')
-                    );
-                    const canActivate = isMyTurn && gameState.phase === 'MAIN_PHASE' && hasAbility;
-                    const hasRush = canRoleAttackOnEnterTurn(inspectedCard, inspectedDef);
-                    const canAttack =
-                      isMyTurn &&
-                      gameState.phase === 'MAIN_PHASE' &&
-                      !!inspectedCard.isReady &&
-                      !hasCardProhibition(inspectedCard, 'CANNOT_ATTACK') &&
-                      (inspectedCard.turnEnteredZone < gameState.turnNumber || hasRush);
+                {(() => {
+                  const freshInspectedCard = inspectedCard
+                    ? gameState.publicCards?.[inspectedCard.instanceId] ??
+                      myHandCards.find((c) => c.instanceId === inspectedCard.instanceId) ??
+                      inspectedCard
+                    : null;
 
-                    if (!canActivate && !canAttack) return undefined;
+                  return (
+                    <CardDetailPanel
+                      card={freshInspectedCard}
+                      onOpenModal={() => setIsDetailModalOpen(true)}
+                      customAction={(() => {
+                        if (
+                          !freshInspectedCard ||
+                          freshInspectedCard.controllerPlayerId !== resolvedMyUserId
+                        ) {
+                          return undefined;
+                        }
+                        const inspectedDef = findCardByNumberOrId(
+                          freshInspectedCard.cardNumber || freshInspectedCard.cardId
+                        );
+                        const abilityOpts = getCardActivatedAbilityOptions(
+                          gameState,
+                          resolvedMyUserId,
+                          freshInspectedCard
+                        );
+                        const nonHandAction = getNonHandPlayAction(
+                          gameState,
+                          resolvedMyUserId,
+                          freshInspectedCard
+                        );
+                        const isInstantUsable = usableInstantCardIds.has(freshInspectedCard.instanceId);
+                        const handAscPlan =
+                          freshInspectedCard.zone === 'HAND' &&
+                          isMyTurn &&
+                          gameState.phase === 'MAIN_PHASE'
+                            ? getAscensionPlan(gameState, resolvedMyUserId, freshInspectedCard)
+                            : null;
+                        const isEffectiveRole =
+                          freshInspectedCard.zone === 'BATTLEFIELD' &&
+                          mySlots.some((s) =>
+                            isSlotEffectiveRoleCard(
+                              s,
+                              gameState.publicCards,
+                              freshInspectedCard.instanceId
+                            )
+                          );
+                        const hasRush = canRoleAttackOnEnterTurn(freshInspectedCard, inspectedDef);
+                        const canAttack =
+                          isEffectiveRole &&
+                          isMyTurn &&
+                          gameState.phase === 'MAIN_PHASE' &&
+                          !gameState.currentCombat &&
+                          !!freshInspectedCard.isReady &&
+                          !hasCardProhibition(freshInspectedCard, 'CANNOT_ATTACK') &&
+                          (freshInspectedCard.turnEnteredZone < gameState.turnNumber || hasRush);
 
-                    return (
-                      <div className="flex items-center gap-1.5">
-                        {canActivate && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleActivateAbility(inspectedCard.instanceId);
-                              setSelectedBattlefieldCardId(null);
-                            }}
-                            className="px-2 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
-                            title="点击发动角色的【起】动能力"
-                          >
-                            <Zap className="w-3 h-3 fill-current" />
-                            <span>发动【起】</span>
-                          </button>
-                        )}
-                        {canAttack && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleAttackClick(inspectedCard.instanceId);
-                              setSelectedBattlefieldCardId(null);
-                            }}
-                            className="px-2 py-0.5 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
-                            title="宣告攻击对方玩家"
-                          >
-                            <Swords className="w-3 h-3" />
-                            <span>宣告攻击</span>
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })()}
-                />
+                        if (
+                          abilityOpts.length === 0 &&
+                          !nonHandAction &&
+                          !isInstantUsable &&
+                          !handAscPlan &&
+                          !canAttack
+                        ) {
+                          return undefined;
+                        }
+
+                        return (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {abilityOpts.map((opt) => (
+                              <button
+                                key={`detail-act-${opt.abilityIndex}-${opt.grantedByEquipmentId || 'own'}`}
+                                type="button"
+                                disabled={opt.disabled}
+                                onClick={() => {
+                                  handleActivateAbility(
+                                    freshInspectedCard.instanceId,
+                                    opt.abilityIndex
+                                  );
+                                  setSelectedBattlefieldCardId(null);
+                                }}
+                                className="px-2 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed max-w-[180px]"
+                                title={opt.disabled ? opt.reason : opt.label}
+                              >
+                                <Zap className="w-3 h-3 fill-current shrink-0" />
+                                <span className="truncate">
+                                  {opt.grantedByEquipmentId && !opt.label.includes('[装备]')
+                                    ? `[装备] ${opt.label}`
+                                    : abilityOpts.length > 1 || opt.zone !== 'BATTLEFIELD'
+                                    ? opt.label
+                                    : '发动【起】'}
+                                </span>
+                              </button>
+                            ))}
+
+                            {nonHandAction && (
+                              <button
+                                type="button"
+                                onClick={() => handleNonHandPlay(freshInspectedCard, nonHandAction)}
+                                className="px-2 py-0.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <Play className="w-3 h-3 shrink-0" />
+                                <span>{nonHandAction.label}</span>
+                              </button>
+                            )}
+
+                            {isInstantUsable && (
+                              <button
+                                type="button"
+                                onClick={() => handleUseInstant(freshInspectedCard.instanceId)}
+                                className="px-2 py-0.5 clip-corner-sm bg-teal-400 hover:bg-teal-400/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <Zap className="w-3 h-3 fill-current shrink-0" />
+                                <span>发动【瞬时】</span>
+                              </button>
+                            )}
+
+                            {handAscPlan && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  sfx.playClick();
+                                  setAscensionModalState({ card: freshInspectedCard });
+                                }}
+                                className="px-2 py-0.5 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <ArrowUpRight className="w-3 h-3 shrink-0" />
+                                <span>升变</span>
+                              </button>
+                            )}
+
+                            {canAttack && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleAttackClick(freshInspectedCard.instanceId);
+                                  setSelectedBattlefieldCardId(null);
+                                }}
+                                className="px-2 py-0.5 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg font-semibold text-hud flex items-center gap-1 cursor-pointer transition-colors"
+                                title="宣告攻击对方玩家"
+                              >
+                                <Swords className="w-3 h-3" />
+                                <span>宣告攻击</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    />
+                  );
+                })()}
               </div>
 
               {/* 实时战斗事件流日志 */}
@@ -1789,15 +1994,31 @@ export default function GameTabletopPage() {
       {contextMenu && (() => {
         const ctxCard = contextMenu.card;
         const ctxDef = findCardByNumberOrId(ctxCard.cardNumber || ctxCard.cardId);
-        const isFriendlyFieldRole = mySlots.some((s) => s.roleCardId === ctxCard.instanceId);
-        const isFriendlyFieldAssist = mySlots.some((s) => s.assistCardId === ctxCard.instanceId);
-        const isFriendlyStandaloneEquip = mySlots.some((s) => s.standaloneEquipmentId === ctxCard.instanceId);
-        const ctxUnderneathInstants = isFriendlyFieldRole && ctxCard.underneathCardIds?.length
-          ? usableNonTacticsInstants.filter((inst) => ctxCard.underneathCardIds.includes(inst.card.instanceId))
-          : [];
-        const ctxHasAbility = Boolean(
-          ctxDef?.rulesText?.includes('【起】') || ctxDef?.rulesText?.includes('起动')
+        const isFriendlyFieldRole = mySlots.some((s) =>
+          isSlotEffectiveRoleCard(s, gameState.publicCards, ctxCard.instanceId)
         );
+        const isFriendlyStandaloneEquip = mySlots.some(
+          (s) => s.standaloneEquipmentId === ctxCard.instanceId
+        );
+        const ctxUnderneathInstants =
+          isFriendlyFieldRole && ctxCard.underneathCardIds?.length
+            ? usableNonTacticsInstants.filter((inst) =>
+                ctxCard.underneathCardIds.includes(inst.card.instanceId)
+              )
+            : [];
+        const ctxActivateOptions =
+          ctxCard.controllerPlayerId === resolvedMyUserId
+            ? getCardActivatedAbilityOptions(gameState, resolvedMyUserId, ctxCard)
+            : [];
+        const ctxHandAscensionPlan =
+          ctxCard.controllerPlayerId === resolvedMyUserId && ctxCard.zone === 'HAND'
+            ? getAscensionPlan(gameState, resolvedMyUserId, ctxCard)
+            : null;
+        const ctxNonHandPlayAction =
+          ctxCard.controllerPlayerId === resolvedMyUserId
+            ? getNonHandPlayAction(gameState, resolvedMyUserId, ctxCard)
+            : null;
+
         return (
           <CardContextMenu
             x={contextMenu.x}
@@ -1815,20 +2036,19 @@ export default function GameTabletopPage() {
             isOpponentRole={
               ctxCard.controllerPlayerId === opponentUserId &&
               ctxCard.zone === 'BATTLEFIELD' &&
-              opponentSlots.some((s) => s.roleCardId === ctxCard.instanceId)
+              opponentSlots.some((s) =>
+                isSlotEffectiveRoleCard(s, gameState.publicCards, ctxCard.instanceId)
+              )
             }
             isStandaloneEquipment={isFriendlyStandaloneEquip}
             isHandCard={
               ctxCard.controllerPlayerId === resolvedMyUserId &&
               ctxCard.zone === 'HAND'
             }
-            canActivateAbility={
-              isMyTurn &&
-              gameState.phase === 'MAIN_PHASE' &&
-              !gameState.currentCombat &&
-              (isFriendlyFieldRole || isFriendlyFieldAssist) &&
-              ctxHasAbility
-            }
+            activateOptions={ctxActivateOptions}
+            handAscensionPlan={ctxHandAscensionPlan}
+            nonHandPlayAction={ctxNonHandPlayAction}
+            underneathCardsCount={ctxCard.underneathCardIds?.length ?? 0}
             canAttack={
               isMyTurn &&
               gameState.phase === 'MAIN_PHASE' &&
@@ -1853,16 +2073,19 @@ export default function GameTabletopPage() {
               gameState.phase === 'MAIN_PHASE' &&
               !gameState.currentCombat &&
               isFriendlyStandaloneEquip &&
-              mySlots.some((s) => Boolean(s.roleCardId))
+              mySlots.some((s) => getSlotOccupancy(s, gameState.publicCards).kind === 'ROLE')
             }
             canUseHandInstant={
               ctxCard.zone === 'HAND' && usableInstantCardIds.has(ctxCard.instanceId)
             }
             underneathInstants={ctxUnderneathInstants}
             hasEmptySlot={mySlots.some(isBattlefieldSlotEmpty)}
-            hasAssistSlot={mySlots.some((s) => !s.roleCardId && !s.standaloneEquipmentId)}
+            hasAssistSlot={mySlots.some((s) => canPlayAssistOnSlot(s, gameState.publicCards))}
             hasSelectedAttacker={Boolean(
-              selectedBattlefieldCardId && mySlots.some((s) => s.roleCardId === selectedBattlefieldCardId)
+              selectedBattlefieldCardId &&
+                mySlots.some((s) =>
+                  isSlotEffectiveRoleCard(s, gameState.publicCards, selectedBattlefieldCardId)
+                )
             )}
             onPlayCard={(card) => {
               const def = findCardByNumberOrId(card.cardNumber || card.cardId);
@@ -1880,27 +2103,14 @@ export default function GameTabletopPage() {
               }
             }}
             onAscendCard={(card) => {
-              const def = findCardByNumberOrId(card.cardNumber || card.cardId);
-              const targetRole = mySlots
-                .map((s) => (s.roleCardId ? gameState?.publicCards[s.roleCardId] : null))
-                .filter(Boolean)
-                .find((r) => {
-                  const rDef = r ? findCardByNumberOrId(r.cardNumber || r.cardId) : null;
-                  return (
-                    (def?.name.includes('露西亚') && rDef?.name.includes('露西亚')) ||
-                    (rDef?.cost ?? 0) <= 5
-                  );
-                });
-              sfx.playCardPlay();
-              sendAction({
-                type: 'PLAY_CARD',
-                playerId: resolvedMyUserId,
-                cardInstanceId: card.instanceId,
-                isAscension: true,
-                targetAscensionCardId: targetRole?.instanceId,
-              });
+              sfx.playClick();
+              setAscensionModalState({ card });
             }}
-            onActivateAbility={(card) => handleActivateAbility(card.instanceId)}
+            onActivateAbility={(card, abilityIndex = 0) =>
+              handleActivateAbility(card.instanceId, abilityIndex)
+            }
+            onOpenUnderneath={(card) => setUnderneathHostCardId(card.instanceId)}
+            onNonHandPlay={handleNonHandPlay}
             onAttackPlayer={(card) => handleAttackClick(card.instanceId)}
             onAttackRole={(card) => {
               if (selectedBattlefieldCardId) {
@@ -1976,15 +2186,20 @@ export default function GameTabletopPage() {
         </div>
       )}
 
-      {/* 3. 墓地卡牌清单弹窗 */}
+      {/* 3. 墓地卡牌清单弹窗（实时读取最新 gameState） */}
       <GraveyardModal
-        isOpen={isGraveyardOpen}
-        onClose={() => setIsGraveyardOpen(false)}
-        cards={graveyardCards}
-        title={graveyardTitle}
+        isOpen={graveyardOwner !== null}
+        onClose={() => setGraveyardOwner(null)}
+        cards={graveyardOwner === 'OPPONENT' ? opponentGraveyardCards : myGraveyardCards}
+        title={graveyardOwner === 'OPPONENT' ? '敌方墓地' : '我方墓地'}
+        isFriendly={graveyardOwner === 'MY'}
+        abilityOptionsByCardId={graveyardOwner === 'MY' ? zoneAbilityMap : undefined}
+        nonHandActionsByCardId={graveyardOwner === 'MY' ? graveyardNonHandActions : undefined}
+        onActivateAbility={(c, abilityIndex) => handleActivateAbility(c.instanceId, abilityIndex)}
+        onNonHandPlay={handleNonHandPlay}
         onSelectCard={(c) => {
           setInspectedCard(c);
-          setIsGraveyardOpen(false);
+          setGraveyardOwner(null);
         }}
         onLongPress={(c) => {
           setInspectedCard(c);
@@ -2033,11 +2248,42 @@ export default function GameTabletopPage() {
         }
         isOpponent={costModalState.isOpponent}
         usableInstantCardIds={costModalState.isOpponent ? undefined : usableInstantCardIds}
+        abilityOptionsByCardId={costModalState.isOpponent ? undefined : zoneAbilityMap}
         onUseInstant={costModalState.isOpponent ? undefined : handleUseInstant}
+        onActivateAbility={
+          costModalState.isOpponent
+            ? undefined
+            : (c, abilityIndex) => handleActivateAbility(c.instanceId, abilityIndex)
+        }
         onInspectCard={(c) => {
           setInspectedCard(c);
         }}
       />
+
+      {/* 6.4 角色/辅助机下方卡牌检视与操作弹窗 */}
+      {(() => {
+        const underneathHost = underneathHostCardId
+          ? gameState.publicCards?.[underneathHostCardId] ?? null
+          : null;
+        return (
+          <UnderneathCardsModal
+            isOpen={Boolean(underneathHost)}
+            onClose={() => setUnderneathHostCardId(null)}
+            hostCard={underneathHost}
+            gameState={gameState}
+            myUserId={resolvedMyUserId}
+            isFriendly={underneathHost?.controllerPlayerId === resolvedMyUserId}
+            usableInstantCardIds={usableInstantCardIds}
+            onActivateAbility={(c, abilityIndex) => handleActivateAbility(c.instanceId, abilityIndex)}
+            onUseInstant={handleUseInstant}
+            onNonHandPlay={handleNonHandPlay}
+            onInspectCard={(c) => {
+              setInspectedCard(c);
+              setIsDetailModalOpen(true);
+            }}
+          />
+        );
+      })()}
 
       {/* 6.5 自由时点协战搭档选择弹窗 (8.13) */}
       {(() => {
@@ -2053,6 +2299,30 @@ export default function GameTabletopPage() {
           />
         );
       })()}
+
+      {/* 6.6 统一升变确认弹窗 (8.11) */}
+      <AscensionModal
+        isOpen={Boolean(ascensionModalState && activeAscensionPlan)}
+        plan={activeAscensionPlan}
+        myAvailableCost={myPlayerState.availableOpenCostCount + myPlayerState.hiddenCostCount}
+        initialTargetCardId={ascensionModalState?.initialTargetCardId}
+        initialSlotIndex={ascensionModalState?.initialSlotIndex}
+        onConfirm={(payload) => {
+          if (!ascensionModalState) return;
+          sfx.playCardPlay();
+          sendAction({
+            type: 'PLAY_CARD',
+            playerId: resolvedMyUserId,
+            cardInstanceId: ascensionModalState.card.instanceId,
+            isAscension: true,
+            ...payload,
+          });
+          setAscensionModalState(null);
+          setSelectedHandCard(null);
+          setSelectedBattlefieldCardId(null);
+        }}
+        onClose={() => setAscensionModalState(null)}
+      />
 
       {/* 7. 胜负公布结算弹窗 */}
       {gameOverResult && (

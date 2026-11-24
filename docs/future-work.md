@@ -103,7 +103,7 @@
 
 ### 3.3 前端交互补齐与视觉瑕疵修复
 
-- [ ] **全区域【起】与特殊升变 UI**：支持装备赋予【起】检测、多【起】选单（`abilityIndex`）、手牌（`BP03-002`）/墓地（`BP02-036`/`026`）/费用区（`BP03-045~050`/`054`）/角色下方（`BP04-011`/`077~079`）发动入口；接入信号球区正面升变 (`BP04-061`)、浮空升变与 `extraAscensionCostCardId` 自选，淘汰快捷升变错误硬编码；兼容 `PR-041` 变身角色渲染与点击。
+- [x] **全区域【起】与特殊升变 UI**：支持装备赋予【起】检测、多【起】选单（`abilityIndex`）、手牌（`BP03-002`）/墓地（`BP02-036`/`026`）/费用区（`BP03-045~050`/`054`）/角色下方（`BP04-011`/`077~079`）发动入口；接入信号球区正面升变 (`BP04-061`)、浮空升变与 `extraAscensionCostCardId` 自选，淘汰快捷升变错误硬编码；兼容 `PR-041` 变身角色渲染与点击。
 - [ ] **战场提示、详情面板与视觉修复**：在 `END_PHASE` `timingWindow` 中央显示醒目操作条并确保窄屏/折叠 HUD 不隐藏关键按钮；`CardDetailPanel` 与 `CardDetailModal` 展示实时有效数值、持续修改器、禁止/冰冻及双持/下方牌/搭档明细（消除与 `CardView` 角标重叠）；同步 `getCardEffectiveCost` 全量减费；修复 6 类静默失效 Tailwind v3 工具类（`-top-8.5`、`z-15`、`bg-ink-900/98`、`backdrop-blur-xs`、`bg-ink-950/92`、`via-fg/12`、`brightness-60`）；全局快捷键排除弹窗；修正攻击竖直目标/对手侵蚀条/`unblockableMaxPP`/`isLegalPlay`；`PendingChoiceModal` 展示 `maxTotalCost` 实时合计/`distinctTraits`/`eligible: false`；更新 3 处过时「ST01~ST03」近似文案。
 
 ---

@@ -261,7 +261,7 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
       </div>
 
       {/* 快捷操作区 */}
-      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-line">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-line">
         <button
           type="button"
           onClick={onOpenModal}
