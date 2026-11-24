@@ -35,10 +35,17 @@ export class CheckTimingManager {
       loopLimit--;
 
       // 8.5.1.a & 8.5.1.b 执行所有待处理的规则处理 SBA，直至不再产生新的规则处理
+      const MAX_SBA_ITERATIONS = 100;
+      let sbaIterations = 0;
       let sbaExecuted = false;
       do {
+        sbaIterations += 1;
+        if (sbaIterations > MAX_SBA_ITERATIONS) {
+          throw new Error('规则处理 (SBA) 超过安全循环上限 (8.5.1.a)');
+        }
         sbaExecuted = this.sbaEngine.runCheckTimingSba();
         if ((this.state.status as string) === 'FINISHED') return true;
+        if (this.state.currentPendingChoice) return false;
       } while (sbaExecuted);
 
       // 若存在尚未完成的玩家决策，在执行任何待机自动能力前暂停检查时机

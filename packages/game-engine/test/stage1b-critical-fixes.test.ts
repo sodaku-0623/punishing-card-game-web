@@ -76,14 +76,14 @@ describe('Stage 1B-1 (§2.4) 越权抢发、暗区泄密、白嫖与 ST04/BP01 �
     const attacker = findCards(engine, 'p1', 'ST01-001')[0]!;
     const p1Bp03054 = findCards(engine, 'p1', 'BP03-054')[0]!;
     const p1Art = findCards(engine, 'p1', 'BP01-058')[0]!;
-    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0);
-    engine.fieldMgr.playRoleCard('p1', p1Art.instanceId, 1);
+    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0, { suppressEntryTrigger: true });
+    engine.fieldMgr.playRoleCard('p1', p1Art.instanceId, 1, { suppressEntryTrigger: true });
     state.cards[attacker.instanceId]!.turnEnteredZone = 0;
     addCostWithCard(engine, 'p1', p1Bp03054.instanceId);
 
     const defBp03054 = findCards(engine, 'p2', 'BP03-054')[0]!;
     const defArt = findCards(engine, 'p2', 'BP01-058')[0]!;
-    engine.fieldMgr.playRoleCard('p2', defArt.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p2', defArt.instanceId, 0, { suppressEntryTrigger: true });
     addCostWithCard(engine, 'p2', defBp03054.instanceId);
 
     const atkRes = engine.dispatchAction({
@@ -293,6 +293,20 @@ describe('Stage 1B-1 (§2.4) 越权抢发、暗区泄密、白嫖与 ST04/BP01 �
     });
     expect(play.success, play.error).toBe(true);
 
+    // BP01-058 两条独立【出】同时进入待机，先选择【出1】(丢弃 2 张手牌)
+    const orderChoice = state.currentPendingChoice!;
+    expect(orderChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    expect(orderChoice.options).toHaveLength(2);
+    const entry1Opt = orderChoice.options.find((o) => o.label.includes('丢弃 2 张手牌'))!;
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: 'p1',
+        pendingChoiceId: orderChoice.id,
+        selectedIds: [entry1Opt.id],
+      }).success
+    ).toBe(true);
+
     const discardChoice = state.currentPendingChoice!;
     expect(discardChoice.minSelections).toBe(0);
     expect(discardChoice.maxSelections).toBe(2);
@@ -331,10 +345,10 @@ describe('Stage 1B-1 (§2.4) 越权抢发、暗区泄密、白嫖与 ST04/BP01 �
     expect(shields.length).toBeGreaterThanOrEqual(2);
 
     const atk1 = findCards(engine, 'p1', 'ST01-001')[0]!;
-    engine.fieldMgr.playRoleCard('p1', atk1.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p1', atk1.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[atk1.instanceId]!.turnEnteredZone = 0;
 
-    engine.fieldMgr.playRoleCard('p2', st04002.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p2', st04002.instanceId, 0, { suppressEntryTrigger: true });
     for (const sh of shields.slice(0, 2)) engine.zoneMgr.moveCard(sh.instanceId, 'HAND');
     const defOrbs = Object.values(state.cards)
       .filter((c) => c.ownerPlayerId === 'p2' && db.getCard(c.cardNumber)?.signalOrb === 'RED')
@@ -408,7 +422,7 @@ describe('Stage 1B-1 (§2.4) 越权抢发、暗区泄密、白嫖与 ST04/BP01 �
 
     const st04003 = findCards(engine, 'p1', 'ST04-003')[0]!;
     const st04002 = findCards(engine, 'p1', 'ST04-002')[0]!;
-    engine.fieldMgr.playRoleCard('p1', st04003.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p1', st04003.instanceId, 0, { suppressEntryTrigger: true });
     engine.zoneMgr.moveCard(st04002.instanceId, 'GRAVEYARD', { isFaceUp: true });
 
     engine.triggerMgr.emit({ type: 'END_PHASE_TRIGGERS', playerId: 'p1' });
@@ -523,16 +537,16 @@ describe('Stage 1B-1 (§2.4) 越权抢发、暗区泄密、白嫖与 ST04/BP01 �
     const big = findCards(engine, 'p2', 'BP01-021')[0]!;
 
     const attacker = findCards(engine, 'p1', 'ST01-001')[0]!;
-    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p1', attacker.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[attacker.instanceId]!.turnEnteredZone = 0;
     state.cards[attacker.instanceId]!.modifiers = [
       { pp: 8000, keywords: ['贯通'], untilTurn: state.turnNumber, source: 'TEST' },
     ];
 
-    engine.fieldMgr.playRoleCard('p2', alpha17.instanceId, 0);
+    engine.fieldMgr.playRoleCard('p2', alpha17.instanceId, 0, { suppressEntryTrigger: true });
     state.cards[alpha17.instanceId]!.isReady = false;
-    expect(engine.fieldMgr.equipToRole('p2', small.instanceId, alpha17.instanceId)).toBe(true);
-    expect(engine.fieldMgr.equipToRole('p2', big.instanceId, alpha17.instanceId)).toBe(true);
+    expect(engine.fieldMgr.equipToRole('p2', small.instanceId, alpha17.instanceId, { suppressEntryTrigger: true })).toBe(true);
+    expect(engine.fieldMgr.equipToRole('p2', big.instanceId, alpha17.instanceId, { suppressEntryTrigger: true })).toBe(true);
     expect(getAttachedEquipmentIds(state.cards[alpha17.instanceId]!)).toHaveLength(2);
 
     const erosionBefore = state.players['p2']!.erosionCount;

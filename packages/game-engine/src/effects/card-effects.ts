@@ -43,6 +43,49 @@ export class CardEffectEngine {
     }
     if (ctx.triggerMgr) {
       this.presets.registerTriggers(ctx.triggerMgr);
+      ctx.triggerMgr.registerTrigger({
+        abilityId: 'legacy:CARD_ENTRY',
+        eventTypes: ['CARD_ENTERED_FIELD'],
+        collect: ({ state, event, continuousEffects }) => {
+          if (event.suppressEntryTrigger) return [];
+          const enteredId = event.cardInstanceId;
+          const playerId = event.playerId;
+          if (!enteredId || !playerId) return [];
+          const card = state.cards[enteredId];
+          if (!card || card.zone !== 'BATTLEFIELD') return [];
+          if (continuousEffects.hasLostInherentAbilities(enteredId)) return [];
+          if (this.presets.handlesEntry(card.cardNumber) || this.presets.isVanillaEntry(card.cardNumber)) {
+            return [];
+          }
+          const def = this.getCardDef(card);
+          if (!def) return [];
+          if (
+            !def.rulesText.includes('【出】') &&
+            !def.rulesText.includes('登场时') &&
+            def.cardNumber !== 'BP04-028'
+          ) {
+            return [];
+          }
+          return [
+            {
+              sourceCardInstanceId: enteredId,
+              sourceCardNumber: card.cardNumber,
+              controllerPlayerId: playerId,
+              label: `【${def.name}】【出】登场能力`,
+              triggerContext: { cardNumber: card.cardNumber },
+            },
+          ];
+        },
+        execute: (trigger) => {
+          const card = this.ctx.state.cards[trigger.sourceCardInstanceId];
+          const def = card ? this.getCardDef(card) : undefined;
+          if (def) {
+            this.handleRoleEntryEffect(trigger.controllerPlayerId, trigger.sourceCardInstanceId, def, {
+              keepQueuedTrigger: true,
+            });
+          }
+        },
+      });
     }
   }
 
@@ -73,7 +116,8 @@ export class CardEffectEngine {
       return false;
     }
     const snapshot = this.ctx.triggerMgr?.snapshotCard(cardInstanceId);
-    this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
+    const moved = this.ctx.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
+    if (!moved) return false;
     this.ctx.events.push({
       type: 'CARD_DESTROYED',
       cardInstanceId,
@@ -84,7 +128,7 @@ export class CardEffectEngine {
       playerId: target.controllerPlayerId,
       cardInstanceId,
       fromZone: 'BATTLEFIELD',
-      toZone: 'GRAVEYARD',
+      toZone: this.ctx.state.cards[cardInstanceId]?.zone ?? 'GRAVEYARD',
       destroyReason: reason,
       subjectSnapshot: snapshot,
     });
@@ -513,11 +557,22 @@ export class CardEffectEngine {
   handleRoleEntryEffect(
     playerId: string,
     roleInstanceId: string,
-    cardDef: CardVersionData
+    cardDef: CardVersionData,
+    options?: { keepQueuedTrigger?: boolean }
   ): void {
     const cardNum = cardDef.cardNumber;
     const roleCard = this.ctx.state.cards[roleInstanceId];
     if (!roleCard) return;
+
+    if (!options?.keepQueuedTrigger && this.ctx.state.pendingTriggers.length > 0) {
+      this.ctx.state.pendingTriggers = this.ctx.state.pendingTriggers.filter(
+        (t) =>
+          !(
+            t.sourceCardInstanceId === roleInstanceId &&
+            (t.abilityId === 'dsl:CARD_ENTRY' || t.abilityId === 'legacy:CARD_ENTRY')
+          )
+      );
+    }
 
     if (this.presets.handlesEntry(cardNum) || this.presets.isVanillaEntry(cardNum)) {
       if (this.presets.handlesEntry(cardNum)) this.presets.enter(playerId, roleInstanceId, cardDef);
@@ -849,8 +904,9 @@ export class CardEffectEngine {
 
     // 11. BP01-076 (卡穆·狂犬): 【起】将该牌从战场放置到牌组底：选择我方墓地1张<突击鹰小队>角色，将其加入手牌
     if (cardNum === 'BP01-076' || cardDef.rulesText.includes('选择我方墓地1张<突击鹰小队>角色，将其加入手牌')) {
-      this.ctx.fieldMgr.handleCardLeaveField(sourceCardId);
-      this.ctx.zoneMgr.moveCardToBottomOfDeck(sourceCardId);
+      if (!this.ctx.zoneMgr.moveCardToBottomOfDeck(sourceCardId)) {
+        return { success: true };
+      }
       const gyRoles = this.ctx.zoneMgr.getCardsInZone(playerId, 'GRAVEYARD').filter((c) => {
         const d = this.getCardDef(c);
         return d?.cardType === CardType.ROLE && (d?.traits?.some((t) => t.includes('突击鹰')) || d?.name?.includes('神威') || d?.name?.includes('库洛姆'));
@@ -1132,8 +1188,6 @@ export class CardEffectEngine {
           const emptySlot = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
           if (emptySlot !== undefined) {
             this.ctx.fieldMgr.playRoleCard(playerId, id, emptySlot);
-            const def = this.getCardDef(id);
-            if (def) this.handleRoleEntryEffect(playerId, id, def);
           }
         }
         if (choice.sourceCardInstanceId) {
@@ -1278,8 +1332,6 @@ export class CardEffectEngine {
                 const emptySlot = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
                 if (emptySlot !== undefined) {
                   this.ctx.fieldMgr.playRoleCard(playerId, id, emptySlot);
-                  const def = this.getCardDef(id);
-                  if (def) this.handleRoleEntryEffect(playerId, id, def);
                 } else {
                   this.ctx.zoneMgr.moveCard(id, 'HAND', { isFaceUp: true });
                 }
@@ -1587,10 +1639,7 @@ export class CardEffectEngine {
       // BP01-003 回手两段式结算
       case 'BP01_003_BOUNCE_STEP1': {
         const bounceId = selectedIds[0];
-        if (bounceId) {
-          this.ctx.fieldMgr.handleCardLeaveField(bounceId);
-          this.ctx.zoneMgr.moveCard(bounceId, 'HAND', { isFaceUp: true, isReady: true });
-
+        if (bounceId && this.ctx.zoneMgr.moveCard(bounceId, 'HAND', { isFaceUp: true, isReady: true })) {
           // 第二阶段：选择战场1张费用为5及以下的角色返回手牌 (双方战场均可)
           const allRoles = [...this.getFriendlyRoles(playerId), ...this.getOpponentRoles(playerId)];
           const eligibleRoles = allRoles.filter((r) => {
@@ -1659,7 +1708,6 @@ export class CardEffectEngine {
         for (const id of selectedIds) {
           const card = this.ctx.state.cards[id];
           if (card) {
-            this.ctx.fieldMgr.handleCardLeaveField(id);
             this.ctx.zoneMgr.moveCard(id, 'COST', { isFaceUp: false, isReady: false });
           }
         }
@@ -1669,7 +1717,6 @@ export class CardEffectEngine {
       // 角色放置到底牌组 (BP01-058 / BP01-067 等)
       case 'SEND_ROLE_TO_DECK_BOTTOM': {
         for (const id of selectedIds) {
-          this.ctx.fieldMgr.handleCardLeaveField(id);
           this.ctx.zoneMgr.moveCardToBottomOfDeck(id);
         }
         break;
@@ -1687,7 +1734,6 @@ export class CardEffectEngine {
       // 通用角色返回手牌
       case 'BOUNCE_ROLE': {
         for (const id of selectedIds) {
-          this.ctx.fieldMgr.handleCardLeaveField(id);
           this.ctx.zoneMgr.moveCard(id, 'HAND', { isFaceUp: true, isReady: true });
         }
         break;
@@ -1696,13 +1742,10 @@ export class CardEffectEngine {
       // 角色下方垫牌 (如《帕瓦》附着于《七实·遥星之座》下方)
       case 'ATTACH_UNDERNEATH': {
         for (const id of selectedIds) {
-          const target = this.ctx.state.cards[id];
-          if (target && choice.sourceCardInstanceId) {
-            target.underneathCardIds = target.underneathCardIds || [];
-            target.underneathCardIds.push(choice.sourceCardInstanceId);
-            // 放置到其他卡牌下方：离开原卡位 (9.6 其原本下方的卡牌送墓)，作为下方的牌留在该卡位 (3.2.6)
-            this.ctx.fieldMgr.handleCardLeaveField(choice.sourceCardInstanceId);
-            this.ctx.zoneMgr.moveCard(choice.sourceCardInstanceId, 'BATTLEFIELD', { slotIndex: target.slotIndex, isFaceUp: true });
+          if (choice.sourceCardInstanceId) {
+            this.ctx.fieldMgr.placeCardUnderneath(choice.sourceCardInstanceId, id, {
+              actorPlayerId: playerId,
+            });
           }
         }
         break;
@@ -1738,9 +1781,6 @@ export class CardEffectEngine {
         const equipDef = this.getCardDef(equipCard);
         if (equipDef) {
           this.handleEquipmentBuff(roleId, equipDef);
-          if (this.presets.handlesEntry(equipDef.cardNumber)) {
-            this.presets.enter(playerId, equipCard.instanceId, equipDef);
-          }
         }
         break;
       }
@@ -1757,9 +1797,8 @@ export class CardEffectEngine {
         });
         if (targets.length === 0) break;
         if (targets.length === 1) {
-          if (this.ctx.payCost(playerId, 3) && this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targets[0]!.instanceId)) {
-            const def = this.getCardDef(chargeCard);
-            if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
+          if (this.ctx.payCost(playerId, 3)) {
+            this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targets[0]!.instanceId);
           }
         } else {
           this.ctx.setPendingChoice({
@@ -1782,9 +1821,8 @@ export class CardEffectEngine {
         const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
         const targetId = selectedIds[0];
         if (!chargeCard || chargeCard.zone !== 'PROCESSING' || !targetId) break;
-        if (this.ctx.payCost(playerId, 3) && this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targetId)) {
-          const def = this.getCardDef(chargeCard);
-          if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
+        if (this.ctx.payCost(playerId, 3)) {
+          this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targetId);
         }
         break;
       }
@@ -1804,8 +1842,6 @@ export class CardEffectEngine {
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
         }
         if (this.ctx.fieldMgr.playRoleCard(playerId, chargeCardId!, slotIdx)) {
-          const def = this.getCardDef(chargeCard);
-          if (def) this.handleRoleEntryEffect(playerId, chargeCardId!, def);
           this.ctx.triggerMgr?.registerDelayedTrigger({
             eventType: 'END_PHASE_TRIGGERS',
             triggerTurn: this.ctx.state.turnNumber,
@@ -1952,10 +1988,7 @@ export class CardEffectEngine {
         });
         if (handLees.length === 1) {
           const targetLee = handLees[0]!;
-          if (this.ctx.fieldMgr.playRoleCard(playerId, targetLee.instanceId, slotIdx)) {
-            const def = this.getCardDef(targetLee);
-            if (def) this.handleRoleEntryEffect(playerId, targetLee.instanceId, def);
-          }
+          this.ctx.fieldMgr.playRoleCard(playerId, targetLee.instanceId, slotIdx);
         } else if (handLees.length > 1) {
           this.ctx.setPendingChoice({
             id: `choice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1977,10 +2010,7 @@ export class CardEffectEngine {
         const picked = pickedId ? this.ctx.state.cards[pickedId] : undefined;
         const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
         if (!picked || picked.zone !== 'HAND' || slotIdx === undefined) break;
-        if (this.ctx.fieldMgr.playRoleCard(playerId, picked.instanceId, slotIdx)) {
-          const def = this.getCardDef(picked);
-          if (def) this.handleRoleEntryEffect(playerId, picked.instanceId, def);
-        }
+        this.ctx.fieldMgr.playRoleCard(playerId, picked.instanceId, slotIdx);
         break;
       }
 
@@ -2070,9 +2100,8 @@ export class CardEffectEngine {
         }
         this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
         const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
-        if (slotIdx !== undefined && this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx)) {
-          const def = this.getCardDef(card);
-          if (def) this.handleRoleEntryEffect(playerId, card.instanceId, def);
+        if (slotIdx !== undefined) {
+          this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx);
         }
         break;
       }
@@ -2083,7 +2112,6 @@ export class CardEffectEngine {
           const targetCard = this.ctx.state.cards[selectedId];
           if (targetCard) {
             if (choice.prompt.includes('返回手牌')) {
-              this.ctx.fieldMgr.handleCardLeaveField(targetCard.instanceId);
               this.ctx.zoneMgr.moveCard(targetCard.instanceId, 'HAND', { isFaceUp: true, isReady: true });
             } else if (choice.prompt.includes('装备')) {
               const processingEquip = this.ctx.zoneMgr
@@ -3179,13 +3207,12 @@ export class CardEffectEngine {
         if (!host || slotIdx === undefined) {
           return { success: false, error: '无法从下方出场' };
         }
-        host.underneathCardIds = host.underneathCardIds.filter((id) => id !== card.instanceId);
-        card.zone = 'PROCESSING';
-        card.slotIndex = undefined;
+        if (!this.ctx.zoneMgr.moveCard(card.instanceId, 'PROCESSING', { isFaceUp: true, skipLeftFieldTrigger: true })) {
+          return { success: false, error: '无法从下方出场' };
+        }
         if (!this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx, { deployedFromHostCardId: host.instanceId })) {
           return { success: false, error: '出场失败' };
         }
-        this.handleRoleEntryEffect(playerId, card.instanceId, cardDef);
         if (cardDef.cardNumber === 'BP04-007') {
           const handCards = this.ctx.zoneMgr.getCardsInZone(playerId, 'HAND');
           const lunaHosts = this.getFriendlyRoles(playerId).filter((r) =>
@@ -3223,8 +3250,8 @@ export class CardEffectEngine {
           }
           this.ctx.events.push({ type: 'ORBS_ELIMINATED', playerId, orbCardIds: orbIds, cardDrawnCount: 0 });
           const slotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
-          if (slotIdx !== undefined && this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx)) {
-            this.handleRoleEntryEffect(playerId, card.instanceId, cardDef);
+          if (slotIdx !== undefined) {
+            this.ctx.fieldMgr.playRoleCard(playerId, card.instanceId, slotIdx);
           }
         } else if (pairStarts.length > 1) {
           this.ctx.setPendingChoice({

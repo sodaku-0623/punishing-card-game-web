@@ -29,6 +29,9 @@ export interface ReplacementMoveEvent {
   toBottom?: boolean;
   isOrphanCleanup?: boolean;
   orphanHostCardId?: string;
+  isPlacingUnderneath?: boolean;
+  underneathHostId?: string;
+  includeUnderneath?: boolean;
 }
 
 export interface ReplacementDamageEvent {
@@ -72,14 +75,22 @@ export interface ReplacementRuleContext {
  */
 export interface ReplacementRule {
   id: string;
+  label?: string;
   eventTypes: ReplacementEventType[];
+  /** 无副作用的匹配判定 (供 8.10.2 多置换选序使用) */
+  matches?: (event: ReplacementEvent, ctx: ReplacementRuleContext) => boolean;
   /** 返回匹配并执行后的置换结果；返回 { kind: 'NONE' } 或 undefined 表示本次不适用 */
-  apply: (event: ReplacementEvent, ctx: ReplacementRuleContext) => ReplacementOutcome | undefined;
+  apply: (
+    event: ReplacementEvent,
+    ctx: ReplacementRuleContext,
+    appliedIds?: Set<string>
+  ) => ReplacementOutcome | undefined;
 }
 
 export interface InterceptDestroyResult {
   replaced: boolean;
   prevented: boolean;
+  pendingChoice?: boolean;
   redirect?: {
     zone: ZoneId;
     isFaceUp?: boolean;
@@ -92,10 +103,17 @@ export interface InterceptDestroyResult {
 export interface InterceptMoveResult {
   replaced: boolean;
   prevented: boolean;
+  pendingChoice?: boolean;
   toZone: ZoneId;
   isFaceUp?: boolean;
   isReady?: boolean;
   toBottom?: boolean;
+  appliedIds: Set<string>;
+}
+
+export interface InterceptDamageResult {
+  amount: number;
+  pendingChoice?: boolean;
   appliedIds: Set<string>;
 }
 
@@ -185,7 +203,8 @@ export class ReplacementEngine {
     cardInstanceId: string,
     reason: 'BATTLE' | 'EFFECT' | 'PP_ZERO',
     attackerCardId?: string,
-    appliedIds: Set<string> = new Set()
+    appliedIds: Set<string> = new Set(),
+    options?: { preferredReplacementId?: string }
   ): InterceptDestroyResult {
     const card = this.state.cards[cardInstanceId];
     if (!card) return { replaced: false, prevented: false, appliedIds };
@@ -198,23 +217,72 @@ export class ReplacementEngine {
       attackerCardId,
     };
 
-    // 1. 先检查状态内置换效果 (activeReplacements)
-    const activeMatch = this.findAndConsumeActiveReplacement(event, appliedIds);
-    if (activeMatch) {
-      appliedIds.add(activeMatch.id);
-      if (activeMatch.action.kind === 'PREVENT') {
-        return { replaced: true, prevented: true, appliedIds };
-      }
-      const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, activeMatch.action);
-      return { replaced: true, prevented: true, redirect: adjusted, appliedIds };
+    const ctx = this.makeContext();
+    const candidates = this.collectMatchingCandidates(event, ctx, appliedIds);
+
+    let chosenCandidate = options?.preferredReplacementId
+      ? candidates.find((c) => c.id === options.preferredReplacementId)
+      : undefined;
+
+    if (!chosenCandidate && candidates.length >= 2 && this.choiceEnqueuer) {
+      const affectedPlayerId = card.ownerPlayerId || card.controllerPlayerId;
+      const seq = nextEffectTimestamp(this.state);
+      this.choiceEnqueuer({
+        id: `choice-repl-order-destroy-${this.state.turnNumber}-${seq}`,
+        playerId: affectedPlayerId,
+        choiceType: 'SELECT_OPTION',
+        prompt: `存在 ${candidates.length} 个同时适用的置换效果 (8.10.2)，请选择优先适用哪一个：`,
+        options: candidates.map((c) => ({ id: c.id, label: c.label })),
+        effectType: 'CHOOSE_REPLACEMENT_ORDER',
+        sourceCardInstanceId: cardInstanceId,
+        minSelections: 1,
+        maxSelections: 1,
+        metadata: {
+          eventKind: 'DESTROY_ROLE',
+          cardInstanceId,
+          reason,
+          attackerCardId,
+          combatCannotDealDamage: Boolean(this.state.currentCombat?.cannotDealDamage),
+          appliedIds: Array.from(appliedIds),
+        },
+      });
+      return { replaced: true, prevented: true, pendingChoice: true, appliedIds };
     }
 
-    // 2. 再检查已注册的静态/卡牌置换规则
-    const ctx = this.makeContext();
+    if (!chosenCandidate && candidates.length > 0) {
+      chosenCandidate = candidates[0];
+    }
+
+    if (chosenCandidate) {
+      appliedIds.add(chosenCandidate.id);
+      if (chosenCandidate.kind === 'ACTIVE') {
+        const active = chosenCandidate.effect;
+        this.consumeActiveReplacementIfOnce(active);
+        if (active.action.kind === 'PREVENT') {
+          return { replaced: true, prevented: true, appliedIds };
+        }
+        if (active.action.kind === 'REDIRECT_ZONE') {
+          const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, active.action);
+          return { replaced: true, prevented: true, redirect: adjusted, appliedIds };
+        }
+      } else {
+        const outcome = chosenCandidate.rule.apply(event, ctx, appliedIds);
+        if (outcome?.kind === 'PREVENT') {
+          return { replaced: true, prevented: true, appliedIds };
+        }
+        if (outcome?.kind === 'REDIRECT_ZONE') {
+          const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, outcome);
+          return { replaced: true, prevented: true, redirect: adjusted, appliedIds };
+        }
+      }
+    }
+
+    // 兼容未提供 matches 判定的自定义规则
     for (const rule of this.rules) {
+      if (rule.matches) continue;
       if (appliedIds.has(rule.id)) continue;
       if (!rule.eventTypes.includes('DESTROY_ROLE')) continue;
-      const outcome = rule.apply(event, ctx);
+      const outcome = rule.apply(event, ctx, appliedIds);
       if (!outcome || outcome.kind === 'NONE') continue;
       appliedIds.add(rule.id);
       if (outcome.kind === 'PREVENT') {
@@ -230,7 +298,7 @@ export class ReplacementEngine {
   }
 
   /**
-   * 8.10 拦截卡牌区域移动 (支持多次链式置换，且 8.10.2.c 保证每条规则对同一事件最多适用一次)
+   * 8.10 拦截卡牌区域移动 (支持多置换选序 8.10.2、多次链式置换、3.6.4 二次置换链，以及 8.10.2.c 单事件防循环)
    */
   interceptMoveCard(
     cardInstanceId: string,
@@ -242,6 +310,13 @@ export class ReplacementEngine {
       toBottom?: boolean;
       isOrphanCleanup?: boolean;
       orphanHostCardId?: string;
+      isPlacingUnderneath?: boolean;
+      underneathHostId?: string;
+      includeUnderneath?: boolean;
+      skipLeftFieldTrigger?: boolean;
+      sentByEffectOrCost?: boolean;
+      countAsDeckToGy?: boolean;
+      preferredReplacementId?: string;
     },
     appliedIds: Set<string> = new Set()
   ): InterceptMoveResult {
@@ -262,7 +337,9 @@ export class ReplacementEngine {
     let currentFaceUp = options?.isFaceUp;
     let currentReady = options?.isReady;
     let currentToBottom = options?.toBottom;
+    let currentPlacingUnderneath = options?.isPlacingUnderneath;
     let replaced = false;
+    let preferredId = options?.preferredReplacementId;
 
     const ctx = this.makeContext();
 
@@ -278,45 +355,140 @@ export class ReplacementEngine {
         toBottom: currentToBottom,
         isOrphanCleanup: options?.isOrphanCleanup,
         orphanHostCardId: options?.orphanHostCardId,
+        isPlacingUnderneath: currentPlacingUnderneath,
+        underneathHostId: options?.underneathHostId,
+        includeUnderneath: options?.includeUnderneath,
       };
 
-      const activeMatch = this.findAndConsumeActiveReplacement(event, appliedIds);
-      if (activeMatch) {
-        appliedIds.add(activeMatch.id);
-        replaced = true;
-        if (activeMatch.action.kind === 'PREVENT') {
-          return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
-        }
-        const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, activeMatch.action);
-        currentToZone = adjusted.zone;
-        currentFaceUp = adjusted.isFaceUp;
-        currentReady = adjusted.isReady;
-        currentToBottom = adjusted.toBottom;
-        continue;
+      const candidates = this.collectMatchingCandidates(event, ctx, appliedIds);
+      let chosen = preferredId ? candidates.find((c) => c.id === preferredId) : undefined;
+      preferredId = undefined;
+
+      if (!chosen && candidates.length >= 2 && this.choiceEnqueuer) {
+        const affectedPlayerId = card.ownerPlayerId || card.controllerPlayerId;
+        const seq = nextEffectTimestamp(this.state);
+        this.choiceEnqueuer({
+          id: `choice-repl-order-move-${this.state.turnNumber}-${seq}`,
+          playerId: affectedPlayerId,
+          choiceType: 'SELECT_OPTION',
+          prompt: `存在 ${candidates.length} 个同时适用的移动置换效果 (8.10.2)，请选择优先适用哪一个：`,
+          options: candidates.map((c) => ({ id: c.id, label: c.label })),
+          effectType: 'CHOOSE_REPLACEMENT_ORDER',
+          sourceCardInstanceId: cardInstanceId,
+          minSelections: 1,
+          maxSelections: 1,
+          metadata: {
+            eventKind: 'MOVE_CARD',
+            cardInstanceId,
+            fromZone,
+            toZone: currentToZone,
+            isFaceUp: currentFaceUp,
+            isReady: currentReady,
+            toBottom: currentToBottom,
+            isOrphanCleanup: options?.isOrphanCleanup,
+            orphanHostCardId: options?.orphanHostCardId,
+            isPlacingUnderneath: currentPlacingUnderneath,
+            underneathHostId: options?.underneathHostId,
+            includeUnderneath: options?.includeUnderneath,
+            skipLeftFieldTrigger: options?.skipLeftFieldTrigger,
+            sentByEffectOrCost: options?.sentByEffectOrCost,
+            countAsDeckToGy: options?.countAsDeckToGy,
+            appliedIds: Array.from(appliedIds),
+          },
+        });
+        return {
+          replaced: true,
+          prevented: true,
+          pendingChoice: true,
+          toZone: fromZone,
+          appliedIds,
+        };
       }
 
-      let matchedRule = false;
+      if (!chosen && candidates.length > 0) {
+        chosen = candidates[0];
+      }
+
+      if (chosen) {
+        appliedIds.add(chosen.id);
+        replaced = true;
+        if (chosen.kind === 'ACTIVE') {
+          const active = chosen.effect;
+          this.consumeActiveReplacementIfOnce(active);
+          if (active.action.kind === 'PREVENT') {
+            return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
+          }
+          if (active.action.kind === 'REDIRECT_ZONE') {
+            currentToZone = active.action.zone;
+            currentFaceUp = active.action.isFaceUp;
+            currentReady = active.action.isReady;
+            currentToBottom = active.action.toBottom;
+            currentPlacingUnderneath = false;
+            continue;
+          }
+        } else {
+          const outcome = chosen.rule.apply(event, ctx, appliedIds);
+          if (outcome?.kind === 'PREVENT') {
+            return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
+          }
+          if (outcome?.kind === 'REDIRECT_ZONE') {
+            currentToZone = outcome.zone;
+            currentFaceUp = outcome.isFaceUp;
+            currentReady = outcome.isReady;
+            currentToBottom = outcome.toBottom;
+            currentPlacingUnderneath = false;
+            continue;
+          }
+        }
+      }
+
+      // 兼容未提供 matches 判定的自定义规则
+      let matchedLegacyRule = false;
       for (const rule of this.rules) {
+        if (rule.matches) continue;
         if (appliedIds.has(rule.id)) continue;
         if (!rule.eventTypes.includes('MOVE_CARD')) continue;
-        const outcome = rule.apply(event, ctx);
+        const outcome = rule.apply(event, ctx, appliedIds);
         if (!outcome || outcome.kind === 'NONE') continue;
         appliedIds.add(rule.id);
         replaced = true;
-        matchedRule = true;
+        matchedLegacyRule = true;
         if (outcome.kind === 'PREVENT') {
           return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
         }
         if (outcome.kind === 'REDIRECT_ZONE') {
-          const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, outcome);
-          currentToZone = adjusted.zone;
-          currentFaceUp = adjusted.isFaceUp;
-          currentReady = adjusted.isReady;
-          currentToBottom = adjusted.toBottom;
+          currentToZone = outcome.zone;
+          currentFaceUp = outcome.isFaceUp;
+          currentReady = outcome.isReady;
+          currentToBottom = outcome.toBottom;
+          currentPlacingUnderneath = false;
         }
         break;
       }
-      if (!matchedRule) break;
+      if (matchedLegacyRule) continue;
+
+      // 3.6.4 / Q&A·5：目标为费用区且已达上限 (默认10/BP03-052为11) 时，改为正面放置到墓地，并继续允许针对 GRAVEYARD 的二次置换链
+      const capRuleId = 'rule:3.6.4_COST_ZONE_CAP';
+      if (
+        currentToZone === 'COST' &&
+        fromZone !== 'COST' &&
+        !appliedIds.has(capRuleId)
+      ) {
+        const costCount = this.getZoneCards(card.controllerPlayerId, 'COST').length;
+        const cap = this.maxCostCapProvider?.(card.controllerPlayerId) ?? RULE_CONSTANTS.MAX_COST_ZONE_CAPACITY;
+        if (costCount >= cap) {
+          appliedIds.add(capRuleId);
+          replaced = true;
+          currentToZone = 'GRAVEYARD';
+          currentFaceUp = true;
+          currentReady = true;
+          currentToBottom = false;
+          currentPlacingUnderneath = false;
+          continue;
+        }
+      }
+
+      break;
     }
 
     return {
@@ -331,18 +503,21 @@ export class ReplacementEngine {
   }
 
   /**
-   * 8.10 拦截玩家受到的伤害量
+   * 8.10 拦截玩家受到的伤害量 (支持多置换选序、MODIFY_DAMAGE 与 pendingChoice 挂起恢复)
    */
-  interceptDealDamage(
+  interceptDealDamageDetailed(
     defenderPlayerId: string,
     amount: number,
     sourceCardId?: string,
-    appliedIds: Set<string> = new Set()
-  ): number {
+    appliedIds: Set<string> = new Set(),
+    options?: { preferredReplacementId?: string; applyMode?: 'DIRECT_DAMAGE' | 'COMBAT_DAMAGE' }
+  ): InterceptDamageResult {
     let current = amount;
-    if (current <= 0) return 0;
+    if (current <= 0) return { amount: 0, appliedIds };
 
     const ctx = this.makeContext();
+    let preferredId = options?.preferredReplacementId;
+
     for (let guard = 0; guard < 10 && current > 0; guard++) {
       const event: ReplacementDamageEvent = {
         type: 'DEAL_DAMAGE',
@@ -350,62 +525,166 @@ export class ReplacementEngine {
         amount: current,
         sourceCardId,
       };
-      const activeMatch = this.findAndConsumeActiveReplacement(event, appliedIds);
-      if (activeMatch) {
-        appliedIds.add(activeMatch.id);
-        if (activeMatch.action.kind === 'PREVENT') return 0;
+
+      const candidates = this.collectMatchingCandidates(event, ctx, appliedIds);
+      let chosen = preferredId ? candidates.find((c) => c.id === preferredId) : undefined;
+      preferredId = undefined;
+
+      if (!chosen && candidates.length >= 2 && this.choiceEnqueuer) {
+        const seq = nextEffectTimestamp(this.state);
+        this.choiceEnqueuer({
+          id: `choice-repl-order-damage-${this.state.turnNumber}-${seq}`,
+          playerId: defenderPlayerId,
+          choiceType: 'SELECT_OPTION',
+          prompt: `存在 ${candidates.length} 个同时适用的伤害置换效果 (8.10.2)，请选择优先适用哪一个：`,
+          options: candidates.map((c) => ({ id: c.id, label: c.label })),
+          effectType: 'CHOOSE_REPLACEMENT_ORDER',
+          sourceCardInstanceId: sourceCardId,
+          minSelections: 1,
+          maxSelections: 1,
+          metadata: {
+            eventKind: 'DEAL_DAMAGE',
+            defenderPlayerId,
+            amount: current,
+            sourceCardId,
+            applyMode: options?.applyMode ?? 'DIRECT_DAMAGE',
+            appliedIds: Array.from(appliedIds),
+          },
+        });
+        return { amount: 0, pendingChoice: true, appliedIds };
       }
 
-      let matchedRule = false;
+      if (!chosen && candidates.length > 0) {
+        chosen = candidates[0];
+      }
+
+      if (chosen) {
+        appliedIds.add(chosen.id);
+        if (chosen.kind === 'ACTIVE') {
+          const active = chosen.effect;
+          this.consumeActiveReplacementIfOnce(active);
+          if (active.action.kind === 'PREVENT') {
+            return { amount: 0, appliedIds };
+          }
+          if (active.action.kind === 'MODIFY_DAMAGE') {
+            current = applyDamageModifier(current, active.action);
+            continue;
+          }
+        } else {
+          const outcome = chosen.rule.apply(event, ctx, appliedIds);
+          if (outcome?.kind === 'PREVENT') return { amount: 0, appliedIds };
+          if (outcome?.kind === 'MODIFY_DAMAGE') {
+            current = Math.max(0, outcome.newAmount);
+            continue;
+          }
+        }
+      }
+
+      // 兼容未提供 matches 判定的自定义规则
+      let matchedLegacyRule = false;
       for (const rule of this.rules) {
+        if (rule.matches) continue;
         if (appliedIds.has(rule.id)) continue;
         if (!rule.eventTypes.includes('DEAL_DAMAGE')) continue;
-        const outcome = rule.apply(event, ctx);
+        const outcome = rule.apply(event, ctx, appliedIds);
         if (!outcome || outcome.kind === 'NONE') continue;
         appliedIds.add(rule.id);
-        matchedRule = true;
-        if (outcome.kind === 'PREVENT') return 0;
+        matchedLegacyRule = true;
+        if (outcome.kind === 'PREVENT') return { amount: 0, appliedIds };
         if (outcome.kind === 'MODIFY_DAMAGE') current = Math.max(0, outcome.newAmount);
         break;
       }
-      if (!matchedRule) break;
+      if (!matchedLegacyRule) break;
     }
-    return current;
+    return { amount: current, appliedIds };
   }
 
-  private findAndConsumeActiveReplacement(
-    event: ReplacementEvent,
-    appliedIds: Set<string>
-  ): ActiveReplacementEffect | undefined {
-    const list = this.state.activeReplacements;
-    if (!list || list.length === 0) return undefined;
+  /**
+   * 8.10 拦截玩家受到的伤害量 (数值便捷入口)
+   */
+  interceptDealDamage(
+    defenderPlayerId: string,
+    amount: number,
+    sourceCardId?: string,
+    appliedIds: Set<string> = new Set()
+  ): number {
+    return this.interceptDealDamageDetailed(defenderPlayerId, amount, sourceCardId, appliedIds).amount;
+  }
 
-    for (let i = 0; i < list.length; i++) {
-      const item = list[i]!;
-      if (appliedIds.has(item.id)) continue;
-      if (item.eventType !== event.type) continue;
-      if (item.untilTurn !== undefined && item.untilTurn < this.state.turnNumber) continue;
+  private matchesActiveReplacement(item: ActiveReplacementEffect, event: ReplacementEvent): boolean {
+    if (item.eventType !== event.type) return false;
+    if (item.untilTurn !== undefined && item.untilTurn < this.state.turnNumber) return false;
 
-      if (event.type === 'DESTROY_ROLE') {
-        if (item.targetCardInstanceId && item.targetCardInstanceId !== event.cardInstanceId) continue;
-        if (!item.targetCardInstanceId && item.controllerPlayerId !== event.controllerPlayerId) continue;
-        if (item.destroyReason && item.destroyReason !== event.reason) continue;
-      } else if (event.type === 'MOVE_CARD') {
-        if (item.targetCardInstanceId && item.targetCardInstanceId !== event.cardInstanceId) continue;
-        if (!item.targetCardInstanceId && item.controllerPlayerId !== event.controllerPlayerId) continue;
-        if (item.fromZone && item.fromZone !== event.fromZone) continue;
-        if (item.toZone && item.toZone !== event.toZone) continue;
-      } else if (event.type === 'DEAL_DAMAGE') {
-        if (item.controllerPlayerId !== event.defenderPlayerId) continue;
-      }
-
-      if (item.once) {
-        list.splice(i, 1);
-        if (list.length === 0) this.state.activeReplacements = undefined;
-      }
-      return item;
+    if (event.type === 'DESTROY_ROLE') {
+      if (item.targetCardInstanceId && item.targetCardInstanceId !== event.cardInstanceId) return false;
+      if (!item.targetCardInstanceId && item.controllerPlayerId !== event.controllerPlayerId) return false;
+      if (item.destroyReason && item.destroyReason !== event.reason) return false;
+    } else if (event.type === 'MOVE_CARD') {
+      if (item.targetCardInstanceId && item.targetCardInstanceId !== event.cardInstanceId) return false;
+      if (!item.targetCardInstanceId && item.controllerPlayerId !== event.controllerPlayerId) return false;
+      if (item.fromZone && item.fromZone !== event.fromZone) return false;
+      if (item.toZone && item.toZone !== event.toZone) return false;
+    } else if (event.type === 'DEAL_DAMAGE') {
+      if (item.controllerPlayerId !== event.defenderPlayerId) return false;
     }
-    return undefined;
+    return true;
+  }
+
+  private consumeActiveReplacementIfOnce(item: ActiveReplacementEffect): void {
+    if (!item.once || !this.state.activeReplacements) return;
+    const idx = this.state.activeReplacements.findIndex((x) => x.id === item.id);
+    if (idx >= 0) {
+      this.state.activeReplacements.splice(idx, 1);
+      if (this.state.activeReplacements.length === 0) {
+        this.state.activeReplacements = undefined;
+      }
+    }
+  }
+
+  private collectMatchingCandidates(
+    event: ReplacementEvent,
+    ctx: ReplacementRuleContext,
+    appliedIds: Set<string>
+  ): Array<
+    | { id: string; label: string; kind: 'ACTIVE'; effect: ActiveReplacementEffect }
+    | { id: string; label: string; kind: 'RULE'; rule: ReplacementRule }
+  > {
+    const out: Array<
+      | { id: string; label: string; kind: 'ACTIVE'; effect: ActiveReplacementEffect }
+      | { id: string; label: string; kind: 'RULE'; rule: ReplacementRule }
+    > = [];
+
+    for (const item of this.state.activeReplacements ?? []) {
+      if (appliedIds.has(item.id)) continue;
+      if (!this.matchesActiveReplacement(item, event)) continue;
+      const defaultLabel =
+        item.action.kind === 'PREVENT'
+          ? '防止原事件发生'
+          : item.action.kind === 'REDIRECT_ZONE'
+            ? `改为放置到 ${item.action.zone}`
+            : '修改伤害数值';
+      out.push({
+        id: item.id,
+        label: item.label ?? `${item.source ? `【${item.source}】` : ''}${defaultLabel}`,
+        kind: 'ACTIVE',
+        effect: item,
+      });
+    }
+
+    for (const rule of this.rules) {
+      if (appliedIds.has(rule.id)) continue;
+      if (!rule.eventTypes.includes(event.type)) continue;
+      if (!rule.matches) continue;
+      if (!rule.matches(event, ctx)) continue;
+      out.push({
+        id: rule.id,
+        label: rule.label ?? rule.id,
+        kind: 'RULE',
+        rule,
+      });
+    }
+
+    return out;
   }
 
   /**
@@ -439,41 +718,103 @@ export class ReplacementEngine {
     };
   }
 
+  private findBP01017Swords(
+    event: ReplacementEvent,
+    ctx: ReplacementRuleContext
+  ): { card: CardInstance; smallId: string; largeId: string } | undefined {
+    if (event.type === 'MOVE_CARD') {
+      if (
+        event.fromZone !== 'BATTLEFIELD' ||
+        (event.toZone === 'BATTLEFIELD' && !event.isPlacingUnderneath) ||
+        event.isOrphanCleanup
+      ) {
+        return undefined;
+      }
+    } else if (event.type !== 'DESTROY_ROLE') {
+      return undefined;
+    }
+    const card = ctx.state.cards[event.cardInstanceId];
+    if (!card || card.cardNumber !== 'BP01-017' || card.zone !== 'BATTLEFIELD') return undefined;
+    if (ctx.hasLostAbilities(card.instanceId)) return undefined;
+
+    const eqIds: string[] = [];
+    if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
+    if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
+    if (eqIds.length < 2) return undefined;
+
+    const getTraits = (eqId: string): string[] => {
+      const eq = ctx.state.cards[eqId];
+      if (!eq) return [];
+      const def = ctx.cardDb.getCard(eq.cardNumber) || (eq.cardId ? ctx.cardDb.getCard(eq.cardId) : undefined);
+      return def?.traits ?? [];
+    };
+
+    const smallId = eqIds.find((id) => getTraits(id).includes('小太刀'));
+    const largeId = eqIds.find((id) => id !== smallId && getTraits(id).includes('大太刀'));
+    if (!smallId || !largeId) return undefined;
+    return { card, smallId, largeId };
+  }
+
+  private findBP02013Saver(
+    event: ReplacementEvent,
+    ctx: ReplacementRuleContext
+  ): CardInstance | undefined {
+    if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
+    const dying = ctx.state.cards[event.cardInstanceId];
+    if (!dying || dying.zone !== 'BATTLEFIELD') return undefined;
+    const dyingDef =
+      ctx.cardDb.getCard(dying.cardNumber) || (dying.cardId ? ctx.cardDb.getCard(dying.cardId) : undefined);
+    if (!dyingDef || dyingDef.cardType !== 'ROLE' || dyingDef.attribute !== 'FIRE' || dyingDef.cost > 6) {
+      return undefined;
+    }
+    const fieldCards = ctx.getZoneCards(event.controllerPlayerId, 'BATTLEFIELD').filter((c) => {
+      if (c.cardNumber !== 'BP02-013' || ctx.hasLostAbilities(c.instanceId)) return false;
+      const slots = ctx.state.battlefields[event.controllerPlayerId] ?? [];
+      return slots.some((s) => s.roleCardId === c.instanceId);
+    });
+    // Q&A·5：BP02-013 自身因战斗被破坏时不能将自身送墓代替，必须牺牲我方场上另一张《丽芙·极昼》
+    return fieldCards.find((c) => c.instanceId !== event.cardInstanceId);
+  }
+
+  private findBP02049Wanshiming(
+    event: ReplacementEvent,
+    ctx: ReplacementRuleContext
+  ): { card: CardInstance; usageKey: string; handWanshiming: CardInstance } | undefined {
+    if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
+    const card = ctx.state.cards[event.cardInstanceId];
+    if (!card || card.cardNumber !== 'BP02-049' || card.zone !== 'BATTLEFIELD') return undefined;
+    if (ctx.hasLostAbilities(card.instanceId)) return undefined;
+    const player = ctx.state.players[card.controllerPlayerId];
+    if (!player) return undefined;
+    const usageKey = `${card.instanceId}:BP02-049_BATTLE_SAVE`;
+    if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) return undefined;
+
+    const handWanshiming = ctx.getZoneCards(card.controllerPlayerId, 'HAND').find((h) => {
+      if (ctx.hasTrait) return ctx.hasTrait(h.instanceId, '万世铭');
+      const hDef = ctx.cardDb.getCard(h.cardNumber) || (h.cardId ? ctx.cardDb.getCard(h.cardId) : undefined);
+      return Boolean(hDef?.traits?.includes('万世铭'));
+    });
+    if (!handWanshiming) return undefined;
+    return { card, usageKey, handWanshiming };
+  }
+
   private registerBuiltinReplacements(): void {
     // BP01-017 露西亚·深红囚影：该牌离场时，若同时装备<小太刀>和<大太刀>，将其放置到墓地并改为不离场 (8.10.1.a)
     this.registerRule({
       id: 'builtin:BP01-017_LEAVE_REPLACEMENT',
+      label: '【露西亚·深红囚影】将装备的<小太刀>和<大太刀>置墓，改为不离场',
       eventTypes: ['DESTROY_ROLE', 'MOVE_CARD'],
-      apply: (event, ctx) => {
-        if (event.type === 'MOVE_CARD') {
-          if (event.fromZone !== 'BATTLEFIELD' || event.toZone === 'BATTLEFIELD' || event.isOrphanCleanup) {
-            return undefined;
-          }
-        } else if (event.type !== 'DESTROY_ROLE') {
-          return undefined;
-        }
-        const card = ctx.state.cards[event.cardInstanceId];
-        if (!card || card.cardNumber !== 'BP01-017' || card.zone !== 'BATTLEFIELD') return undefined;
-        if (ctx.hasLostAbilities(card.instanceId)) return undefined;
-
+      matches: (event, ctx) => Boolean(this.findBP01017Swords(event, ctx)),
+      apply: (event, ctx, appliedIds) => {
+        const found = this.findBP01017Swords(event, ctx);
+        if (!found) return undefined;
+        const { card, smallId, largeId } = found;
         const eqIds: string[] = [];
         if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
         if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
-        if (eqIds.length < 2) return undefined;
-
-        const getTraits = (eqId: string): string[] => {
-          const eq = ctx.state.cards[eqId];
-          if (!eq) return [];
-          const def = ctx.cardDb.getCard(eq.cardNumber) || (eq.cardId ? ctx.cardDb.getCard(eq.cardId) : undefined);
-          return def?.traits ?? [];
-        };
-
-        const smallId = eqIds.find((id) => getTraits(id).includes('小太刀'));
-        const largeId = eqIds.find((id) => id !== smallId && getTraits(id).includes('大太刀'));
-        if (!smallId || !largeId) return undefined;
 
         // 文本为「可以将其放置到墓地。若如此做，改为不离场」：交由操控玩家自主选择是否发动置换
-        if (ctx.enqueueChoice) {
+        if (ctx.enqueueChoice && (event.type === 'DESTROY_ROLE' || event.type === 'MOVE_CARD')) {
           const seq = nextEffectTimestamp(ctx.state);
           const originalEvent =
             event.type === 'DESTROY_ROLE'
@@ -489,6 +830,9 @@ export class ReplacementEngine {
                   isFaceUp: event.isFaceUp,
                   isReady: event.isReady,
                   toBottom: event.toBottom,
+                  isPlacingUnderneath: event.isPlacingUnderneath,
+                  underneathHostId: event.underneathHostId,
+                  includeUnderneath: event.includeUnderneath,
                 };
           ctx.enqueueChoice({
             id: `choice-bp01-017-leave-${ctx.state.turnNumber}-${seq}`,
@@ -508,6 +852,7 @@ export class ReplacementEngine {
               smallId,
               largeId,
               originalEvent,
+              appliedIds: Array.from(appliedIds ?? []),
             },
           });
           return { kind: 'PREVENT' };
@@ -536,7 +881,19 @@ export class ReplacementEngine {
     // Q&A·9 BP04-065 莱特宁：装备角色《比安卡·真理》离场导致莱特宁无所属送墓时，强制置换为放置到我方信号球区最下方
     this.registerRule({
       id: 'builtin:BP04-065_ORPHAN_TO_ORB_BOTTOM',
+      label: '【莱特宁】改为放置到我方信号球区最下方',
       eventTypes: ['MOVE_CARD'],
+      matches: (event, ctx) => {
+        if (event.type !== 'MOVE_CARD') return false;
+        if (!event.isOrphanCleanup || event.toZone !== 'GRAVEYARD') return false;
+        const card = ctx.state.cards[event.cardInstanceId];
+        if (!card || card.cardNumber !== 'BP04-065') return false;
+        if (ctx.hasLostAbilities(card.instanceId)) return false;
+        if (event.orphanHostCardId && !ctx.hasCardName(event.orphanHostCardId, '比安卡·真理')) {
+          return false;
+        }
+        return true;
+      },
       apply: (event, ctx) => {
         if (event.type !== 'MOVE_CARD') return undefined;
         if (!event.isOrphanCleanup || event.toZone !== 'GRAVEYARD') return undefined;
@@ -560,24 +917,11 @@ export class ReplacementEngine {
     // Q&A·2 BP02-013 丽芙·极昼：我方的1张费用为6及以下的火属性角色因战斗被破坏时，可将战场该牌置墓，改为不破坏 (阻止贯通并触发效果送墓)
     this.registerRule({
       id: 'builtin:BP02-013_BATTLE_SAVE',
+      label: '【丽芙·极昼】将战场《丽芙·极昼》置墓，改为不破坏',
       eventTypes: ['DESTROY_ROLE'],
+      matches: (event, ctx) => Boolean(this.findBP02013Saver(event, ctx)),
       apply: (event, ctx) => {
-        if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
-        const dying = ctx.state.cards[event.cardInstanceId];
-        if (!dying || dying.zone !== 'BATTLEFIELD') return undefined;
-        const dyingDef =
-          ctx.cardDb.getCard(dying.cardNumber) || (dying.cardId ? ctx.cardDb.getCard(dying.cardId) : undefined);
-        if (!dyingDef || dyingDef.cardType !== 'ROLE' || dyingDef.attribute !== 'FIRE' || dyingDef.cost > 6) {
-          return undefined;
-        }
-        const fieldCards = ctx.getZoneCards(event.controllerPlayerId, 'BATTLEFIELD').filter((c) => {
-          if (c.cardNumber !== 'BP02-013' || ctx.hasLostAbilities(c.instanceId)) return false;
-          // 必须是顶层战场角色 (排除下方牌/装备)
-          const slots = ctx.state.battlefields[event.controllerPlayerId] ?? [];
-          return slots.some((s) => s.roleCardId === c.instanceId);
-        });
-        // Q&A·5：BP02-013 自身因战斗被破坏时不能将自身送墓代替，必须牺牲我方场上另一张《丽芙·极昼》
-        const saver = fieldCards.find((c) => c.instanceId !== event.cardInstanceId);
+        const saver = this.findBP02013Saver(event, ctx);
         if (!saver) return undefined;
         if (ctx.sendCardToGraveyard) {
           ctx.sendCardToGraveyard(saver.instanceId, true);
@@ -593,24 +937,15 @@ export class ReplacementEngine {
     // BP02-049 曲·启明：【自】【回合1】该牌因战斗被破坏时，可以将我方手牌1张<万世铭>放置到墓地。若如此做，改为不破坏。
     this.registerRule({
       id: 'builtin:BP02-049_BATTLE_SAVE',
+      label: '【曲·启明】将手牌 1 张<万世铭>置墓，改为不破坏',
       eventTypes: ['DESTROY_ROLE'],
+      matches: (event, ctx) => Boolean(this.findBP02049Wanshiming(event, ctx)),
       apply: (event, ctx) => {
-        if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
-        const card = ctx.state.cards[event.cardInstanceId];
-        if (!card || card.cardNumber !== 'BP02-049' || card.zone !== 'BATTLEFIELD') return undefined;
-        if (ctx.hasLostAbilities(card.instanceId)) return undefined;
+        const found = this.findBP02049Wanshiming(event, ctx);
+        if (!found) return undefined;
+        const { card, usageKey, handWanshiming } = found;
         const player = ctx.state.players[card.controllerPlayerId];
         if (!player) return undefined;
-        const usageKey = `${card.instanceId}:BP02-049_BATTLE_SAVE`;
-        if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) return undefined;
-
-        const handWanshiming = ctx.getZoneCards(card.controllerPlayerId, 'HAND').find((h) => {
-          if (ctx.hasTrait) return ctx.hasTrait(h.instanceId, '万世铭');
-          const hDef = ctx.cardDb.getCard(h.cardNumber) || (h.cardId ? ctx.cardDb.getCard(h.cardId) : undefined);
-          return Boolean(hDef?.traits?.includes('万世铭'));
-        });
-        if (!handWanshiming) return undefined;
-
         player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
         if (ctx.sendCardToGraveyard) {
           ctx.sendCardToGraveyard(handWanshiming.instanceId, true);
@@ -622,4 +957,21 @@ export class ReplacementEngine {
       },
     });
   }
+}
+
+function applyDamageModifier(
+  current: number,
+  action: { kind: 'MODIFY_DAMAGE'; delta?: number; setAmount?: number; maxAmount?: number }
+): number {
+  let next = current;
+  if (action.setAmount !== undefined) {
+    next = action.setAmount;
+  }
+  if (action.delta !== undefined) {
+    next += action.delta;
+  }
+  if (action.maxAmount !== undefined) {
+    next = Math.min(next, action.maxAmount);
+  }
+  return Math.max(0, next);
 }

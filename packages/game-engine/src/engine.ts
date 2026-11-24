@@ -174,11 +174,6 @@ export class GameEngine {
 
     this.checkTimingMgr = new CheckTimingManager(this.state, this.sbaEngine);
     this.checkTimingMgr.setTriggerManager(this.triggerMgr);
-    this.triggerMgr.setOnDelayedDeployCallback((pid, cid) => {
-      const deployed = this.state.cards[cid];
-      const def = deployed ? this.cardDb.getCard(deployed.cardNumber) : undefined;
-      if (def) this.effectEngine.handleRoleEntryEffect(pid, cid, def);
-    });
 
     this.combatMgr = new CombatManager(
       this.state,
@@ -202,12 +197,7 @@ export class GameEngine {
     this.phaseMachine.setContinuousEffectEngine(this.continuousEffects);
     this.phaseMachine.setReplacementEngine(this.replacementEngine);
     this.phaseMachine.setTurnStartAirborneReturnHandler((pid) => {
-      const returnedId = this.fieldMgr.returnAirborneRoleAtTurnStart(pid);
-      if (returnedId) {
-        const returnedCard = this.state.cards[returnedId];
-        const def = returnedCard ? this.cardDb.getCard(returnedCard.cardNumber) : undefined;
-        if (def) this.effectEngine.handleRoleEntryEffect(pid, returnedId, def);
-      }
+      this.fieldMgr.returnAirborneRoleAtTurnStart(pid);
     });
     this.phaseMachine.setEndPhaseReleasePartnersHandler(() => {
       for (const pid of Object.keys(this.state.players)) {
@@ -1116,7 +1106,7 @@ export class GameEngine {
 
     card.paidHiddenCostOnPlay = options.paidHiddenCost || undefined;
 
-    // 8.6.2.e 结算卡牌进入区域并自动触发效果处理
+    // 8.6.2.e 结算卡牌进入区域，登场效果由 TriggerManager 在检查时机统一触发 (8.7)
     if (action.isAscension && action.targetAscensionCardId) {
       // 8.11 升变出场 (含信号球区/浮空区升变对象与 BP01-040 额外叠放《帕瓦》)
       const ok = this.fieldMgr.playAscensionCard(
@@ -1129,9 +1119,6 @@ export class GameEngine {
         }
       );
       if (!ok) return { success: false, error: '升变出场失败' };
-
-      // 升变出场自动触发登场效果
-      this.effectEngine.handleRoleEntryEffect(action.playerId, action.cardInstanceId, cardDef);
     } else if (cardDef.cardType === CardType.ROLE) {
       const slotIndex = action.targetSlotIndex ?? this.fieldMgr.findFirstEmptySlot(action.playerId);
       if (slotIndex === undefined) {
@@ -1140,9 +1127,6 @@ export class GameEngine {
       if (!this.fieldMgr.playRoleCard(action.playerId, action.cardInstanceId, slotIndex)) {
         return { success: false, error: '所选卡位已被占用 (8.6.2.b.1)' };
       }
-
-      // 角色出场自动触发【出】/【自】登场效果
-      this.effectEngine.handleRoleEntryEffect(action.playerId, action.cardInstanceId, cardDef);
     } else if (cardDef.cardType === CardType.EQUIPMENT) {
       const roleCards = this.fieldMgr
         .getSlots(action.playerId)
@@ -1151,14 +1135,13 @@ export class GameEngine {
 
       if (action.targetEquipRoleId) {
         // 8.6.2.e.2 放置到可以装备该牌的自身战场角色下方进行装备
-        this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true });
+        if (!this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true })) {
+          return { success: false, error: '装备牌无法进入处理区' };
+        }
         if (!this.fieldMgr.equipToRole(action.playerId, action.cardInstanceId, action.targetEquipRoleId)) {
           return { success: false, error: '装备对象必须是自身战场上未装备装备牌的角色 (4.18.3)' };
         }
         this.effectEngine.handleEquipmentBuff(action.targetEquipRoleId, cardDef);
-        if (this.effectEngine.presets.handlesEntry(cardDef.cardNumber)) {
-          this.effectEngine.presets.enter(action.playerId, action.cardInstanceId, cardDef);
-        }
       } else if (action.targetSlotIndex !== undefined || roleCards.length === 0) {
         // 8.6.2.e.2 以正面竖直状态放置到自身战场空余卡位
         const slotIndex = action.targetSlotIndex ?? this.fieldMgr.findFirstEmptySlot(action.playerId);
@@ -1166,12 +1149,11 @@ export class GameEngine {
         if (!this.fieldMgr.playStandaloneEquipment(action.playerId, action.cardInstanceId, slotIndex)) {
           return { success: false, error: '所选卡位已被占用 (8.6.2.b.3)' };
         }
-        if (this.effectEngine.presets.handlesEntry(cardDef.cardNumber)) {
-          this.effectEngine.presets.enter(action.playerId, action.cardInstanceId, cardDef);
-        }
       } else {
         // 未指定放置方式：移动到处理区，由玩家选择要装备的角色
-        this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true });
+        if (!this.zoneMgr.moveCard(action.cardInstanceId, 'PROCESSING', { isFaceUp: true })) {
+          return { success: false, error: '装备牌无法进入处理区' };
+        }
         enqueuePendingChoice(this.state, {
           id: `choice-equip-${action.cardInstanceId}-${this.events.length}`,
           playerId: action.playerId,
@@ -1545,12 +1527,157 @@ export class GameEngine {
       return { success: true };
     }
 
+    // 8.10.2 同一事件存在多个置换效果时，由受影响的玩家选择优先适用哪一个
+    if (choice.effectType === 'CHOOSE_REPLACEMENT_ORDER') {
+      const meta = (choice.metadata ?? {}) as {
+        eventKind?: 'MOVE_CARD' | 'DESTROY_ROLE' | 'DEAL_DAMAGE';
+        cardInstanceId?: string;
+        fromZone?: CardInstance['zone'];
+        toZone?: CardInstance['zone'];
+        isFaceUp?: boolean;
+        isReady?: boolean;
+        toBottom?: boolean;
+        isOrphanCleanup?: boolean;
+        orphanHostCardId?: string;
+        isPlacingUnderneath?: boolean;
+        underneathHostId?: string;
+        includeUnderneath?: boolean;
+        skipLeftFieldTrigger?: boolean;
+        sentByEffectOrCost?: boolean;
+        countAsDeckToGy?: boolean;
+        reason?: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+        attackerCardId?: string;
+        combatCannotDealDamage?: boolean;
+        defenderPlayerId?: string;
+        amount?: number;
+        sourceCardId?: string;
+        applyMode?: 'DIRECT_DAMAGE' | 'COMBAT_DAMAGE';
+        appliedIds?: string[];
+      };
+      const chosenId = action.selectedIds[0];
+      this.state.currentPendingChoice = undefined;
+      const applied = new Set<string>(meta.appliedIds ?? []);
+
+      if (meta.eventKind === 'MOVE_CARD' && meta.cardInstanceId && meta.toZone) {
+        if (meta.isPlacingUnderneath && meta.underneathHostId) {
+          this.fieldMgr.placeCardUnderneath(meta.cardInstanceId, meta.underneathHostId, {
+            includeUnderneath: meta.includeUnderneath,
+            appliedReplacementIds: applied,
+            preferredReplacementId: chosenId,
+          });
+        } else {
+          this.zoneMgr.moveCard(meta.cardInstanceId, meta.toZone, {
+            isFaceUp: meta.isFaceUp,
+            isReady: meta.isReady,
+            toBottom: meta.toBottom,
+            isOrphanCleanup: meta.isOrphanCleanup,
+            orphanHostCardId: meta.orphanHostCardId,
+            isPlacingUnderneath: meta.isPlacingUnderneath,
+            underneathHostId: meta.underneathHostId,
+            includeUnderneath: meta.includeUnderneath,
+            skipLeftFieldTrigger: meta.skipLeftFieldTrigger,
+            sentByEffectOrCost: meta.sentByEffectOrCost,
+            countAsDeckToGy: meta.countAsDeckToGy,
+            appliedReplacementIds: applied,
+            preferredReplacementId: chosenId,
+          });
+        }
+      } else if (meta.eventKind === 'DESTROY_ROLE' && meta.cardInstanceId && meta.reason) {
+        const card = this.state.cards[meta.cardInstanceId];
+        if (card && card.zone === 'BATTLEFIELD') {
+          const intercept = this.replacementEngine.interceptDestroyRole(
+            card.instanceId,
+            meta.reason,
+            meta.attackerCardId,
+            applied,
+            { preferredReplacementId: chosenId }
+          );
+          if (intercept.replaced) {
+            if (intercept.redirect) {
+              this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
+                isFaceUp: intercept.redirect.isFaceUp,
+                isReady: intercept.redirect.isReady,
+                toBottom: intercept.redirect.toBottom,
+                appliedReplacementIds: intercept.appliedIds,
+              });
+            }
+          } else {
+            const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
+            const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
+              isFaceUp: true,
+              appliedReplacementIds: intercept.appliedIds,
+            });
+            if (moved) {
+              this.events.push({
+                type: 'CARD_DESTROYED',
+                cardInstanceId: card.instanceId,
+                reason: meta.reason,
+              });
+              this.triggerMgr.emit({
+                type: 'CARD_DESTROYED',
+                playerId: card.controllerPlayerId,
+                cardInstanceId: card.instanceId,
+                fromZone: 'BATTLEFIELD',
+                toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
+                destroyReason: meta.reason,
+                subjectSnapshot: snapshot,
+              });
+              if (
+                meta.reason === 'BATTLE' &&
+                meta.attackerCardId &&
+                !meta.combatCannotDealDamage
+              ) {
+                const atkId = meta.attackerCardId;
+                const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
+                if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
+                  this.zoneMgr.applyDamageToPlayer(
+                    card.controllerPlayerId,
+                    RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+                    atkId
+                  );
+                }
+              }
+            }
+          }
+        }
+      } else if (meta.eventKind === 'DEAL_DAMAGE' && meta.defenderPlayerId && meta.amount !== undefined) {
+        if (meta.applyMode === 'COMBAT_DAMAGE') {
+          const res = this.replacementEngine.interceptDealDamageDetailed(
+            meta.defenderPlayerId,
+            meta.amount,
+            meta.sourceCardId,
+            applied,
+            { preferredReplacementId: chosenId, applyMode: 'COMBAT_DAMAGE' }
+          );
+          if (!res.pendingChoice && this.state.currentCombat) {
+            let dmg = res.amount;
+            const cap = this.state.currentCombat.maxDamageInDamageStep;
+            if (cap !== undefined) {
+              dmg = Math.min(dmg, Math.max(0, cap));
+            }
+            this.state.currentCombat.damageRemaining = dmg;
+          }
+        } else {
+          this.zoneMgr.applyDamageToPlayer(meta.defenderPlayerId, meta.amount, meta.sourceCardId, {
+            appliedReplacementIds: applied,
+            preferredReplacementId: chosenId,
+          });
+        }
+      }
+
+      if (!this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
+      return { success: true };
+    }
+
     // BP01-017 露西亚·深红囚影：可选离场置换（送墓<小太刀>和<大太刀>改为不离场，或放弃置换让其离场）
     if (choice.effectType === 'BP01_017_OPTIONAL_LEAVE_REPLACEMENT') {
       const meta = (choice.metadata ?? {}) as {
         cardInstanceId?: string;
         smallId?: string;
         largeId?: string;
+        appliedIds?: string[];
         originalEvent?:
           | {
               type: 'DESTROY_ROLE';
@@ -1565,6 +1692,9 @@ export class GameEngine {
               isReady?: boolean;
               toBottom?: boolean;
               sentByEffectOrCost?: boolean;
+              isPlacingUnderneath?: boolean;
+              underneathHostId?: string;
+              includeUnderneath?: boolean;
             };
       };
       this.state.currentPendingChoice = undefined;
@@ -1581,42 +1711,69 @@ export class GameEngine {
             this.zoneMgr.moveCard(meta.largeId, 'GRAVEYARD', { isFaceUp: true });
           }
         } else if (meta.originalEvent) {
-          const skipSelf = new Set<string>(['builtin:BP01-017_LEAVE_REPLACEMENT']);
+          const skipSelf = new Set<string>([
+            ...(meta.appliedIds ?? []),
+            'builtin:BP01-017_LEAVE_REPLACEMENT',
+          ]);
           if (meta.originalEvent.type === 'DESTROY_ROLE') {
-            const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
-            const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
-              isFaceUp: true,
-              appliedReplacementIds: skipSelf,
-            });
-            if (moved) {
-              this.events.push({
-                type: 'CARD_DESTROYED',
-                cardInstanceId: card.instanceId,
-                reason: meta.originalEvent.reason,
+            const intercept = this.replacementEngine.interceptDestroyRole(
+              card.instanceId,
+              meta.originalEvent.reason,
+              meta.originalEvent.attackerCardId,
+              skipSelf
+            );
+            if (intercept.replaced) {
+              if (intercept.redirect) {
+                this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
+                  isFaceUp: intercept.redirect.isFaceUp,
+                  isReady: intercept.redirect.isReady,
+                  toBottom: intercept.redirect.toBottom,
+                  appliedReplacementIds: intercept.appliedIds,
+                });
+              }
+            } else {
+              const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
+              const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
+                isFaceUp: true,
+                appliedReplacementIds: intercept.appliedIds,
               });
-              this.triggerMgr.emit({
-                type: 'CARD_DESTROYED',
-                playerId: card.controllerPlayerId,
-                cardInstanceId: card.instanceId,
-                destroyReason: meta.originalEvent.reason,
-                subjectSnapshot: snapshot,
-              });
-              if (
-                meta.originalEvent.reason === 'BATTLE' &&
-                meta.originalEvent.attackerCardId &&
-                !meta.originalEvent.combatCannotDealDamage
-              ) {
-                const atkId = meta.originalEvent.attackerCardId;
-                const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
-                if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
-                  this.zoneMgr.applyDamageToPlayer(
-                    card.controllerPlayerId,
-                    RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
-                    atkId
-                  );
+              if (moved) {
+                this.events.push({
+                  type: 'CARD_DESTROYED',
+                  cardInstanceId: card.instanceId,
+                  reason: meta.originalEvent.reason,
+                });
+                this.triggerMgr.emit({
+                  type: 'CARD_DESTROYED',
+                  playerId: card.controllerPlayerId,
+                  cardInstanceId: card.instanceId,
+                  fromZone: 'BATTLEFIELD',
+                  toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
+                  destroyReason: meta.originalEvent.reason,
+                  subjectSnapshot: snapshot,
+                });
+                if (
+                  meta.originalEvent.reason === 'BATTLE' &&
+                  meta.originalEvent.attackerCardId &&
+                  !meta.originalEvent.combatCannotDealDamage
+                ) {
+                  const atkId = meta.originalEvent.attackerCardId;
+                  const cannotDeal = this.continuousEffects.hasProhibition(atkId, 'CANNOT_DEAL_DAMAGE');
+                  if (!cannotDeal && this.continuousEffects.hasKeyword(atkId, '贯通')) {
+                    this.zoneMgr.applyDamageToPlayer(
+                      card.controllerPlayerId,
+                      RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+                      atkId
+                    );
+                  }
                 }
               }
             }
+          } else if (meta.originalEvent.isPlacingUnderneath && meta.originalEvent.underneathHostId) {
+            this.fieldMgr.placeCardUnderneath(card.instanceId, meta.originalEvent.underneathHostId, {
+              includeUnderneath: meta.originalEvent.includeUnderneath,
+              appliedReplacementIds: skipSelf,
+            });
           } else {
             this.zoneMgr.moveCard(card.instanceId, meta.originalEvent.toZone, {
               isFaceUp: meta.originalEvent.isFaceUp,
@@ -1716,20 +1873,27 @@ export class GameEngine {
       }
       let finalCost = meta.baseCostToPay;
       if (action.selectedIds.length > 0) {
+        let sacrificedCount = 0;
         for (const sid of action.selectedIds) {
           const sc = this.state.cards[sid];
           if (sc) {
             const fromField = sc.zone === 'BATTLEFIELD';
-            this.zoneMgr.moveCard(sid, 'GRAVEYARD', {
-              isFaceUp: true,
-              sentByEffectOrCost: fromField,
-            });
+            if (
+              this.zoneMgr.moveCard(sid, 'GRAVEYARD', {
+                isFaceUp: true,
+                sentByEffectOrCost: fromField,
+              })
+            ) {
+              sacrificedCount += 1;
+            }
           }
         }
-        finalCost =
-          meta.sacrificedCostMode === 'SET'
-            ? Math.max(0, meta.sacrificedCostValue)
-            : Math.max(0, meta.baseCostToPay - meta.sacrificedCostValue);
+        if (sacrificedCount > 0) {
+          finalCost =
+            meta.sacrificedCostMode === 'SET'
+              ? Math.max(0, meta.sacrificedCostValue)
+              : Math.max(0, meta.baseCostToPay - meta.sacrificedCostValue);
+        }
       }
       if (!this.payCost(action.playerId, finalCost)) {
         const avail = player.availableOpenCostCount + player.hiddenCostCount;
@@ -1865,6 +2029,9 @@ export class GameEngine {
     }
     if (state.phase === 'DRAW_CHARGE_PHASE') {
       // 6.3.1.c 不放置明费，进入主要阶段
+      if (state.drawChargePhaseStep && state.drawChargePhaseStep !== 'AWAIT_CHARGE') {
+        return { success: false, error: '当前时机不能选择不行动' };
+      }
       this.phaseMachine.chargeCostFromHand(playerId, undefined);
       return { success: true };
     }
@@ -2004,6 +2171,16 @@ export class GameEngine {
         continue;
       }
 
+      if (this.state.phase === 'STAND_PHASE') {
+        if (!this.phaseMachine.advanceStandPhase()) return;
+        continue;
+      }
+
+      if (this.state.phase === 'DRAW_CHARGE_PHASE') {
+        if (!this.phaseMachine.advanceDrawChargePhase()) return;
+        continue;
+      }
+
       if (this.state.phase === 'END_PHASE') {
         if (!this.advanceEndPhase()) return;
         continue;
@@ -2050,8 +2227,9 @@ export class GameEngine {
       case 'DISCARD':
         return false; // 等待回合玩家选择弃掉的手牌
       case 'CLEANUP':
-        this.phaseMachine.finishEndPhase();
-        return true;
+        return this.phaseMachine.runEndPhaseCleanup();
+      case 'CLEANUP_POST':
+        return this.phaseMachine.handoffToNextTurn();
       default:
         return false;
     }

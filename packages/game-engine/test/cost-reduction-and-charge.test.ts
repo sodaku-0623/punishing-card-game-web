@@ -517,8 +517,8 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     const roleB = Object.values(engine.getState().cards).find(
       (c) => c.controllerPlayerId === p1 && c.cardNumber === 'ST01-002'
     )!;
-    engine.fieldMgr.playRoleCard(p1, roleA.instanceId, 0);
-    engine.fieldMgr.playRoleCard(p1, roleB.instanceId, 1);
+    engine.fieldMgr.playRoleCard(p1, roleA.instanceId, 0, { suppressEntryTrigger: true });
+    engine.fieldMgr.playRoleCard(p1, roleB.instanceId, 1, { suppressEntryTrigger: true });
 
     // 寻找一张 ST01-012 信号球放置在处理区
     const orb12 = Object.values(engine.getState().cards).find(
@@ -592,7 +592,7 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
       const card = Object.values(engine.getState().cards).find(
         (c) => c.controllerPlayerId === activeId && c.cardNumber === cerberusCardNums[slot] && c.zone === 'DECK'
       )!;
-      engine.fieldMgr.playRoleCard(activeId, card.instanceId, slot);
+      engine.fieldMgr.playRoleCard(activeId, card.instanceId, slot, { suppressEntryTrigger: true });
       card.isReady = true;
     }
 
@@ -600,7 +600,7 @@ describe('ST03费用减免、充能步骤与伤害充能详细规则测试', () 
     const oppRole = Object.values(engine.getState().cards).find(
       (c) => c.controllerPlayerId === oppId && c.zone === 'DECK' && engine.cardDb.getCard(c.cardNumber)?.cardType === CardType.ROLE
     )!;
-    engine.fieldMgr.playRoleCard(oppId, oppRole.instanceId, 0);
+    engine.fieldMgr.playRoleCard(oppId, oppRole.instanceId, 0, { suppressEntryTrigger: true });
 
     // 3. 将 ST03-011 放入 activeId 手牌
     const tacticsCard = Object.values(engine.getState().cards).find(

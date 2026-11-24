@@ -45,7 +45,7 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     const baseTarget = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
     baseTarget.cardNumber = 'ST01-005';
     baseTarget.cardId = 'c-st01-005';
-    engine.fieldMgr.playRoleCard(p1, baseTarget.instanceId, 0);
+    engine.fieldMgr.playRoleCard(p1, baseTarget.instanceId, 0, { suppressEntryTrigger: true });
 
     // 手牌准备升变卡：ST01-001 (露西亚·红莲，升变条件<=5费露西亚，升变代价2费，获速攻)
     const ascRole = engine.zoneMgr.getCardsInZone(p1, 'DECK')[1]!;
@@ -121,7 +121,7 @@ describe('全量卡表 (490张官方卡牌) 效果机制与战斗特性全面覆
     const role = engine.zoneMgr.getCardsInZone(p1, 'DECK')[0]!;
     role.cardNumber = 'ST01-005';
     role.cardId = 'c-st01-005';
-    engine.fieldMgr.playRoleCard(p1, role.instanceId, 0);
+    engine.fieldMgr.playRoleCard(p1, role.instanceId, 0, { suppressEntryTrigger: true });
 
     // A. 测试手牌使用 BP01-078 (进入信号球区，抽1张牌，不触发【充能自】)
     const card78 = engine.zoneMgr.getCardsInZone(p1, 'DECK')[1]!;

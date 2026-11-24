@@ -540,9 +540,86 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
-   * 8.5 / 8.7 向 TriggerManager 注册所有声明式【自】自动能力
+   * 8.5 / 8.7 向 TriggerManager 注册统一【出】登场能力 (`CARD_ENTERED_FIELD`) 与所有声明式【自】自动能力
    */
   registerTriggers(triggerMgr: TriggerManager): void {
+    // 8.6.2 / 8.7 / 8.11 统一将声明式卡牌【出】登场能力迁入检查时机处理，彻底消除效果子角色抢跑与双【出】顺序僵化
+    triggerMgr.registerTrigger({
+      abilityId: 'dsl:CARD_ENTRY',
+      eventTypes: ['CARD_ENTERED_FIELD'],
+      collect: ({ state, event, continuousEffects }) => {
+        if (event.suppressEntryTrigger) return [];
+        const enteredId = event.cardInstanceId;
+        const playerId = event.playerId;
+        if (!enteredId || !playerId) return [];
+        const card = state.cards[enteredId];
+        if (!card || card.zone !== 'BATTLEFIELD') return [];
+        if (continuousEffects.hasLostInherentAbilities(enteredId)) return [];
+        const spec = this.registry.get(card.cardNumber);
+        if (!spec) return [];
+        const cardDef = this.def(card);
+        const cardName = cardDef?.name ?? spec.name ?? card.cardNumber;
+        if (spec.entries && spec.entries.length > 0) {
+          return spec.entries.map((entry, idx) => ({
+            sourceCardInstanceId: enteredId,
+            sourceCardNumber: card.cardNumber,
+            controllerPlayerId: playerId,
+            label: entry.label ? `【${cardName}】${entry.label}` : `【${cardName}】【出 ${idx + 1}】`,
+            triggerContext: {
+              cardNumber: card.cardNumber,
+              entryIndex: idx,
+              entryId: entry.id ?? String(idx),
+            },
+          }));
+        }
+        if (spec.entry) {
+          return [
+            {
+              sourceCardInstanceId: enteredId,
+              sourceCardNumber: card.cardNumber,
+              controllerPlayerId: playerId,
+              label: `【${cardName}】【出】登场能力`,
+              triggerContext: {
+                cardNumber: card.cardNumber,
+                entryIndex: -1,
+              },
+            },
+          ];
+        }
+        return [];
+      },
+      execute: (trigger) => {
+        const cardNumber =
+          (trigger.triggerContext?.cardNumber as string | undefined) ?? trigger.sourceCardNumber;
+        if (!cardNumber) return;
+        const spec = this.registry.get(cardNumber);
+        if (!spec) return;
+        const entryIndex = Number(trigger.triggerContext?.entryIndex ?? -1);
+        if (entryIndex >= 0 && spec.entries && spec.entries[entryIndex]) {
+          const entrySpec = spec.entries[entryIndex]!;
+          this.executeWithCost(
+            cardNumber,
+            trigger.sourceCardInstanceId,
+            trigger.controllerPlayerId,
+            entrySpec.cost,
+            entrySpec.steps,
+            false
+          );
+          return;
+        }
+        if (spec.entry) {
+          this.executeWithCost(
+            cardNumber,
+            trigger.sourceCardInstanceId,
+            trigger.controllerPlayerId,
+            spec.entry.cost,
+            spec.entry.steps,
+            false
+          );
+        }
+      },
+    });
+
     for (const spec of this.registry.values()) {
       for (const trig of spec.triggers ?? []) {
         triggerMgr.registerTrigger({
@@ -608,6 +685,9 @@ export class DeclarativeEffectInterpreter {
                 const playerId = event.playerId;
                 if (!enteredId || !playerId) return [];
                 const enteredCard = state.cards[enteredId];
+                if (!enteredCard || continuousEffects.getEffectiveCardType(enteredCard.instanceId) !== 'ROLE') {
+                  return [];
+                }
                 const enteredName =
                   event.subjectSnapshot?.name ??
                   (enteredCard ? cardDb.getCard(enteredCard.cardNumber)?.name : undefined);
@@ -646,7 +726,9 @@ export class DeclarativeEffectInterpreter {
                 const playerId = event.playerId;
                 if (!enteredId || !playerId) return [];
                 const enteredCard = state.cards[enteredId];
-                if (!enteredCard) return [];
+                if (!enteredCard || continuousEffects.getEffectiveCardType(enteredCard.instanceId) !== 'ROLE') {
+                  return [];
+                }
                 if (trig.matcher.enteredFilter && !this.matchesFilter(enteredCard, trig.matcher.enteredFilter)) {
                   return [];
                 }
@@ -2878,9 +2960,6 @@ export class DeclarativeEffectInterpreter {
                 const eqDef = eqCard ? this.def(eqCard) : undefined;
                 if (eqDef) {
                   this.effects.handleEquipmentBuff(hostId, eqDef);
-                  if (this.handlesEntry(eqDef.cardNumber)) {
-                    this.enter(playerId, eqId, eqDef);
-                  }
                 }
               }
             }
@@ -3000,133 +3079,64 @@ export class DeclarativeEffectInterpreter {
               }
             } else if (step.toZone === 'DECK_BOTTOM') {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
-              this.ctx.zoneMgr.moveCardToBottomOfDeck(id);
-              moved.push(id);
+              if (this.ctx.zoneMgr.moveCardToBottomOfDeck(id)) {
+                moved.push(id);
+              }
             } else if (step.toZone === 'DECK_TOP') {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
-              this.ctx.zoneMgr.moveCardToTopOfDeck(id);
-              moved.push(id);
+              if (this.ctx.zoneMgr.moveCardToTopOfDeck(id)) {
+                moved.push(id);
+              }
             } else if (step.toZone === 'DECK_SHUFFLE') {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
-              this.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-              ownersToShuffle.add(card.ownerPlayerId);
-              moved.push(id);
+              if (this.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false })) {
+                ownersToShuffle.add(card.ownerPlayerId);
+                moved.push(id);
+              }
             } else if (step.toZone === 'SIGNAL_ORB_BOTTOM') {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
-              this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: step.isFaceUp ?? true, toBottom: true });
-              moved.push(id);
+              if (this.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', { isFaceUp: step.isFaceUp ?? true, toBottom: true })) {
+                moved.push(id);
+              }
             } else if (step.toZone === 'COST') {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'GRAVEYARD' && card.zone !== 'DECK') continue;
-              this.ctx.zoneMgr.moveCard(id, 'COST', {
-                isFaceUp: step.isFaceUp ?? false,
-                isReady: step.isReady ?? true,
-              });
-              this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
-              moved.push(id);
+              if (
+                this.ctx.zoneMgr.moveCard(id, 'COST', {
+                  isFaceUp: step.isFaceUp ?? false,
+                  isReady: step.isReady ?? true,
+                })
+              ) {
+                this.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
+                moved.push(id);
+              }
             } else if (step.toZone === 'UNDERNEATH') {
               if (!step.underneathHost) continue;
               const hostId = this.resolveTargetIds(step.underneathHost, playerId, sourceId, vars)[0];
-              const host = hostId ? this.ctx.state.cards[hostId] : undefined;
-              if (!host || host.zone !== 'BATTLEFIELD' || host.instanceId === id) continue;
-              // 1.3.3 / Q&A·10：禁止因效果或我方效果置入角色下方 (BP04-002/003/005/008)
-              const prohibitions = this.ctx.fieldMgr.evaluateRoleStats(id).prohibitions;
-              if (prohibitions.includes('CANNOT_BE_PLACED_UNDERNEATH')) continue;
+              if (!hostId) continue;
               if (
-                card.controllerPlayerId === playerId &&
-                prohibitions.includes('CANNOT_BE_PLACED_UNDERNEATH_BY_SELF')
+                this.ctx.fieldMgr.placeCardUnderneath(id, hostId, {
+                  includeUnderneath: step.includeUnderneath,
+                  actorPlayerId: playerId,
+                })
               ) {
-                continue;
+                moved.push(id);
               }
-              if (card.partnerOfCardId) {
-                const oldHost = this.ctx.state.cards[card.partnerOfCardId];
-                if (oldHost) oldHost.partnerCardId = undefined;
-                card.partnerOfCardId = undefined;
-                card.cannotReleasePartnerUntilTurn = undefined;
-                card.releasePartnerToDeckBottom = undefined;
-              }
-              const wasTopLevelField =
-                card.zone === 'BATTLEFIELD' && this.ctx.fieldMgr.isTopLevelFieldCard(card.controllerPlayerId, id);
-              // PR-041：includeUnderneath=true 时连同原下方卡牌一并转移至新宿主下方，不因 handleCardLeaveField 送墓
-              const carriedUnderIds = step.includeUnderneath ? [...(card.underneathCardIds ?? [])] : [];
-              if (step.includeUnderneath && carriedUnderIds.length > 0) {
-                card.underneathCardIds = [];
-              }
-              if (wasTopLevelField) {
-                const prevController = card.controllerPlayerId;
-                const snapshot = this.ctx.triggerMgr?.snapshotCard(id);
-                this.ctx.fieldMgr.handleCardLeaveField(id);
-                card.modifiers = undefined;
-                card.tempPPBonus = undefined;
-                card.tempDPBonus = undefined;
-                card.grantedKeywords = undefined;
-                card.isFrozen = undefined;
-                card.endOfTurnToGraveyard = undefined;
-                card.slotIndex = undefined;
-                card.wasAscendedPlay = undefined;
-                card.ascendedFromAirborne = undefined;
-                card.paidHiddenCostOnPlay = undefined;
-                card.controllerPlayerId = host.controllerPlayerId;
-                this.ctx.triggerMgr?.emit({
-                  type: 'CARD_LEFT_FIELD',
-                  playerId: prevController,
-                  cardInstanceId: id,
-                  fromZone: 'BATTLEFIELD',
-                  toZone: 'BATTLEFIELD',
-                  subjectSnapshot: snapshot,
-                });
-              } else if (card.zone === 'BATTLEFIELD') {
-                for (const other of Object.values(this.ctx.state.cards)) {
-                  if (other.underneathCardIds?.includes(id)) {
-                    other.underneathCardIds = other.underneathCardIds.filter((x) => x !== id);
-                  }
-                }
-                card.modifiers = undefined;
-                card.tempPPBonus = undefined;
-                card.tempDPBonus = undefined;
-                card.grantedKeywords = undefined;
-                card.isFrozen = undefined;
-                card.endOfTurnToGraveyard = undefined;
-                card.slotIndex = undefined;
-                card.controllerPlayerId = host.controllerPlayerId;
-              } else {
-                this.ctx.zoneMgr.moveCard(id, 'BATTLEFIELD', { isFaceUp: true, isReady: true });
-                card.controllerPlayerId = host.controllerPlayerId;
-              }
-              card.isFaceUp = true;
-              card.isReady = true;
-              card.slotIndex = undefined;
-              if (!host.underneathCardIds.includes(id)) {
-                host.underneathCardIds.push(id);
-              }
-              for (const carriedId of carriedUnderIds) {
-                const cc = this.ctx.state.cards[carriedId];
-                if (!cc || carriedId === host.instanceId) continue;
-                cc.zone = 'BATTLEFIELD';
-                cc.controllerPlayerId = host.controllerPlayerId;
-                cc.isFaceUp = true;
-                cc.isReady = true;
-                cc.slotIndex = undefined;
-                cc.modifiers = undefined;
-                if (!host.underneathCardIds.includes(carriedId)) {
-                  host.underneathCardIds.push(carriedId);
-                }
-              }
-              moved.push(id);
             } else {
               if (step.target.kind === 'REST_OF_VAR' && card.zone !== 'PROCESSING' && card.zone !== 'DECK') continue;
-              if (step.toZone === 'GRAVEYARD') {
-                this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
-                  isFaceUp: step.isFaceUp ?? true,
-                  sentByEffectOrCost: step.sentByEffectOrCost ?? (card.zone === 'BATTLEFIELD'),
-                  countAsDeckToGy: card.zone === 'DECK' || (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'),
-                });
-              } else {
-                this.ctx.zoneMgr.moveCard(id, step.toZone, {
-                  isFaceUp: step.isFaceUp ?? true,
-                  ...(step.isReady !== undefined ? { isReady: step.isReady } : {}),
-                });
+              const ok =
+                step.toZone === 'GRAVEYARD'
+                  ? this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
+                      isFaceUp: step.isFaceUp ?? true,
+                      sentByEffectOrCost: step.sentByEffectOrCost ?? (card.zone === 'BATTLEFIELD'),
+                      countAsDeckToGy: card.zone === 'DECK' || (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'),
+                    })
+                  : this.ctx.zoneMgr.moveCard(id, step.toZone, {
+                      isFaceUp: step.isFaceUp ?? true,
+                      ...(step.isReady !== undefined ? { isReady: step.isReady } : {}),
+                    });
+              if (ok) {
+                moved.push(id);
               }
-              moved.push(id);
             }
           }
           for (const ownerId of ownersToShuffle) {
@@ -3141,13 +3151,9 @@ export class DeclarativeEffectInterpreter {
           const targetId = (vars[step.targetVar] ?? [])[0];
           const extraId = step.extraStackVar ? (vars[step.extraStackVar] ?? [])[0] : undefined;
           if (cardId && targetId) {
-            const ok = this.ctx.fieldMgr.playAscensionCard(playerId, cardId, targetId, {
+            this.ctx.fieldMgr.playAscensionCard(playerId, cardId, targetId, {
               extraStackRoleCardId: extraId,
             });
-            if (ok) {
-              const ascDef = this.def(this.ctx.state.cards[cardId]!);
-              if (ascDef) this.effects.handleRoleEntryEffect(playerId, cardId, ascDef);
-            }
           }
           if (step.shuffleDeckAfter) {
             this.ctx.zoneMgr.shuffleDeck(playerId);
@@ -4514,33 +4520,29 @@ export class DeclarativeEffectInterpreter {
     }
 
     if (targetDef.cardType === 'EQUIPMENT') {
-      if (!this.ctx.fieldMgr.playStandaloneEquipment(playerId, cardId, slot)) return false;
-      if (enterTapped) targetCard.isReady = false;
-      if (enterAbilitiesLost) {
-        addCardModifier(this.ctx.state, targetCard, {
-          loseAbilities: true,
-          untilTurn: undefined,
-          source: sourceCardNumber ?? targetCard.cardNumber,
-        });
-      }
-      if (triggerEntry && !enterAbilitiesLost) {
-        this.effects.handleRoleEntryEffect(playerId, cardId, targetDef);
+      if (
+        !this.ctx.fieldMgr.playStandaloneEquipment(playerId, cardId, slot, {
+          enterTapped,
+          enterAbilitiesLost,
+          sourceCardNumber,
+          suppressEntryTrigger: !triggerEntry || enterAbilitiesLost,
+        })
+      ) {
+        return false;
       }
       return true;
     }
 
     if (targetDef.cardType === 'ASSIST') {
-      if (!this.ctx.fieldMgr.playAssistCard(playerId, cardId, slot)) return false;
-      if (enterTapped) targetCard.isReady = false;
-      if (enterAbilitiesLost) {
-        addCardModifier(this.ctx.state, targetCard, {
-          loseAbilities: true,
-          untilTurn: undefined,
-          source: sourceCardNumber ?? targetCard.cardNumber,
-        });
-      }
-      if (triggerEntry && !enterAbilitiesLost) {
-        this.effects.handleRoleEntryEffect(playerId, cardId, targetDef);
+      if (
+        !this.ctx.fieldMgr.playAssistCard(playerId, cardId, slot, {
+          enterTapped,
+          enterAbilitiesLost,
+          sourceCardNumber,
+          suppressEntryTrigger: !triggerEntry || enterAbilitiesLost,
+        })
+      ) {
+        return false;
       }
       return true;
     }
@@ -4551,13 +4553,10 @@ export class DeclarativeEffectInterpreter {
         enterAbilitiesLost,
         deployedFromHostCardId,
         sourceCardNumber,
+        suppressEntryTrigger: !triggerEntry || enterAbilitiesLost,
       })
     ) {
       return false;
-    }
-    if (triggerEntry && !enterAbilitiesLost) {
-      const def = this.def(this.ctx.state.cards[cardId]!);
-      if (def) this.effects.handleRoleEntryEffect(playerId, cardId, def);
     }
     return true;
   }
@@ -4581,14 +4580,15 @@ export class DeclarativeEffectInterpreter {
     }
 
     const snapshot = this.ctx.triggerMgr?.snapshotCard(cardId);
-    this.ctx.zoneMgr.moveCard(cardId, 'GRAVEYARD', { isFaceUp: true });
+    const moved = this.ctx.zoneMgr.moveCard(cardId, 'GRAVEYARD', { isFaceUp: true });
+    if (!moved) return false;
     this.ctx.events.push({ type: 'CARD_DESTROYED', cardInstanceId: cardId, reason: 'EFFECT' });
     this.ctx.triggerMgr?.emit({
       type: 'CARD_DESTROYED',
       playerId: card.controllerPlayerId,
       cardInstanceId: cardId,
       fromZone: 'BATTLEFIELD',
-      toZone: 'GRAVEYARD',
+      toZone: this.ctx.state.cards[cardId]?.zone ?? 'GRAVEYARD',
       destroyReason: 'EFFECT',
       subjectSnapshot: snapshot,
     });

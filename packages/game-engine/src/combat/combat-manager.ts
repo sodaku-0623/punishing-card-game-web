@@ -56,18 +56,29 @@ export class CombatManager {
   }
 
   /**
-   * 7.5.1.b 计算并锁定本次攻击的伤害量 (含 1.3.3 禁止伤害、Q&A·7 PR-034 与 8.10 伤害置换)
+   * 7.5.1.b 计算并锁定本次攻击的伤害量 (含 1.3.3 禁止伤害、Q&A·7 PR-034 与 8.10 伤害置换；需选序挂起时返回 undefined)
    */
-  private computeLockedCombatDamage(attackerCardId: string): number {
+  private computeLockedCombatDamage(attackerCardId: string): number | undefined {
     if (!this.fieldMgr.isSlotRole(this.state.activePlayerId, attackerCardId)) return 0;
     if (this.state.currentCombat?.cannotDealDamage || this.hasProhibition(attackerCardId, 'CANNOT_DEAL_DAMAGE')) {
       return 0;
     }
     const baseDp = Math.max(0, this.fieldMgr.calculateRoleEffectiveDP(attackerCardId));
     if (baseDp <= 0) return 0;
-    let dmg = this.replacementEngine
-      ? this.replacementEngine.interceptDealDamage(this.state.nonActivePlayerId, baseDp, attackerCardId)
-      : baseDp;
+    let dmg = baseDp;
+    if (this.replacementEngine) {
+      const res = this.replacementEngine.interceptDealDamageDetailed(
+        this.state.nonActivePlayerId,
+        baseDp,
+        attackerCardId,
+        undefined,
+        { applyMode: 'COMBAT_DAMAGE' }
+      );
+      if (res.pendingChoice) {
+        return undefined;
+      }
+      dmg = res.amount;
+    }
     const cap = this.state.currentCombat?.maxDamageInDamageStep;
     if (cap !== undefined) {
       dmg = Math.min(dmg, Math.max(0, cap));
@@ -454,8 +465,7 @@ export class CombatManager {
         return true;
       case 'END':
       default:
-        this.endCombat();
-        return true;
+        return this.endCombat();
     }
   }
 
@@ -539,6 +549,9 @@ export class CombatManager {
     if (combat.damageRemaining === undefined && combat.pendingDamageCardId === undefined) {
       // 7.5.1.a 触发选择完毕后，在 7.5.1.b 此时锁定伤害量 (7.5.1.b.3 之后不再变化)
       combat.damageRemaining = this.computeLockedCombatDamage(combat.attackerCardId);
+      if (combat.damageRemaining === undefined) {
+        return false;
+      }
     }
 
     if (combat.pendingDamageCardId !== undefined) {
@@ -611,31 +624,33 @@ export class CombatManager {
             });
           }
         } else {
-          destroyedDefenderCardId = defenderCardId;
           const defenderSnapshot = this.snapshotProvider?.(defenderCardId);
-          this.zoneMgr.moveCard(defenderCardId, 'GRAVEYARD', { isFaceUp: true });
-          this.events.push({ type: 'CARD_DESTROYED', cardInstanceId: defenderCardId, reason: 'BATTLE' });
-          this.onTriggerEventCallback?.({
-            type: 'CARD_DESTROYED',
-            playerId: this.state.nonActivePlayerId,
-            cardInstanceId: defenderCardId,
-            targetCardId: combat.attackerCardId,
-            fromZone: 'BATTLEFIELD',
-            toZone: 'GRAVEYARD',
-            destroyReason: 'BATTLE',
-            subjectSnapshot: defenderSnapshot,
-          });
+          const movedToGy = this.zoneMgr.moveCard(defenderCardId, 'GRAVEYARD', { isFaceUp: true });
+          if (movedToGy) {
+            destroyedDefenderCardId = defenderCardId;
+            this.events.push({ type: 'CARD_DESTROYED', cardInstanceId: defenderCardId, reason: 'BATTLE' });
+            this.onTriggerEventCallback?.({
+              type: 'CARD_DESTROYED',
+              playerId: this.state.nonActivePlayerId,
+              cardInstanceId: defenderCardId,
+              targetCardId: combat.attackerCardId,
+              fromZone: 'BATTLEFIELD',
+              toZone: this.state.cards[defenderCardId]?.zone ?? 'GRAVEYARD',
+              destroyReason: 'BATTLE',
+              subjectSnapshot: defenderSnapshot,
+            });
 
-          // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
-          // Q&A·7 PR-034：若本次攻击不会给予伤害或攻击角色禁止造成伤害，贯通伤害亦不造成
-          const cannotDealDamage =
-            combat.cannotDealDamage || this.hasProhibition(combat.attackerCardId, 'CANNOT_DEAL_DAMAGE');
-          if (!cannotDealDamage && this.hasKeyword(combat.attackerCardId, '贯通')) {
-            this.zoneMgr.applyDamageToPlayer(
-              this.state.nonActivePlayerId,
-              RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
-              combat.attackerCardId
-            );
+            // 10.7 贯通：战斗破坏被攻击的角色时，给予对方玩家 1 点伤害 (多个贯通也只触发 1 次)
+            // Q&A·7 PR-034：若本次攻击不会给予伤害或攻击角色禁止造成伤害，贯通伤害亦不造成
+            const cannotDealDamage =
+              combat.cannotDealDamage || this.hasProhibition(combat.attackerCardId, 'CANNOT_DEAL_DAMAGE');
+            if (!cannotDealDamage && this.hasKeyword(combat.attackerCardId, '贯通')) {
+              this.zoneMgr.applyDamageToPlayer(
+                this.state.nonActivePlayerId,
+                RULE_CONSTANTS.PIERCING_DAMAGE_VALUE,
+                combat.attackerCardId
+              );
+            }
           }
         }
       }
@@ -657,23 +672,18 @@ export class CombatManager {
 
   /**
    * 结束当前攻击流程，返回主要阶段 (7.5.1.d / 7.6.1.f「攻击结束时」)
+   * 先完整发射并结算 ATTACK_ENDED 检查时机，再清空 currentCombat 与 combat-* 修饰器。
    */
-  private endCombat(): void {
+  private endCombat(): boolean {
     const combat = this.state.currentCombat;
-    this.state.currentCombat = undefined;
-    this.state.phase = 'MAIN_PHASE';
-    this.state.priorityPlayerId = this.state.activePlayerId;
-
-    // 清理持续至「那次攻击结束为止」的持续效果 (如 BP03-054 艾拉·万华【瞬时】)
-    for (const card of Object.values(this.state.cards)) {
-      if (card.modifiers?.some((m) => m.id?.startsWith('combat-'))) {
-        const remaining = card.modifiers.filter((m) => !m.id?.startsWith('combat-'));
-        card.modifiers = remaining.length > 0 ? remaining : undefined;
-      }
+    if (!combat) {
+      this.state.phase = 'MAIN_PHASE';
+      this.state.priorityPlayerId = this.state.activePlayerId;
+      return false;
     }
 
-    // 7.5.1.d / 7.6.1.f「攻击结束时」触发条件生效 (含 10.16【同命】等自动能力)，进入检查时机
-    if (combat) {
+    if (!combat.attackEndTriggersEmitted) {
+      combat.attackEndTriggersEmitted = true;
       this.onTriggerEventCallback?.({
         type: 'ATTACK_ENDED',
         playerId: this.state.activePlayerId,
@@ -687,6 +697,26 @@ export class CombatManager {
       });
     }
 
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      this.state.status === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
+
+    // 清理持续至「那次攻击结束为止」的持续效果 (如 BP03-054 艾拉·万华【瞬时】)
+    for (const card of Object.values(this.state.cards)) {
+      if (card.modifiers?.some((m) => m.id?.startsWith('combat-'))) {
+        const remaining = card.modifiers.filter((m) => !m.id?.startsWith('combat-'));
+        card.modifiers = remaining.length > 0 ? remaining : undefined;
+      }
+    }
+
+    this.state.currentCombat = undefined;
+    this.state.phase = 'MAIN_PHASE';
+    this.state.priorityPlayerId = this.state.activePlayerId;
     this.checkTimingMgr.resolveCheckTiming();
+    return true;
   }
 }

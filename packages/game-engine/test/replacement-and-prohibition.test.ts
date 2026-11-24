@@ -62,7 +62,7 @@ function placeRole(
 ) {
   const card = findCard(engine, playerId, cardNumber);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   if (options?.enteredEarlier !== false) {
     card.turnEnteredZone = 0;
   }

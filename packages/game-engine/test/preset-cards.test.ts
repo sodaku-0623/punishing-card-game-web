@@ -63,7 +63,7 @@ function pick(engine: GameEngine, playerId: string, cardNumber: string, zone?: C
 
 function placeRole(engine: GameEngine, playerId: string, cardNumber: string, slot: number): CardInstance {
   const card = pick(engine, playerId, cardNumber);
-  expect(engine.fieldMgr.playRoleCard(playerId, card.instanceId, slot)).toBe(true);
+  expect(engine.fieldMgr.playRoleCard(playerId, card.instanceId, slot, { suppressEntryTrigger: true })).toBe(true);
   card.turnEnteredZone = 0;
   return card;
 }

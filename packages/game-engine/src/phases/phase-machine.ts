@@ -57,59 +57,103 @@ export class PhaseMachine {
    * 6.2 竖直阶段 (Stand Phase)
    */
   startStandPhase(): void {
+    if (this.state.status === 'FINISHED') return;
     this.transitionTo('STAND_PHASE');
     const activePlayerId = this.state.activePlayerId;
-
-    // 10.18.2.c 回合开始时 (6.2.1.a) 检查处理区中的【浮空模式】卡牌并作为规则处理回到战场
-    // 注意：须先将本回合竖直的卡牌竖直，还是按 10.18.2.d.1 回到战场时已正面竖直？
-    // 6.2.1.a (浮空回归检查时机) 先于 6.2.1.b (规则竖直)，回场自身也是正面竖直表示。
-    this.onTurnStartAirborneReturnCallback?.(activePlayerId);
-
-    // 6.2.1.b 回合玩家将自身战场和费用区的所有卡牌竖直 (10.15 冰冻状态的卡牌无法因规则竖直)
-    for (const card of Object.values(this.state.cards)) {
-      if (
-        card.controllerPlayerId === activePlayerId &&
-        (card.zone === 'BATTLEFIELD' || card.zone === 'COST') &&
-        !card.partnerOfCardId
-      ) {
-        if (!card.isFrozen) {
-          card.isReady = true;
-        }
-      }
-    }
-
-    // 更新费用统计
-    this.zoneMgr.syncCostStats(activePlayerId);
 
     // 10.1 重置回合【回合1】能力发动次数统计
     for (const p of Object.values(this.state.players)) {
       p.turnAbilityUsage = {};
     }
 
-    // 6.2.1.c「回合开始时」触发条件生效后进入检查时机
+    this.state.standPhaseStep = 'START_TRIGGERS';
+
+    // 6.2.1.a 10.18.2.c 回合开始时检查处理区中的【浮空模式】卡牌并作为规则处理回到战场，
+    // 以及「回合开始时」触发条件生效后进入检查时机 (均发生在 6.2.1.b 竖直之前)
+    this.onTurnStartAirborneReturnCallback?.(activePlayerId);
     this.onTriggerEventCallback?.({
       type: 'TURN_STARTED',
       playerId: activePlayerId,
     });
-    this.checkTimingMgr.resolveCheckTiming();
 
-    // 10.15.3 竖直阶段结束时解除回合玩家卡牌的冰冻状态
-    for (const card of Object.values(this.state.cards)) {
-      if (card.controllerPlayerId === activePlayerId && card.isFrozen) {
-        card.isFrozen = undefined;
-      }
+    this.advanceStandPhase();
+  }
+
+  /**
+   * 可挂起地推进 6.2 竖直阶段；遇待处理决策或对局结束时立即挂起并返回 false。
+   */
+  advanceStandPhase(): boolean {
+    if (
+      this.state.phase !== 'STAND_PHASE' ||
+      this.state.status === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
     }
 
-    // 自动进入 6.3 抽牌填充阶段
-    this.startDrawChargePhase();
+    const activePlayerId = this.state.activePlayerId;
+
+    if (!this.state.standPhaseStep || this.state.standPhaseStep === 'START_TRIGGERS') {
+      if (
+        !this.checkTimingMgr.resolveCheckTiming() ||
+        (this.state.status as string) === 'FINISHED' ||
+        this.state.currentPendingChoice
+      ) {
+        return false;
+      }
+
+      // 6.2.1.b 回合玩家将自身战场和费用区的所有卡牌竖直 (10.15 冰冻状态的卡牌无法因规则竖直)
+      for (const card of Object.values(this.state.cards)) {
+        if (
+          card.controllerPlayerId === activePlayerId &&
+          (card.zone === 'BATTLEFIELD' || card.zone === 'COST') &&
+          !card.partnerOfCardId
+        ) {
+          if (!card.isFrozen) {
+            card.isReady = true;
+          }
+        }
+      }
+
+      // 更新费用统计
+      this.zoneMgr.syncCostStats(activePlayerId);
+      this.state.standPhaseStep = 'POST_UNTAP';
+    }
+
+    if (this.state.standPhaseStep === 'POST_UNTAP') {
+      // 6.2.1.c 相关触发条件生效后，该检查时机的所有处理完毕后进入抽牌填充阶段
+      if (
+        !this.checkTimingMgr.resolveCheckTiming() ||
+        (this.state.status as string) === 'FINISHED' ||
+        this.state.currentPendingChoice
+      ) {
+        return false;
+      }
+
+      // 10.15.3 竖直阶段结束时解除回合玩家卡牌的冰冻状态
+      for (const card of Object.values(this.state.cards)) {
+        if (card.controllerPlayerId === activePlayerId && card.isFrozen) {
+          card.isFrozen = undefined;
+        }
+      }
+
+      this.state.standPhaseStep = undefined;
+      // 自动进入 6.3 抽牌填充阶段
+      this.startDrawChargePhase();
+      return true;
+    }
+
+    return false;
   }
 
   /**
    * 6.3 抽牌填充阶段 (Draw & Charge Phase)
    */
   startDrawChargePhase(): void {
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return;
     this.transitionTo('DRAW_CHARGE_PHASE');
     const activePlayerId = this.state.activePlayerId;
+    this.state.drawChargePhaseStep = 'DRAW';
 
     // 6.3.1.b 除先攻玩家在其第一回合仅抽1张以外，从牌组抽2张牌
     const isFirstTurnOfGame = this.state.turnNumber === 1;
@@ -117,12 +161,17 @@ export class PhaseMachine {
     const drawCount = isFirstTurnOfGame && isFirstPlayer ? 1 : 2;
 
     this.zoneMgr.drawCards(activePlayerId, drawCount);
-
-    this.checkTimingMgr.resolveCheckTiming();
-
+    this.state.drawChargePhaseStep = 'AWAIT_CHARGE';
     // 给予回合玩家放置明费的选择时机 (6.3.1.c)
-    // 默认进入主要阶段，或等待玩家明确执行充费动作
     this.state.priorityPlayerId = activePlayerId;
+
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      (this.state.status as string) === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return;
+    }
   }
 
   /**
@@ -131,8 +180,10 @@ export class PhaseMachine {
   chargeCostFromHand(playerId: string, cardInstanceId?: string): boolean {
     if (this.state.phase !== 'DRAW_CHARGE_PHASE') return false;
     if (this.state.activePlayerId !== playerId) return false;
-
-    const player = this.state.players[playerId]!;
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return false;
+    if (this.state.drawChargePhaseStep && this.state.drawChargePhaseStep !== 'AWAIT_CHARGE') {
+      return false;
+    }
 
     if (cardInstanceId) {
       const card = this.state.cards[cardInstanceId];
@@ -140,17 +191,42 @@ export class PhaseMachine {
         return false;
       }
 
-      // 费用区中明费和暗费的数量合计上限默认为10张 (BP03-052在场满足条件时为11张)。若费用区已达上限，需要放置到费用区的卡牌改为放置到墓地。
-      if (player.totalCostCount >= this.zoneMgr.getMaxCostZoneCapacity(playerId)) {
-        this.zoneMgr.moveCard(cardInstanceId, 'GRAVEYARD', { isFaceUp: true });
-      } else {
-        // 放置到费用区成为明费 (正面竖直)
-        this.zoneMgr.moveCard(cardInstanceId, 'COST', { isFaceUp: true, isReady: true });
+      // 放置到费用区成为明费 (正面竖直)；若费用区已达上限，由 3.6.4 与置换引擎统一改放墓地或交由置换处理
+      const moved = this.zoneMgr.moveCard(cardInstanceId, 'COST', { isFaceUp: true, isReady: true });
+      if (!moved && !this.state.currentPendingChoice) {
+        return false;
       }
     }
 
+    this.state.drawChargePhaseStep = 'AFTER_CHARGE';
+    this.advanceDrawChargePhase();
+    return true;
+  }
+
+  /**
+   * 可挂起地推进 6.3.1.d 抽牌填充阶段末尾检查时机并进入主要阶段
+   */
+  advanceDrawChargePhase(): boolean {
+    if (
+      this.state.phase !== 'DRAW_CHARGE_PHASE' ||
+      this.state.status === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
+    if (this.state.drawChargePhaseStep !== 'AFTER_CHARGE') {
+      return false;
+    }
+
     // 6.3.1.d 检查时机处理完毕后，进入主要阶段
-    this.checkTimingMgr.resolveCheckTiming();
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      (this.state.status as string) === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
+    this.state.drawChargePhaseStep = undefined;
     this.startMainPhase();
     return true;
   }
@@ -159,6 +235,7 @@ export class PhaseMachine {
    * 6.4 主要阶段 (Main Phase)
    */
   startMainPhase(): void {
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return;
     this.transitionTo('MAIN_PHASE');
     this.state.priorityPlayerId = this.state.activePlayerId;
     this.checkTimingMgr.resolveCheckTiming();
@@ -187,14 +264,21 @@ export class PhaseMachine {
   }
 
   /**
-   * 6.5.1.d 之后的清理与 6.5.1.e 回合交接
+   * 6.5.1.d 执行结束阶段清理步骤；若检查时机产生待决决策或对局结束则立即挂起返回 false。
    */
-  finishEndPhase(): void {
+  runEndPhaseCleanup(): boolean {
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return false;
     const activePlayerId = this.state.activePlayerId;
 
     // 6.5.1.d 进入检查时机，记录禁止回合结束送墓的暗费 (如 BP03-079)，之后「回合结束前」「该回合中」为期限的效果同时消失
     // untilTurn 为 undefined 的区域内持续效果 (如升变赋予的【速攻】) 不随回合结束消失，离场时才消失 (3.1.4)
-    this.checkTimingMgr.resolveCheckTiming();
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      (this.state.status as string) === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
 
     const protectedHiddenCostIds = new Set<string>();
     for (const c of this.zoneMgr.getCardsInZone(activePlayerId, 'COST')) {
@@ -242,11 +326,27 @@ export class PhaseMachine {
       }
     }
 
-    this.checkTimingMgr.resolveCheckTiming();
-    if (this.state.status === 'FINISHED') return;
+    this.state.endPhaseStep = 'CLEANUP_POST';
+    return true;
+  }
+
+  /**
+   * 6.5.1.d 清理后的检查时机与 6.5.1.e 回合交接；遇待决决策或对局结束立即挂起返回 false。
+   */
+  handoffToNextTurn(): boolean {
+    if (this.state.status === 'FINISHED' || this.state.currentPendingChoice) return false;
+    if (
+      !this.checkTimingMgr.resolveCheckTiming() ||
+      (this.state.status as string) === 'FINISHED' ||
+      this.state.currentPendingChoice
+    ) {
+      return false;
+    }
+
     this.state.endPhaseStep = undefined;
 
     // 6.5.1.e 回合外玩家成为回合玩家，进入下一回合的竖直阶段
+    const activePlayerId = this.state.activePlayerId;
     const nextActivePlayerId = this.state.nonActivePlayerId;
     this.state.nonActivePlayerId = activePlayerId;
     this.state.activePlayerId = nextActivePlayerId;
@@ -260,5 +360,14 @@ export class PhaseMachine {
     });
 
     this.startStandPhase();
+    return true;
+  }
+
+  /**
+   * 6.5.1.d 之后的清理与 6.5.1.e 回合交接
+   */
+  finishEndPhase(): void {
+    if (!this.runEndPhaseCleanup()) return;
+    this.handoffToNextTurn();
   }
 }

@@ -75,7 +75,7 @@ function placeRole(
 ) {
   const card = findCard(engine, playerId, cardNumber, options?.instanceIndex ?? 0);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  const ok = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  const ok = engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   expect(ok).toBe(true);
   if (options?.enteredEarlier !== false) card.turnEnteredZone = 0;
   if (options?.isReady !== undefined) card.isReady = options.isReady;
@@ -1176,6 +1176,9 @@ describe('BP02 万事·明晰梦体系', () => {
       targetAscensionCardId: w069.instanceId,
     });
     expect(play066.success, play066.error).toBe(true);
+    expect(engine.getState().currentPendingChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    const first066Opt = engine.getState().currentPendingChoice!.options[0]!;
+    pickChoice(engine, 'p1', [first066Opt.id]);
     const orbCostOpt = engine.getState().currentPendingChoice!.options.find((o) => o.id !== 'skip')!;
     pickChoice(engine, 'p1', [orbCostOpt.id]);
     pickChoice(engine, 'p1', [p2Role.instanceId]); // 横置并冰冻 p2Role

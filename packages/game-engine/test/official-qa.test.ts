@@ -52,7 +52,7 @@ function findCard(engine: GameEngine, playerId: string, cardNumber: string, excl
 function placeRole(engine: GameEngine, playerId: string, cardNumber: string, slot: number, exclude: string[] = []) {
   const card = findCard(engine, playerId, cardNumber, exclude);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  expect(engine.fieldMgr.playRoleCard(playerId, card.instanceId, slot)).toBe(true);
+  expect(engine.fieldMgr.playRoleCard(playerId, card.instanceId, slot, { suppressEntryTrigger: true })).toBe(true);
   card.turnEnteredZone = 0;
   engine.checkTimingMgr.resolveCheckTiming();
   return card;

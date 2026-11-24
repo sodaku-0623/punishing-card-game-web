@@ -46,7 +46,7 @@ function findCard(engine: GameEngine, playerId: string, cardNumber: string, excl
 function placeRoleOnField(engine: GameEngine, playerId: string, cardNumber: string, slotIndex: number, excludeIds: string[] = []) {
   const card = findCard(engine, playerId, cardNumber, excludeIds);
   engine.zoneMgr.moveCard(card.instanceId, 'HAND', { isFaceUp: true });
-  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex);
+  engine.fieldMgr.playRoleCard(playerId, card.instanceId, slotIndex, { suppressEntryTrigger: true });
   card.turnEnteredZone = 0; // 允许当回合测试攻击
   engine.checkTimingMgr.resolveCheckTiming();
   return card;
@@ -151,7 +151,26 @@ describe('8.5 / 8.7 自动能力触发框架 (TriggerManager & CheckTimingManage
     });
     expect(res.success).toBe(true);
 
-    // 若 ST03-003 有自身【出】决策，先选择跳过
+    // ST03-003 自身【出】与 2 张 ST03-009 【自】共 3 项同时进入待机 (8.5.1 / 8.7.3)
+    const firstOrderChoice = state.currentPendingChoice;
+    expect(firstOrderChoice).toBeDefined();
+    expect(firstOrderChoice?.effectType).toBe('CHOOSE_TRIGGER_ORDER');
+    expect(firstOrderChoice?.playerId).toBe(active);
+    expect(firstOrderChoice?.options.length).toBe(3);
+
+    // 先处理 ST03-003 自身【出】并跳过其可选效果，随后剩余 2 项 ST03-009【自】仍由玩家自选顺序
+    const veraEntryOpt = firstOrderChoice!.options.find(
+      (o) => (o.payload as { abilityId?: string } | undefined)?.abilityId === 'dsl:CARD_ENTRY'
+    )!;
+    expect(veraEntryOpt).toBeDefined();
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: firstOrderChoice!.id,
+        selectedIds: [veraEntryOpt.id],
+      }).success
+    ).toBe(true);
     while (state.currentPendingChoice && state.currentPendingChoice.effectType !== 'CHOOSE_TRIGGER_ORDER') {
       const ch = state.currentPendingChoice;
       const skipOpt = ch.options.find((o) => o.id === 'skip') ?? ch.options[0]!;
@@ -424,7 +443,7 @@ describe('8.5 / 8.7 自动能力触发框架 (TriggerManager & CheckTimingManage
 
     // 2. 10.1.2.a 移区后重新进场，次数限制重置，可再次触发
     engine.zoneMgr.moveCard(role.instanceId, 'HAND', { isFaceUp: true });
-    engine.fieldMgr.playRoleCard(active, role.instanceId, 0);
+    engine.fieldMgr.playRoleCard(active, role.instanceId, 0, { suppressEntryTrigger: true });
     engine.triggerMgr.emit({ type: 'ORBS_ELIMINATED', playerId: active, orbCardIds: [] });
     engine.checkTimingMgr.resolveCheckTiming();
     expect(triggerCount).toBe(2);

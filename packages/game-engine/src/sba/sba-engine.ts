@@ -114,22 +114,24 @@ export class SbaEngine {
               continue;
             }
             const snapshot = this.snapshotProvider?.(card.instanceId);
-            this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
-            this.events.push({
-              type: 'CARD_DESTROYED',
-              cardInstanceId: card.instanceId,
-              reason: 'PP_ZERO',
-            });
-            this.onTriggerEventCallback?.({
-              type: 'CARD_DESTROYED',
-              playerId: card.controllerPlayerId,
-              cardInstanceId: card.instanceId,
-              fromZone: 'BATTLEFIELD',
-              toZone: 'GRAVEYARD',
-              destroyReason: 'PP_ZERO',
-              subjectSnapshot: snapshot,
-            });
-            executedAny = true;
+            const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+            if (moved) {
+              this.events.push({
+                type: 'CARD_DESTROYED',
+                cardInstanceId: card.instanceId,
+                reason: 'PP_ZERO',
+              });
+              this.onTriggerEventCallback?.({
+                type: 'CARD_DESTROYED',
+                playerId: card.controllerPlayerId,
+                cardInstanceId: card.instanceId,
+                fromZone: 'BATTLEFIELD',
+                toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
+                destroyReason: 'PP_ZERO',
+                subjectSnapshot: snapshot,
+              });
+              executedAny = true;
+            }
           }
         }
       }

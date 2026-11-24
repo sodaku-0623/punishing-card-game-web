@@ -72,42 +72,53 @@ export const ST05_EFFECT_SPECS: readonly CardEffectSpec[] = [
   {
     cardNumber: 'ST05-002',
     name: '比安卡·晖暮',
+    // Q&A·5：晖【出】与暮【出】两条独立自动能力都会进入待机，可与形态切换穿插排序
     // 晖【出】：选择我方墓地1张费用为4及以下的《比安卡·晖暮》，将其以横置状态出场。
     // 暮【出】：抽1张牌。
-    entry: {
-      steps: [
-        {
-          op: 'IF',
-          condition: { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY', parity: 'ODD' },
-          then: [
-            {
-              op: 'CHOOSE_ZONE_CARDS',
-              side: 'SELF',
-              zone: 'GRAVEYARD',
-              prompt: '【比安卡·晖暮】晖【出】：选择我方墓地1张费用为4及以下的《比安卡·晖暮》以横置状态出场',
-              filter: { cardType: CardType.ROLE, exactName: '比安卡·晖暮', maxCost: 4 },
-              requireEmptySlot: true,
-              min: 1,
-              max: 1,
-              saveToVar: 'revived',
-              choiceEffectType: 'PRESET_ST05_002_REVIVE',
-            },
-            {
-              op: 'MOVE_CARDS',
-              target: { kind: 'VAR', varName: 'revived' },
-              toZone: 'BATTLEFIELD',
-              enterTapped: true,
-              triggerEntry: true,
-            },
-          ],
-        },
-        {
-          op: 'IF',
-          condition: { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY', parity: 'EVEN' },
-          then: [{ op: 'DRAW', count: 1 }],
-        },
-      ],
-    },
+    entries: [
+      {
+        id: 'radiance_revive',
+        label: '晖【出】：从墓地以横置状态出场 1 张费用<=4 的《比安卡·晖暮》',
+        steps: [
+          {
+            op: 'IF',
+            condition: { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY', parity: 'ODD' },
+            then: [
+              {
+                op: 'CHOOSE_ZONE_CARDS',
+                side: 'SELF',
+                zone: 'GRAVEYARD',
+                prompt: '【比安卡·晖暮】晖【出】：选择我方墓地1张费用为4及以下的《比安卡·晖暮》以横置状态出场',
+                filter: { cardType: CardType.ROLE, exactName: '比安卡·晖暮', maxCost: 4 },
+                requireEmptySlot: true,
+                min: 1,
+                max: 1,
+                saveToVar: 'revived',
+                choiceEffectType: 'PRESET_ST05_002_REVIVE',
+              },
+              {
+                op: 'MOVE_CARDS',
+                target: { kind: 'VAR', varName: 'revived' },
+                toZone: 'BATTLEFIELD',
+                enterTapped: true,
+                triggerEntry: true,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'dusk_draw',
+        label: '暮【出】：抽 1 张牌',
+        steps: [
+          {
+            op: 'IF',
+            condition: { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY', parity: 'EVEN' },
+            then: [{ op: 'DRAW', count: 1 }],
+          },
+        ],
+      },
+    ],
   },
   {
     cardNumber: 'ST05-003',
