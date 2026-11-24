@@ -1,4 +1,4 @@
-import type { CardInstance, ProhibitionFlag, SignalOrbColor } from '@zhanshuang/shared';
+import { CardType, type CardInstance, type ProhibitionFlag, type SignalOrbColor } from '@zhanshuang/shared';
 
 interface BaseStats {
   basePP?: number;
@@ -22,6 +22,13 @@ const ORB_COLOR_LABELS: Record<SignalOrbColor, string> = {
   RED: '红',
   BLUE: '蓝',
   YELLOW: '黄',
+};
+
+const CARD_TYPE_TRANSFORM_LABELS: Record<CardType, string> = {
+  [CardType.ROLE]: '变为角色',
+  [CardType.ASSIST]: '变为辅助机',
+  [CardType.EQUIPMENT]: '变为装备',
+  [CardType.TACTICS]: '变为战术',
 };
 
 /**
@@ -125,6 +132,15 @@ export function formatCardModifiers(card: CardInstance): string[] {
     }
     if (mod.treatedAsNames && mod.treatedAsNames.length > 0) {
       parts.push(`卡名视为${mod.treatedAsNames.map((n) => `《${n}》`).join('/')}`);
+    }
+    if (mod.setCardType !== undefined) {
+      parts.push(CARD_TYPE_TRANSFORM_LABELS[mod.setCardType] ?? `变为${mod.setCardType}`);
+    }
+    if (mod.canAttackPlayerOnEnterTurn) {
+      parts.push('出场回合可攻击玩家');
+    }
+    if (mod.unblockableMaxPP !== undefined) {
+      parts.push(`PP${mod.unblockableMaxPP}及以下不可阻挡`);
     }
     if (mod.setPP !== undefined) parts.push(`PP=${mod.setPP}`);
     if (mod.pp) parts.push(`PP${mod.pp > 0 ? `+${mod.pp}` : mod.pp}`);

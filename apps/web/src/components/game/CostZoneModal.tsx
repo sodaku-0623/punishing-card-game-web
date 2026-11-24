@@ -6,6 +6,7 @@ import { CardView } from './CardView';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { Coins, Moon, Zap, Eye, CheckCircle2 } from 'lucide-react';
 import { Button, Dialog } from '@/components/ui';
+import type { ActivatedAbilityOption } from '@/lib/battle-actions';
 
 interface CostZoneModalProps {
   isOpen: boolean;
@@ -16,7 +17,9 @@ interface CostZoneModalProps {
   hiddenCount: number;
   isOpponent?: boolean;
   usableInstantCardIds?: Set<string>;
+  abilityOptionsByCardId?: Record<string, ActivatedAbilityOption[]>;
   onUseInstant?: (cardInstanceId: string) => void;
+  onActivateAbility?: (card: CardInstance, abilityIndex: number) => void;
   onInspectCard?: (card: CardInstance) => void;
 }
 
@@ -29,7 +32,9 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
   hiddenCount,
   isOpponent = false,
   usableInstantCardIds,
+  abilityOptionsByCardId,
   onUseInstant,
+  onActivateAbility,
   onInspectCard,
 }) => {
   return (
@@ -87,6 +92,8 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
               const isHidden = !card.isFaceUp;
               const def = isHidden ? null : findCardByNumberOrId(card.cardNumber || card.cardId);
               const isReady = card.isReady;
+              const abilityOpts =
+                !isHidden && !isOpponent ? abilityOptionsByCardId?.[card.instanceId] ?? [] : [];
 
               return (
                 <div
@@ -163,6 +170,24 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
                             <span>发动【瞬时】</span>
                           </button>
                         )}
+                        {!isOpponent &&
+                          onActivateAbility &&
+                          abilityOpts.map((opt) => (
+                            <button
+                              key={`cost-act-${card.instanceId}-${opt.abilityIndex}`}
+                              type="button"
+                              disabled={opt.disabled}
+                              title={opt.disabled ? opt.reason : opt.label}
+                              onClick={() => {
+                                onActivateAbility(card, opt.abilityIndex);
+                                onClose();
+                              }}
+                              className="mt-1.5 w-full px-2 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 font-semibold text-hud flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <Zap className="w-3 h-3 fill-current" />
+                              <span>发动【起】</span>
+                            </button>
+                          ))}
                       </>
                     )}
                   </div>

@@ -6,17 +6,21 @@ import { CardView } from './CardView';
 import { HudBrackets } from '@/components/ui';
 import { Shield, Zap, Swords, Layers, Crosshair, Users, Cpu } from 'lucide-react';
 import { sfx } from '@/lib/audio';
-import type { SlotOccupancyKind } from '@/lib/battle-actions';
+import { findCardByNumberOrId } from '@/lib/cards-data';
+import { getDisplayStats } from '@/lib/card-stats';
+import type { ActivatedAbilityOption, SlotOccupancyKind } from '@/lib/battle-actions';
 
 interface BattlefieldSlotViewProps {
   slotIndex: number;
   roleCard?: CardInstance;
   slotCardKind?: SlotOccupancyKind;
+  isTransformed?: boolean;
   isOpponent?: boolean;
   isSelected?: boolean;
   isPlayTargetable?: boolean;
   isEquipTargetable?: boolean;
   canActivateAbility?: boolean;
+  activateOptions?: ActivatedAbilityOption[];
   canAttack?: boolean;
   canBlock?: boolean;
   canEquipStandalone?: boolean;
@@ -33,7 +37,8 @@ interface BattlefieldSlotViewProps {
   onRoleContextMenu?: (e: React.MouseEvent, card: CardInstance) => void;
   onRoleLongPress?: (card: CardInstance) => void;
   onRoleHover?: (card: CardInstance | null) => void;
-  onActivateAbility?: (cardId: string) => void;
+  onActivateAbility?: (cardId: string, abilityIndex?: number) => void;
+  onOpenUnderneath?: (card: CardInstance) => void;
   onAttackClick?: (cardId: string) => void;
   onBlockClick?: (cardId: string) => void;
   onEquipStartClick?: (equipmentCardId: string) => void;
@@ -47,11 +52,13 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
   slotIndex,
   roleCard,
   slotCardKind = roleCard ? 'ROLE' : 'EMPTY',
+  isTransformed = false,
   isOpponent = false,
   isSelected = false,
   isPlayTargetable = false,
   isEquipTargetable = false,
   canActivateAbility = false,
+  activateOptions,
   canAttack = false,
   canBlock = false,
   canEquipStandalone = false,
@@ -69,6 +76,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
   onRoleLongPress,
   onRoleHover,
   onActivateAbility,
+  onOpenUnderneath,
   onAttackClick,
   onBlockClick,
   onEquipStartClick,
@@ -78,6 +86,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
   onDropEquipToRole,
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [showAbilityPicker, setShowAbilityPicker] = useState(false);
 
   // HTML5 Drag & Drop: 拖拽到卡位释放
   const handleDragOver = (e: React.DragEvent) => {
@@ -133,12 +142,34 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
     ? 'teal'
     : 'steel';
 
+  const equipCount = roleCard
+    ? (roleCard.attachedEquipmentId ? 1 : 0) + (roleCard.extraAttachedEquipmentIds?.length ?? 0)
+    : 0;
+
+  const transformedStats =
+    roleCard && slotCardKind === 'ROLE' && isTransformed
+      ? getDisplayStats(roleCard, findCardByNumberOrId(roleCard.cardNumber || roleCard.cardId))
+      : null;
+
+  const handleActivateButtonClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!roleCard) return;
+    sfx.playClick();
+    if (activateOptions && activateOptions.length >= 2) {
+      setShowAbilityPicker((prev) => !prev);
+      return;
+    }
+    const idx = activateOptions?.[0]?.abilityIndex ?? 0;
+    onActivateAbility?.(roleCard.instanceId, idx);
+  };
+
   return (
     <div
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={() => {
+        setShowAbilityPicker(false);
         if (roleCard && onRoleClick) {
           onRoleClick(roleCard.instanceId);
         } else if (onSlotClick) {
@@ -163,6 +194,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
         }
       }}
       onMouseLeave={() => {
+        setShowAbilityPicker(false);
         if (roleCard) {
           onRoleHover?.(null);
         }
@@ -218,11 +250,19 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             onLongPress={roleCard && onRoleLongPress ? () => onRoleLongPress(roleCard) : undefined}
           />
 
-          {/* 辅助机 / 独立装备占位标识 */}
+          {/* 变身角色 (PR-041) / 辅助机 / 独立装备占位标识 */}
+          {slotCardKind === 'ROLE' && isTransformed && transformedStats && (
+            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-1 z-20 font-sans font-semibold whitespace-nowrap">
+              <span>变身角色</span>
+              <span className="font-num tabular-nums text-gold-300">
+                {transformedStats.pp}/{transformedStats.dp}
+              </span>
+            </div>
+          )}
           {slotCardKind === 'ASSIST' && (
             <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-semibold whitespace-nowrap">
               <Cpu className="w-2.5 h-2.5" />
-              <span>辅助机</span>
+              <span>{isTransformed ? '变身辅助机' : '辅助机'}</span>
             </div>
           )}
           {slotCardKind === 'STANDALONE_EQUIPMENT' && (
@@ -248,22 +288,29 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             </div>
           )}
 
-          {/* 升变垫牌层数指示 */}
+          {/* 下方叠置卡牌可点击徽章 */}
           {roleCard.underneathCardIds && roleCard.underneathCardIds.length > 0 && (
-            <div
-              className="absolute top-1 right-1 bg-ink-950/90 border border-steel-300/60 text-steel-300 text-hud px-1 py-px flex items-center gap-0.5 z-20 font-num tabular-nums"
-              title={`升变底牌: ${roleCard.underneathCardIds.length} 张`}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                sfx.playClick();
+                onOpenUnderneath?.(roleCard);
+              }}
+              aria-label={`查看下方 ${roleCard.underneathCardIds.length} 张牌`}
+              className="absolute top-1 right-1 bg-ink-950/90 hover:bg-ink-800 border border-steel-300/60 hover:border-teal-400 text-steel-300 hover:text-teal-400 text-hud px-1.5 py-px flex items-center gap-0.5 z-30 font-num tabular-nums cursor-pointer transition-colors"
+              title={`点击查看下方 ${roleCard.underneathCardIds.length} 张牌`}
             >
               <Layers className="w-2.5 h-2.5" />
-              <span>+{roleCard.underneathCardIds.length}</span>
-            </div>
+              <span>下方 {roleCard.underneathCardIds.length}</span>
+            </button>
           )}
 
-          {/* 附着装备指示 */}
-          {roleCard.attachedEquipmentId && (
+          {/* 附着装备指示（支持双持装备数量显示） */}
+          {equipCount > 0 && (
             <div className="absolute -bottom-1.5 -right-1 bg-ink-950 border border-gold-300/70 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-medium">
               <Shield className="w-2.5 h-2.5" />
-              <span>装备</span>
+              <span>{equipCount > 1 ? `装备×${equipCount}` : '装备'}</span>
             </div>
           )}
 
@@ -291,19 +338,57 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
               }`}
             >
               {canActivateAbility && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    sfx.playClick();
-                    onActivateAbility?.(roleCard.instanceId);
-                  }}
-                  className="px-2 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 text-hud font-sans font-semibold active:scale-95 flex items-center gap-1 border border-fg/20 cursor-pointer transition-all duration-fast whitespace-nowrap"
-                  title="发动卡牌【起】动能力"
-                >
-                  <Zap className="w-3 h-3 fill-current" />
-                  <span>发动效果</span>
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={handleActivateButtonClick}
+                    className="px-2 py-1 clip-corner-sm bg-gold-300 hover:bg-gold-300/90 text-ink-950 text-hud font-sans font-semibold active:scale-95 flex items-center gap-1 border border-fg/20 cursor-pointer transition-all duration-fast whitespace-nowrap"
+                    title={
+                      activateOptions && activateOptions.length >= 2
+                        ? '点击选择要发动的【起】动能力'
+                        : activateOptions?.[0]?.label || '发动卡牌【起】动能力'
+                    }
+                  >
+                    <Zap className="w-3 h-3 fill-current" />
+                    <span>
+                      {activateOptions && activateOptions.length >= 2
+                        ? `发动效果 (${activateOptions.length})`
+                        : '发动效果'}
+                    </span>
+                  </button>
+
+                  {showAbilityPicker && activateOptions && activateOptions.length >= 2 && (
+                    <div
+                      role="menu"
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute left-1/2 -translate-x-1/2 top-full mt-1 w-56 bg-ink-950/95 border border-gold-300/70 p-1 shadow-overlay z-50 flex flex-col gap-0.5"
+                    >
+                      {activateOptions.map((opt) => (
+                        <button
+                          key={`slot-act-${opt.abilityIndex}-${opt.grantedByEquipmentId || 'own'}`}
+                          type="button"
+                          role="menuitem"
+                          disabled={opt.disabled}
+                          title={opt.disabled ? opt.reason : opt.label}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            sfx.playClick();
+                            setShowAbilityPicker(false);
+                            onActivateAbility?.(roleCard.instanceId, opt.abilityIndex);
+                          }}
+                          className="w-full px-2 py-1.5 text-left text-hud border border-transparent hover:border-gold-300/50 hover:bg-gold-300/15 text-fg-secondary hover:text-fg flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Zap className="w-3 h-3 text-gold-300 shrink-0" />
+                          <span className="truncate">
+                            {opt.grantedByEquipmentId && !opt.label.includes('[装备]')
+                              ? `[装备] ${opt.label}`
+                              : opt.label}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
 
               {canEquipStandalone && (

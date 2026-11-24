@@ -14,9 +14,15 @@ import {
   Cpu,
 } from 'lucide-react';
 import { CardInstance, CardType, GamePhase } from '@zhanshuang/shared';
+import { parseAscensionConfig } from '@zhanshuang/game-rules';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { getDisplayStats } from '@/lib/card-stats';
-import type { NonTacticsInstantOption } from '@/lib/battle-actions';
+import type {
+  ActivatedAbilityOption,
+  AscensionPlan,
+  NonHandPlayAction,
+  NonTacticsInstantOption,
+} from '@/lib/battle-actions';
 
 export interface ContextMenuAction {
   id: string;
@@ -42,7 +48,12 @@ interface CardContextMenuProps {
   isOpponentRole: boolean;
   isStandaloneEquipment?: boolean;
   isHandCard: boolean;
-  canActivateAbility: boolean;
+  /** 向后兼容旧调用方；若传入 `activateOptions` 则以 `activateOptions` 为准 */
+  canActivateAbility?: boolean;
+  activateOptions?: ActivatedAbilityOption[];
+  handAscensionPlan?: AscensionPlan | null;
+  nonHandPlayAction?: NonHandPlayAction | null;
+  underneathCardsCount?: number;
   canAttack: boolean;
   canBlock: boolean;
   canPerformAssist?: boolean;
@@ -54,7 +65,9 @@ interface CardContextMenuProps {
   hasSelectedAttacker: boolean;
   onPlayCard?: (card: CardInstance) => void;
   onAscendCard?: (card: CardInstance) => void;
-  onActivateAbility?: (card: CardInstance) => void;
+  onActivateAbility?: (card: CardInstance, abilityIndex?: number) => void;
+  onOpenUnderneath?: (card: CardInstance) => void;
+  onNonHandPlay?: (card: CardInstance, action: NonHandPlayAction) => void;
   onAttackPlayer?: (card: CardInstance) => void;
   onAttackRole?: (card: CardInstance) => void;
   onBlock?: (card: CardInstance) => void;
@@ -79,7 +92,11 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   isOpponentRole,
   isStandaloneEquipment = false,
   isHandCard,
-  canActivateAbility,
+  canActivateAbility = false,
+  activateOptions,
+  handAscensionPlan,
+  nonHandPlayAction,
+  underneathCardsCount = card.underneathCardIds?.length ?? 0,
   canAttack,
   canBlock,
   canPerformAssist = false,
@@ -92,6 +109,8 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   onPlayCard,
   onAscendCard,
   onActivateAbility,
+  onOpenUnderneath,
+  onNonHandPlay,
   onAttackPlayer,
   onAttackRole,
   onBlock,
@@ -129,8 +148,23 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     };
   }, [onClose]);
 
-  const adjustedX = Math.min(Math.max(10, x), typeof window !== 'undefined' ? window.innerWidth - 230 : x);
-  const adjustedY = Math.min(Math.max(10, y), typeof window !== 'undefined' ? window.innerHeight - 260 : y);
+  const adjustedX = Math.min(Math.max(10, x), typeof window !== 'undefined' ? window.innerWidth - 260 : x);
+  const adjustedY = Math.min(Math.max(10, y), typeof window !== 'undefined' ? window.innerHeight - 280 : y);
+
+  // 向后兼容：若调用方未传 activateOptions，则根据 canActivateAbility 构造默认条目
+  const resolvedActivateOptions: ActivatedAbilityOption[] =
+    activateOptions !== undefined
+      ? activateOptions
+      : canActivateAbility
+      ? [
+          {
+            sourceCardId: card.instanceId,
+            abilityIndex: 0,
+            label: '发动【起】能力',
+            zone: isHandCard ? 'HAND' : 'BATTLEFIELD',
+          },
+        ]
+      : [];
 
   const actions: ContextMenuAction[] = [];
 
@@ -149,24 +183,46 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
         },
       });
 
-      if (cardDef.rulesText?.includes('升变')) {
-        const ascMatch =
-          cardDef.rulesText.match(/(?:升变代价|【升变代价】|升变费用|【升变费用】)[^0-9\r\n]{0,10}(?:费用\s*(\d+)|(\d+)\s*费)/) ||
-          cardDef.rulesText.match(/(?:升变代价|【升变代价】|升变费用|【升变费用】)[^0-9\r\n]{0,10}[【\[](\d+)[】\]]/);
-        const ascCost = ascMatch ? parseInt(ascMatch[1] || ascMatch[2], 10) : 2;
-
-        actions.push({
-          id: 'ascend_role',
-          label: '升变登场 (重叠)',
-          subLabel: `升变 ${ascCost} 费`,
-          icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
-          variant: 'primary',
-          disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < ascCost,
-          onClick: () => {
-            onAscendCard?.(card);
-            onClose();
-          },
-        });
+      if (handAscensionPlan !== undefined) {
+        if (handAscensionPlan) {
+          const ascCost = handAscensionPlan.config.ascensionCost;
+          const taxSuffix =
+            handAscensionPlan.tappedOpponentTaxCount > 0
+              ? ` (+${handAscensionPlan.tappedOpponentTaxCount})`
+              : '';
+          const canUseAscend =
+            isMyTurn && phase === 'MAIN_PHASE' && handAscensionPlan.canAscend;
+          actions.push({
+            id: 'ascend_role',
+            label: '升变登场 (重叠)',
+            subLabel: canUseAscend
+              ? `升变 ${ascCost} 费${taxSuffix}`
+              : handAscensionPlan.reason || `升变 ${ascCost} 费`,
+            icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
+            variant: 'primary',
+            disabled: !canUseAscend,
+            onClick: () => {
+              onAscendCard?.(card);
+              onClose();
+            },
+          });
+        }
+      } else if (cardDef.rulesText) {
+        const parsedAsc = parseAscensionConfig(cardDef.rulesText);
+        if (parsedAsc) {
+          actions.push({
+            id: 'ascend_role',
+            label: '升变登场 (重叠)',
+            subLabel: `升变 ${parsedAsc.ascensionCost} 费`,
+            icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
+            variant: 'primary',
+            disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < parsedAsc.ascensionCost,
+            onClick: () => {
+              onAscendCard?.(card);
+              onClose();
+            },
+          });
+        }
       }
     } else if (cardDef?.cardType === CardType.TACTICS) {
       const isInstantCard = !!cardDef.isInstant || !!cardDef.rulesText?.includes('【瞬时');
@@ -209,6 +265,21 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
         disabled: !isMyTurn || phase !== 'MAIN_PHASE' || !hasAssistSlot || myAvailableCost < currentCost,
         onClick: () => {
           onPlayCard?.(card);
+          onClose();
+        },
+      });
+    }
+
+    for (const opt of resolvedActivateOptions) {
+      actions.push({
+        id: `activate_hand_${opt.abilityIndex}`,
+        label: opt.label,
+        subLabel: opt.disabled ? opt.reason : '手牌【起】',
+        icon: <Zap className="w-3.5 h-3.5 fill-current" />,
+        variant: 'warning',
+        disabled: Boolean(opt.disabled),
+        onClick: () => {
+          onActivateAbility?.(card, opt.abilityIndex);
           onClose();
         },
       });
@@ -288,15 +359,39 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       }
     }
 
-    if (canActivateAbility) {
+    for (const opt of resolvedActivateOptions) {
+      const displayLabel = opt.grantedByEquipmentId
+        ? opt.label.includes('[装备]')
+          ? opt.label
+          : `[装备] ${opt.label}`
+        : opt.label;
       actions.push({
-        id: 'activate',
-        label: '发动【起】能力',
-        subLabel: '8.1.1.c',
+        id: `activate_${opt.abilityIndex}_${opt.grantedByEquipmentId || 'own'}`,
+        label: displayLabel,
+        subLabel: opt.disabled
+          ? opt.reason
+          : opt.grantedByEquipmentId
+          ? '装备赋予'
+          : '8.1.1.c',
         icon: <Zap className="w-3.5 h-3.5 fill-current" />,
-        variant: 'primary',
+        variant: opt.grantedByEquipmentId ? 'warning' : 'primary',
+        disabled: Boolean(opt.disabled),
         onClick: () => {
-          onActivateAbility?.(card);
+          onActivateAbility?.(card, opt.abilityIndex);
+          onClose();
+        },
+      });
+    }
+
+    if (underneathCardsCount > 0 && onOpenUnderneath) {
+      actions.push({
+        id: 'open_underneath',
+        label: `查看下方牌 (${underneathCardsCount})`,
+        subLabel: '下方叠置',
+        icon: <Layers className="w-3.5 h-3.5" />,
+        variant: 'default',
+        onClick: () => {
+          onOpenUnderneath(card);
           onClose();
         },
       });
@@ -325,6 +420,51 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
         variant: 'primary',
         onClick: () => {
           onBlock?.(card);
+          onClose();
+        },
+      });
+    }
+  }
+
+  // 非战场、非手牌区域（如正面信号球区、墓地、明费等）的自身【起】或非手牌出牌
+  if (!isHandCard && !isFriendlyRole) {
+    for (const opt of resolvedActivateOptions) {
+      actions.push({
+        id: `activate_zone_${opt.zone}_${opt.abilityIndex}`,
+        label: opt.label,
+        subLabel: opt.disabled ? opt.reason : undefined,
+        icon: <Zap className="w-3.5 h-3.5 fill-current" />,
+        variant: 'warning',
+        disabled: Boolean(opt.disabled),
+        onClick: () => {
+          onActivateAbility?.(card, opt.abilityIndex);
+          onClose();
+        },
+      });
+    }
+
+    if (nonHandPlayAction && onNonHandPlay) {
+      actions.push({
+        id: `non_hand_${nonHandPlayAction.kind}`,
+        label: nonHandPlayAction.label,
+        icon: <Play className="w-3.5 h-3.5" />,
+        variant: 'primary',
+        onClick: () => {
+          onNonHandPlay(card, nonHandPlayAction);
+          onClose();
+        },
+      });
+    }
+
+    if (isOpponentRole && underneathCardsCount > 0 && onOpenUnderneath) {
+      actions.push({
+        id: 'open_opp_underneath',
+        label: `查看下方牌 (${underneathCardsCount})`,
+        subLabel: '下方叠置',
+        icon: <Layers className="w-3.5 h-3.5" />,
+        variant: 'default',
+        onClick: () => {
+          onOpenUnderneath(card);
           onClose();
         },
       });
@@ -362,7 +502,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       ref={menuRef}
       role="menu"
       style={{ left: adjustedX, top: adjustedY }}
-      className="fixed z-50 w-56 bg-ink-950/95 border border-teal-400/70 p-1.5 shadow-overlay backdrop-blur-md text-caption animate-in fade-in duration-fast"
+      className="fixed z-modal w-64 bg-ink-950/95 border border-teal-400/70 p-1.5 shadow-overlay backdrop-blur-md text-caption animate-in fade-in duration-fast"
     >
       {/* 顶部细红装饰条 */}
       <div className="h-[2px] w-full bg-crimson-500/80 mb-1" />
@@ -400,6 +540,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
               role="menuitem"
               disabled={act.disabled}
               onClick={act.onClick}
+              title={act.subLabel ? `${act.label} (${act.subLabel})` : act.label}
               className={`w-full flex items-center justify-between px-2.5 py-2 border border-transparent transition-colors duration-fast text-left group cursor-pointer ${
                 act.disabled ? 'opacity-40 cursor-not-allowed text-fg-disabled' : variantClasses
               }`}
@@ -409,7 +550,7 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
                 <span className="text-caption font-medium truncate">{act.label}</span>
               </div>
               {act.subLabel && (
-                <span className="text-hud font-num text-fg-muted group-hover:text-fg-secondary shrink-0 ml-2">
+                <span className="text-hud font-num text-fg-muted group-hover:text-fg-secondary shrink-0 ml-2 max-w-[96px] truncate">
                   {act.subLabel}
                 </span>
               )}
