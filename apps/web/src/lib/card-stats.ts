@@ -83,14 +83,92 @@ export function hasCardKeyword(
   return Boolean(cardDef?.rulesText?.includes(keyword));
 }
 
+function normalizeCoreCardNumber(cardNumber?: string): string {
+  if (!cardNumber) return '';
+  const match = cardNumber.match(/^([A-Z]{2}\d*-\d+)/i);
+  return match ? match[1]!.toUpperCase() : cardNumber.trim().toUpperCase();
+}
+
+function isModifierActive(untilTurn: number | undefined, turnNumber: number | undefined): boolean {
+  return untilTurn === undefined || turnNumber === undefined || untilTurn >= turnNumber;
+}
+
+function getLatestLoseAbilitiesTimestamp(
+  card: CardInstance | null | undefined,
+  turnNumber?: number
+): number {
+  let latestLoseTs = -1;
+  for (const m of card?.modifiers ?? []) {
+    if (m.loseAbilities === true && isModifierActive(m.untilTurn, turnNumber)) {
+      latestLoseTs = Math.max(latestLoseTs, m.timestamp ?? 0);
+    }
+  }
+  return latestLoseTs;
+}
+
 /**
- * 角色出场当回合是否允许宣告攻击 (10.5 速攻 或 10.6 突进)
+ * 获取角色当前生效的「不会被 PP 为 X 及以下的角色阻挡」上限（对齐 `continuous-effects.ts` 与 `BP01-040` 静态规则）
  */
-export function canRoleAttackOnEnterTurn(
+export function getCardUnblockableMaxPP(
+  card: CardInstance,
+  turnNumber?: number
+): number | undefined {
+  const latestLoseTs = getLatestLoseAbilitiesTimestamp(card, turnNumber);
+  let maxPP: number | undefined;
+  for (const m of card.modifiers ?? []) {
+    if (m.unblockableMaxPP === undefined) continue;
+    if (!isModifierActive(m.untilTurn, turnNumber)) continue;
+    if (latestLoseTs >= 0 && (m.timestamp ?? 0) <= latestLoseTs) continue;
+    maxPP = maxPP === undefined ? m.unblockableMaxPP : Math.max(maxPP, m.unblockableMaxPP);
+  }
+  if (
+    normalizeCoreCardNumber(card.cardNumber) === 'BP01-040' &&
+    latestLoseTs < 0 &&
+    (card.underneathCardIds?.length ?? 0) >= 4
+  ) {
+    maxPP = maxPP === undefined ? 5000 : Math.max(maxPP, 5000);
+  }
+  return maxPP;
+}
+
+/**
+ * 角色出场当回合是否允许攻击对方玩家（10.5 速攻 或未过期的 canAttackPlayerOnEnterTurn 修改器，如 BP04-075 / ST05-001）
+ */
+export function canRoleAttackPlayerOnEnterTurn(
+  card: CardInstance | null | undefined,
+  cardDef: BaseStats | null | undefined,
+  turnNumber?: number
+): boolean {
+  if (hasCardKeyword(card, cardDef, '速攻')) return true;
+  return Boolean(
+    card?.modifiers?.some(
+      (m) => m.canAttackPlayerOnEnterTurn === true && isModifierActive(m.untilTurn, turnNumber)
+    )
+  );
+}
+
+/**
+ * 角色出场当回合是否允许攻击对方角色（10.5 速攻 或 10.6 突进）
+ */
+export function canRoleAttackCharacterOnEnterTurn(
   card: CardInstance | null | undefined,
   cardDef: BaseStats | null | undefined
 ): boolean {
   return hasCardKeyword(card, cardDef, '速攻') || hasCardKeyword(card, cardDef, '突进');
+}
+
+/**
+ * 角色出场当回合是否允许宣告攻击 (向后兼容：可攻击玩家或可攻击角色任一成立即返回 true)
+ */
+export function canRoleAttackOnEnterTurn(
+  card: CardInstance | null | undefined,
+  cardDef: BaseStats | null | undefined,
+  turnNumber?: number
+): boolean {
+  return (
+    canRoleAttackPlayerOnEnterTurn(card, cardDef, turnNumber) ||
+    canRoleAttackCharacterOnEnterTurn(card, cardDef)
+  );
 }
 
 /**

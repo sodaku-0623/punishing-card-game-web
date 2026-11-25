@@ -17,6 +17,7 @@ interface CardViewProps {
   isLegalPlay?: boolean;
   isDraggable?: boolean;
   isRested?: boolean;
+  hideStatusBadges?: boolean;
   onClick?: () => void;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -53,6 +54,7 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
   isLegalPlay = false,
   isDraggable = false,
   isRested,
+  hideStatusBadges = false,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -171,7 +173,7 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
         {isTargetable && <HudBrackets color="crimson" size="sm" className="z-30" />}
 
         {/* 横置状态标记 */}
-        {isCardRested && (
+        {!hideStatusBadges && isCardRested && (
           <div
             className="absolute top-1 left-1 z-30 px-1 py-0.5 bg-ink-950/95 text-gold-300 text-hud font-num font-bold border border-gold-300/60 select-none pointer-events-none"
             style={{ transform: 'rotate(-90deg)', transformOrigin: 'center center' }}
@@ -181,7 +183,7 @@ export const CardView: React.FC<CardViewProps> = React.memo(({
         )}
 
         {/* 升变叠层计数 */}
-        {card.underneathCardIds.length > 0 && (
+        {!hideStatusBadges && card.underneathCardIds.length > 0 && (
           <div className="absolute top-1 right-1 z-20 px-1.5 py-0.5 bg-ink-950/90 text-teal-400 text-hud font-num inline-flex items-center gap-0.5 border border-line-strong">
             <Sparkles className="w-2.5 h-2.5" />
             <span>{card.underneathCardIds.length}</span>

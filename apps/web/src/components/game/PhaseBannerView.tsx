@@ -170,11 +170,11 @@ export const PhaseBannerView: React.FC<PhaseBannerViewProps> = React.memo(({
       aria-live="polite"
       className="fixed inset-x-0 top-1/2 -translate-y-1/2 z-banner pointer-events-none select-none flex justify-center"
     >
-      <div className="pgr-phase-banner relative w-full max-w-3xl bg-ink-950/92 backdrop-blur-md border-y border-line-strong py-5 px-8 overflow-hidden shadow-overlay">
+      <div className="pgr-phase-banner relative w-full max-w-3xl bg-ink-950/95 backdrop-blur-md border-y border-line-strong py-5 px-8 overflow-hidden shadow-overlay">
         {/* 一次性高速扫光线 */}
         <div
           aria-hidden="true"
-          className="pgr-phase-scan pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-fg/12 to-transparent"
+          className="pgr-phase-scan pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-fg/15 to-transparent"
         />
 
         <div className="relative z-10 flex flex-col items-center gap-2">

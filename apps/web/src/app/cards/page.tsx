@@ -557,7 +557,7 @@ export default function CardsBrowserPage() {
               </div>
             </div>
 
-            <div className="space-y-1.5 pt-2 border-t border-line/60">
+            <div className="space-y-1.5 pt-2 border-t border-line">
               <div className="font-display text-hud uppercase text-fg-muted">
                 CARD KIND // 卡牌种类
               </div>
@@ -575,7 +575,7 @@ export default function CardsBrowserPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 pt-2 border-t border-line/60">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 pt-2 border-t border-line">
               <div className="space-y-1.5">
                 <div className="font-display text-hud uppercase text-fg-muted">
                   RARITY // 稀有度
@@ -722,7 +722,7 @@ export default function CardsBrowserPage() {
                         {isCardApproximatelyImplemented(card.cardNumber, card.rulesText) && (
                           <span
                             className="px-1 bg-gold-300/15 border border-gold-300/50 text-gold-300 font-semibold"
-                            title="该卡效果当前为关键字近似实现 (ST01~ST03 预组为精确实现)"
+                            title="该卡效果当前为关键字近似实现（未迁移卡牌将逐步补齐精确实现）"
                           >
                             近似
                           </span>

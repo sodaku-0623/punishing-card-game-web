@@ -172,7 +172,7 @@ export interface GuideCardExampleStripProps {
  */
 export function GuideCardExampleStrip({ examples, onPreview }: GuideCardExampleStripProps) {
   return (
-    <div className="pt-2 border-t border-line/60">
+    <div className="pt-2 border-t border-line">
       <div className="flex flex-wrap justify-center gap-6 pt-2">
         {examples.map((item) => (
           <button

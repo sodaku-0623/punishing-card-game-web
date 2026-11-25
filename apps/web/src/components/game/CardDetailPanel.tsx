@@ -1,20 +1,45 @@
 'use client';
 
 import React from 'react';
-import { ElementAttribute } from '@zhanshuang/shared';
+import { CardInstance, ElementAttribute, SignalOrbColor } from '@zhanshuang/shared';
 import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { CardData, findCardByNumberOrId, getCardVariants, CardVariant, formatCardType } from '@/lib/cards-data';
 import { Shield, Flame, Zap, Moon, Snowflake, ZoomIn, Info, Star } from 'lucide-react';
 import { getCardThumbnailUrl, getCardFullImageUrl, handleThumbnailError } from '@/lib/card-image';
+import {
+  formatBonus,
+  formatCardModifiers,
+  formatCardProhibitions,
+  getDisplayStats,
+} from '@/lib/card-stats';
+import { getEffectiveCardType } from '@/lib/battle-actions';
 import { HudBrackets } from '@/components/ui';
 
 interface CardDetailPanelProps {
-  card: CardData | any | null;
+  card: CardData | CardInstance | any | null;
+  publicCards?: Record<string, CardInstance>;
+  effectiveCost?: number;
   onOpenModal?: () => void;
   className?: string;
   customAction?: React.ReactNode;
   selectedImageUrl?: string;
   onSelectVariant?: (variant: CardVariant) => void;
+}
+
+const ORB_COLOR_ZH: Record<SignalOrbColor, string> = {
+  RED: '红',
+  BLUE: '蓝',
+  YELLOW: '黄',
+};
+
+function resolveLinkedCardDisplay(id: string, publicCards?: Record<string, CardInstance>) {
+  const inst = publicCards?.[id];
+  const def = inst ? findCardByNumberOrId(inst.cardNumber || inst.cardId) : undefined;
+  return {
+    id,
+    name: def?.name || inst?.cardNumber || id,
+    cardNumber: inst?.cardNumber || def?.cardNumber || '',
+  };
 }
 
 function getElementBadge(attr: ElementAttribute | string, attrName?: string) {
@@ -72,6 +97,8 @@ function getElementBadge(attr: ElementAttribute | string, attrName?: string) {
 
 export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
   card,
+  publicCards,
+  effectiveCost,
   onOpenModal,
   className = '',
   customAction,
@@ -105,6 +132,58 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
     card.cost !== undefined && card.rulesText !== undefined
       ? card
       : findCardByNumberOrId(card.cardNumber || card.cardId) || card;
+
+  const runtimeCard: CardInstance | null =
+    card && typeof card === 'object' && 'instanceId' in card && Boolean(card.instanceId)
+      ? (card as CardInstance)
+      : null;
+
+  const effectiveCardType = runtimeCard
+    ? getEffectiveCardType(runtimeCard, resolvedCard)
+    : resolvedCard.cardType;
+  const isTypeTransformed = Boolean(runtimeCard && effectiveCardType !== resolvedCard.cardType);
+
+  const baseCost = resolvedCard.cost ?? 0;
+  const displayCost = effectiveCost !== undefined ? effectiveCost : baseCost;
+  const costDiff = displayCost - baseCost;
+
+  const displayStats = runtimeCard ? getDisplayStats(runtimeCard, resolvedCard) : null;
+  const displayPP = displayStats ? displayStats.pp : resolvedCard.basePP;
+  const displayDP = displayStats ? displayStats.dp : resolvedCard.baseDP;
+  const ppBonus = displayStats?.ppBonus ?? 0;
+  const dpBonus = displayStats?.dpBonus ?? 0;
+
+  const displayTraits: string[] =
+    runtimeCard && runtimeCard.effectiveTraits !== undefined
+      ? runtimeCard.effectiveTraits
+      : resolvedCard.traits ?? [];
+  const displayKeywords: string[] = runtimeCard?.effectiveKeywords ?? [];
+  const activeModifiers = runtimeCard ? formatCardModifiers(runtimeCard) : [];
+  const activeProhibitions = runtimeCard ? formatCardProhibitions(runtimeCard) : [];
+
+  const equipmentIds = runtimeCard
+    ? Array.from(
+        new Set(
+          [runtimeCard.attachedEquipmentId, ...(runtimeCard.extraAttachedEquipmentIds ?? [])].filter(
+            (id): id is string => Boolean(id)
+          )
+        )
+      )
+    : [];
+  const underneathIds = runtimeCard?.underneathCardIds ?? [];
+  const partnerInfo = runtimeCard?.partnerCardId
+    ? resolveLinkedCardDisplay(runtimeCard.partnerCardId, publicCards)
+    : null;
+  const hostInfo = runtimeCard?.partnerOfCardId
+    ? resolveLinkedCardDisplay(runtimeCard.partnerOfCardId, publicCards)
+    : null;
+  const showOrbRuntimeInfo = Boolean(
+    runtimeCard &&
+      runtimeCard.isFaceUp !== false &&
+      (runtimeCard.zone === 'SIGNAL_ORB' ||
+        (runtimeCard.effectiveOrbColors && runtimeCard.effectiveOrbColors.length > 0) ||
+        runtimeCard.effectiveOrbValue !== undefined)
+  );
 
   const elem = getElementBadge(resolvedCard.attribute, resolvedCard.attributeName);
   const variants = resolvedCard?.cardNumber ? getCardVariants(resolvedCard.cardNumber) : [];
@@ -156,20 +235,50 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
               <span className="px-1.5 py-0.5 text-hud font-num font-semibold bg-teal-400/15 text-teal-400 border border-teal-400/40">
                 {resolvedCard.cardNumber}
               </span>
-              <span className="px-1.5 py-0.5 text-hud font-sans font-medium bg-ink-850 border border-line text-fg-secondary">
-                {formatCardType(resolvedCard.cardType, resolvedCard.isInstant)}
+              <span
+                className={`px-1.5 py-0.5 text-hud font-sans font-medium border ${
+                  isTypeTransformed
+                    ? 'bg-teal-400/15 border-teal-400/50 text-teal-400'
+                    : 'bg-ink-850 border-line text-fg-secondary'
+                }`}
+              >
+                {isTypeTransformed
+                  ? `变身·${formatCardType(effectiveCardType, resolvedCard.isInstant)}`
+                  : formatCardType(effectiveCardType, resolvedCard.isInstant)}
               </span>
               <span className={`px-1.5 py-0.5 text-hud font-sans font-medium border flex items-center gap-0.5 ${elem.badge}`}>
                 {elem.icon}
                 {elem.label}
               </span>
               <span className="px-1.5 py-0.5 text-hud font-num font-semibold bg-ink-850 border border-line text-gold-300">
-                {resolvedCard.cost ?? 0}费
+                {displayCost}费
+                {costDiff !== 0 ? ` (原${baseCost}${formatBonus(costDiff)})` : ''}
               </span>
+              {runtimeCard && (
+                <span
+                  className={`px-1.5 py-0.5 text-hud font-sans font-semibold border ${
+                    runtimeCard.isReady
+                      ? 'bg-success/15 border-success/50 text-success'
+                      : 'bg-gold-300/15 border-gold-300/50 text-gold-300'
+                  }`}
+                >
+                  {runtimeCard.isReady ? '竖直' : '横置'}
+                </span>
+              )}
+              {runtimeCard?.isFrozen && (
+                <span className="px-1.5 py-0.5 text-hud font-sans font-semibold bg-teal-400/15 border border-teal-400/60 text-teal-400">
+                  冰冻
+                </span>
+              )}
+              {runtimeCard?.isAirborne && (
+                <span className="px-1.5 py-0.5 text-hud font-sans font-semibold bg-steel-700/30 border border-steel-300/50 text-steel-300">
+                  浮空
+                </span>
+              )}
               {isCardApproximatelyImplemented(resolvedCard.cardNumber, resolvedCard.rulesText) && (
                 <span
                   className="px-1.5 py-0.5 text-hud font-sans font-semibold bg-gold-300/15 border border-gold-300/50 text-gold-300"
-                  title="该卡尚在按官方文本逐卡转换中，当前对局按关键字近似结算 (ST01~ST03 官方预组为完全精确实现)"
+                  title="该卡尚在按官方文本逐卡转换中，当前对局按关键字近似结算（已迁移卡包与官方预组均已精确实现）"
                 >
                   近似效果
                 </span>
@@ -228,30 +337,169 @@ export const CardDetailPanel: React.FC<CardDetailPanelProps> = ({
       )}
 
       {/* 数值指标 (PP / DP) */}
-      {(resolvedCard.basePP !== undefined || resolvedCard.baseDP !== undefined) && (
+      {(resolvedCard.basePP !== undefined ||
+        resolvedCard.baseDP !== undefined ||
+        runtimeCard?.effectivePP !== undefined ||
+        runtimeCard?.effectiveDP !== undefined) && (
         <div className="grid grid-cols-2 gap-2 text-caption">
           <div className="px-2.5 py-1 bg-ink-950 border border-line flex justify-between items-center">
             <span className="text-fg-muted text-hud">PP 力量</span>
-            <span className="text-fg font-num tabular-nums font-bold">{resolvedCard.basePP ?? '--'}</span>
+            <span
+              className={`font-num tabular-nums font-bold ${
+                ppBonus > 0 ? 'text-teal-400' : ppBonus < 0 ? 'text-crimson-400' : 'text-fg'
+              }`}
+            >
+              {displayPP ?? '--'}
+              {ppBonus !== 0 ? formatBonus(ppBonus) : ''}
+            </span>
           </div>
           <div className="px-2.5 py-1 bg-ink-950 border border-line flex justify-between items-center">
             <span className="text-fg-muted text-hud">DP 破坏</span>
-            <span className="text-gold-300 font-num tabular-nums font-bold">{resolvedCard.baseDP ?? '--'}</span>
+            <span
+              className={`font-num tabular-nums font-bold ${
+                dpBonus < 0 ? 'text-crimson-400' : 'text-gold-300'
+              }`}
+            >
+              {displayDP ?? '--'}
+              {dpBonus !== 0 ? formatBonus(dpBonus) : ''}
+            </span>
           </div>
         </div>
       )}
 
-      {/* 卡牌特征标签 */}
-      {resolvedCard.traits && resolvedCard.traits.length > 0 && (
+      {/* 信号球正面运行时属性 */}
+      {showOrbRuntimeInfo && runtimeCard && (
+        <div className="px-2.5 py-1.5 bg-ink-950 border border-line flex flex-wrap items-center gap-2 text-hud">
+          <span className="text-fg-muted">信号球属性</span>
+          {runtimeCard.effectiveOrbColors && runtimeCard.effectiveOrbColors.length > 0 && (
+            <span className="px-1.5 py-px bg-teal-400/15 border border-teal-400/40 text-teal-400 font-semibold">
+              视为 {runtimeCard.effectiveOrbColors.map((c) => ORB_COLOR_ZH[c] ?? c).join('/')} 球
+            </span>
+          )}
+          {runtimeCard.effectiveOrbValue !== undefined && (
+            <span className="px-1.5 py-px bg-gold-300/15 border border-gold-300/40 text-gold-300 font-num font-semibold">
+              等效 {runtimeCard.effectiveOrbValue} 球
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* 卡牌特征与实时词条 */}
+      {(displayTraits.length > 0 || displayKeywords.length > 0) && (
         <div className="flex flex-wrap gap-1 text-hud">
-          {resolvedCard.traits.map((t: string, i: number) => (
+          {displayTraits.map((t: string, i: number) => (
             <span
-              key={i}
+              key={`trait-${i}`}
               className="px-1.5 py-0.5 bg-ink-850 border border-line text-fg-secondary"
             >
               &lt;{t}&gt;
             </span>
           ))}
+          {displayKeywords.map((kw: string, i: number) => (
+            <span
+              key={`kw-${i}`}
+              className="px-1.5 py-0.5 bg-teal-400/15 border border-teal-400/40 text-teal-400 font-semibold"
+            >
+              【{kw}】
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* 禁止效果与持续修改器 (1.3.3 / 8.9) */}
+      {(activeProhibitions.length > 0 || activeModifiers.length > 0) && (
+        <div className="flex flex-col gap-1 p-2 bg-ink-950 border border-line text-hud">
+          {activeProhibitions.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {activeProhibitions.map((label, i) => (
+                <span
+                  key={`proh-${i}`}
+                  className="px-1.5 py-px bg-crimson-500/15 border border-crimson-500/50 text-crimson-400 font-semibold"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+          {activeModifiers.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {activeModifiers.map((tag, i) => (
+                <span
+                  key={`mod-${i}`}
+                  className="px-1.5 py-px bg-teal-400/10 border border-teal-400/35 text-teal-400 font-num"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 关联卡牌明细：双持装备 / 下方叠置牌 / 协战搭档或宿主 */}
+      {(equipmentIds.length > 0 || underneathIds.length > 0 || partnerInfo || hostInfo) && (
+        <div className="flex flex-col gap-1.5 p-2 bg-ink-950 border border-line text-hud">
+          {equipmentIds.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-gold-300 font-semibold">
+                {equipmentIds.length > 1 ? `双持装备 (${equipmentIds.length})` : '附着装备'}
+              </span>
+              {equipmentIds.map((eqId) => {
+                const info = resolveLinkedCardDisplay(eqId, publicCards);
+                return (
+                  <div key={eqId} className="text-fg-secondary flex items-center justify-between gap-2">
+                    <span className="truncate">{info.name}</span>
+                    {info.cardNumber && (
+                      <span className="font-num text-fg-muted shrink-0">{info.cardNumber}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {underneathIds.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-steel-300 font-semibold">下方牌 ({underneathIds.length})</span>
+              {underneathIds.map((uid) => {
+                const info = resolveLinkedCardDisplay(uid, publicCards);
+                return (
+                  <div key={uid} className="text-fg-secondary flex items-center justify-between gap-2">
+                    <span className="truncate">{info.name}</span>
+                    {info.cardNumber && (
+                      <span className="font-num text-fg-muted shrink-0">{info.cardNumber}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {(partnerInfo || hostInfo) && (
+            <div className="flex flex-col gap-0.5">
+              {partnerInfo && (
+                <div className="text-teal-400 flex items-center justify-between gap-2">
+                  <span className="truncate">协战搭档：{partnerInfo.name}</span>
+                  {partnerInfo.cardNumber && (
+                    <span className="font-num text-fg-muted shrink-0">{partnerInfo.cardNumber}</span>
+                  )}
+                </div>
+              )}
+              {hostInfo && (
+                <div className="text-teal-400 flex items-center justify-between gap-2">
+                  <span className="truncate">协战宿主：{hostInfo.name}</span>
+                  {hostInfo.cardNumber && (
+                    <span className="font-num text-fg-muted shrink-0">{hostInfo.cardNumber}</span>
+                  )}
+                </div>
+              )}
+              {runtimeCard?.cannotReleasePartnerUntilTurn !== undefined && (
+                <span className="text-gold-300">
+                  至第 {runtimeCard.cannotReleasePartnerUntilTurn} 回合末前不可解除协战
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

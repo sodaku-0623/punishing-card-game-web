@@ -163,7 +163,7 @@ export const MulliganModal: React.FC<MulliganModalProps> = React.memo(({
                     onError={(e) => handleThumbnailError(e, fullImg)}
                     alt={cardDef?.name || card.cardNumber}
                     className={`w-full h-full object-cover transition-all duration-fast ${
-                      isSelected ? 'brightness-60' : 'brightness-100'
+                      isSelected ? 'brightness-50' : 'brightness-100'
                     }`}
                     loading="eager"
                   />

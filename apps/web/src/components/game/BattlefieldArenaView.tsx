@@ -13,7 +13,6 @@ import { DeckZoneView } from './DeckZoneView';
 import { GraveyardZoneView } from './GraveyardZoneView';
 import { Swords, Clock, Shield, Zap } from 'lucide-react';
 import { findCardByNumberOrId } from '@/lib/cards-data';
-import { canRoleAttackOnEnterTurn, hasCardProhibition } from '@/lib/card-stats';
 import {
   getSlotOccupancy,
   isBattlefieldSlotEmpty,
@@ -22,6 +21,9 @@ import {
   canRolePerformAssist,
   getCardActivatedAbilityOptions,
   getAscensionPlan,
+  getAttackerCapabilities,
+  isLegalRoleAttackTarget,
+  canRoleBlockAttacker,
   NonTacticsInstantOption,
 } from '@/lib/battle-actions';
 
@@ -117,7 +119,10 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
   onOpenGraveyard,
 }) => {
   const timing = getTimingStatus(gameState, resolvedMyUserId);
-  const mySlots = gameState.battlefields?.[resolvedMyUserId] || [];
+  const mySlots = useMemo(
+    () => gameState.battlefields?.[resolvedMyUserId] || [],
+    [gameState.battlefields, resolvedMyUserId]
+  );
   const opponentSlots = gameState.battlefields?.[opponentUserId] || [];
   const selectedHandCard = selectedHandCardId
     ? gameState.myHandCards?.find((c) => c.instanceId === selectedHandCardId)
@@ -132,12 +137,21 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
     selectedBattlefieldCardId &&
       mySlots.some((s) => s.standaloneEquipmentId === selectedBattlefieldCardId)
   );
-  const isSelectedFriendlyRole = Boolean(
-    selectedBattlefieldCardId &&
-      mySlots.some((s) =>
+  const selectedAttackerCard = useMemo(() => {
+    if (!selectedBattlefieldCardId || !isMyTurn || gameState.phase !== 'MAIN_PHASE') {
+      return undefined;
+    }
+    if (
+      !mySlots.some((s) =>
         isSlotEffectiveRoleCard(s, gameState.publicCards, selectedBattlefieldCardId)
       )
-  );
+    ) {
+      return undefined;
+    }
+    const card = gameState.publicCards?.[selectedBattlefieldCardId];
+    if (!card) return undefined;
+    return getAttackerCapabilities(gameState, resolvedMyUserId, card).canAttack ? card : undefined;
+  }, [selectedBattlefieldCardId, isMyTurn, gameState, mySlots, resolvedMyUserId]);
 
   const handAscensionPlan = useMemo(
     () => (selectedHandCard ? getAscensionPlan(gameState, resolvedMyUserId, selectedHandCard) : null),
@@ -211,13 +225,12 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         const pos = OPPONENT_SLOT_POSITIONS[index] || OPPONENT_SLOT_POSITIONS[0];
         const occupancy = getSlotOccupancy(slot, gameState.publicCards);
         const slotCard = occupancy.card;
-        const isLegalAttackTarget =
-          isMyTurn &&
-          gameState.phase === 'MAIN_PHASE' &&
-          isSelectedFriendlyRole &&
-          !isSelectedStandaloneEquip &&
-          occupancy.kind === 'ROLE' &&
-          !!slotCard;
+        const isLegalAttackTarget = Boolean(
+          selectedAttackerCard &&
+            occupancy.kind === 'ROLE' &&
+            slotCard &&
+            isLegalRoleAttackTarget(gameState, resolvedMyUserId, selectedAttackerCard, slotCard)
+        );
 
         const isAttacking =
           !!attackAnim && occupancy.kind === 'ROLE' && !!slotCard && attackAnim.attackerCardId === slotCard.instanceId;
@@ -293,7 +306,10 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               </span>
             )}
 
-            {timing.waitingHint && (gameState.phase === 'COMBAT_FREE_TIMING' || gameState.phase === 'END_PHASE') && (
+            {timing.waitingHint &&
+              (gameState.phase === 'COMBAT_FREE_TIMING' ||
+                gameState.phase === 'END_PHASE' ||
+                Boolean(gameState.timingWindow)) && (
               <span className="px-2 py-0.5 bg-gold-300/15 text-gold-300 border border-gold-300/40 text-hud font-medium flex items-center gap-1">
                 <Clock className="w-3 h-3 text-gold-300" />
                 <span>{timing.waitingHint}</span>
@@ -307,7 +323,7 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
                   <span>
                     {timing.canDeclareBlock
                       ? '请选择角色【阻挡】，或：'
-                      : gameState.phase === 'END_PHASE'
+                      : gameState.timingWindow?.kind === 'END_PHASE' || gameState.phase === 'END_PHASE'
                       ? '结束阶段【瞬时】窗口：'
                       : '自由时点可使用【瞬时】/【协战】：'}
                   </span>
@@ -369,7 +385,6 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         );
         const isEquipTargetable = isSelectedStandaloneEquip && occupancy.kind === 'ROLE';
 
-        const cardDef = slotCard ? findCardByNumberOrId(slotCard.cardNumber || slotCard.cardId) : null;
         const activateOptions =
           (occupancy.kind === 'ROLE' ||
             occupancy.kind === 'ASSIST' ||
@@ -388,20 +403,20 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
         const canPerformAssist =
           occupancy.kind === 'ROLE' && canRolePerformAssist(gameState, resolvedMyUserId, slotCard);
 
-        const hasRush = occupancy.kind === 'ROLE' ? canRoleAttackOnEnterTurn(slotCard, cardDef) : false;
-        const canAttack =
+        const attackerCaps =
+          occupancy.kind === 'ROLE' && slotCard
+            ? getAttackerCapabilities(gameState, resolvedMyUserId, slotCard)
+            : undefined;
+        const canAttack = Boolean(attackerCaps?.canAttack);
+        const canAttackPlayer = Boolean(attackerCaps?.canAttackPlayer);
+        const canBlock = Boolean(
           occupancy.kind === 'ROLE' &&
-          isMyTurn &&
-          gameState.phase === 'MAIN_PHASE' &&
-          !gameState.currentCombat &&
-          !!slotCard?.isReady &&
-          !hasCardProhibition(slotCard, 'CANNOT_ATTACK') &&
-          (slotCard.turnEnteredZone < gameState.turnNumber || hasRush);
-        const canBlock =
-          occupancy.kind === 'ROLE' &&
-          timing.canDeclareBlock &&
-          !!slotCard?.isReady &&
-          !hasCardProhibition(slotCard, 'CANNOT_BLOCK');
+            slotCard &&
+            canRoleBlockAttacker(gameState, resolvedMyUserId, slotCard)
+        );
+        const isLegalPlay = Boolean(
+          canAttack || canBlock || canActivateAbility || canEquipStandalone || canPerformAssist
+        );
 
         const isAttacking =
           !!attackAnim && occupancy.kind === 'ROLE' && !!slotCard && attackAnim.attackerCardId === slotCard.instanceId;
@@ -429,11 +444,13 @@ export const BattlefieldArenaView: React.FC<BattlefieldArenaViewProps> = React.m
               slotCardKind={occupancy.kind}
               isTransformed={occupancy.isTransformed}
               isSelected={selectedBattlefieldCardId === slotCard?.instanceId}
+              isLegalPlay={isLegalPlay}
               isPlayTargetable={isPlayTargetable}
               isEquipTargetable={isEquipTargetable}
               canActivateAbility={canActivateAbility}
               activateOptions={activateOptions}
               canAttack={canAttack}
+              canAttackPlayer={canAttackPlayer}
               canBlock={canBlock}
               canEquipStandalone={canEquipStandalone}
               canPerformAssist={canPerformAssist}
