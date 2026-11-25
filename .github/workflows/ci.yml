@@ -100,8 +100,16 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: 1
 
+      - name: Typecheck (worker & web)
+        run: npm run typecheck
+
       - name: Lint (web)
         run: npm run lint
 
       - name: Test
         run: npm test
+
+      - name: Build Cloudflare static assets
+        run: npm run build:cf-static
+        env:
+          NEXT_TELEMETRY_DISABLED: 1

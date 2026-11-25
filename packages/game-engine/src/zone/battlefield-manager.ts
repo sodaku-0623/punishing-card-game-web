@@ -799,6 +799,7 @@ export class BattlefieldManager {
         this.zoneMgr.syncAttachedCardZone(id, 'PROCESSING', { clearTransientState: true });
       }
     }
+    this.zoneMgr.invalidateZoneCache();
     return true;
   }
 
@@ -813,6 +814,7 @@ export class BattlefieldManager {
     if (!airborne) return undefined;
 
     airborne.isAirborne = undefined;
+    this.zoneMgr.invalidateZoneCache();
     const underIds = [...airborne.underneathCardIds];
     const eqIds = getAttachedEquipmentIds(airborne);
     const slotIndex = this.findFirstEmptySlot(playerId);
@@ -921,7 +923,10 @@ export class BattlefieldManager {
       return false;
     }
 
-    card.controllerPlayerId = host.controllerPlayerId;
+    if (card.controllerPlayerId !== host.controllerPlayerId) {
+      card.controllerPlayerId = host.controllerPlayerId;
+      this.zoneMgr.invalidateZoneCache();
+    }
     card.slotIndex = undefined;
     if (options?.includeUnderneath) {
       card.underneathCardIds = [];

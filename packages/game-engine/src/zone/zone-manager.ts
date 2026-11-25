@@ -31,12 +31,35 @@ export class ZoneManager {
   private checkTimingResolver?: () => boolean;
   private defeatConditionChecker?: () => boolean;
 
+  /** 受控作用域读缓存：仅在 dispatchAction (zoneCacheDepth > 0) 内部生效 */
+  private zoneCacheDepth = 0;
+  private zoneCache: Map<string, CardInstance[]> | null = null;
+  private cachedCardsRef: Record<string, CardInstance> | null = null;
+
   constructor(
     private state: GameState,
     private rng: SeedRng,
     private cardDb: ICardDatabase,
     private events: GameEvent[]
   ) {}
+
+  beginZoneCacheScope(): void {
+    this.zoneCacheDepth += 1;
+  }
+
+  endZoneCacheScope(): void {
+    if (this.zoneCacheDepth > 0) {
+      this.zoneCacheDepth -= 1;
+      if (this.zoneCacheDepth === 0) {
+        this.invalidateZoneCache();
+      }
+    }
+  }
+
+  invalidateZoneCache(): void {
+    this.zoneCache = null;
+    this.cachedCardsRef = null;
+  }
 
   setContinuousEffectEngine(engine: ContinuousEffectEngine): void {
     this.continuousEffects = engine;
@@ -123,6 +146,7 @@ export class ZoneManager {
       isFaceUp?: boolean;
       isReady?: boolean;
       toBottom?: boolean;
+      toFront?: boolean;
       isOrphanCleanup?: boolean;
       orphanHostCardId?: string;
       isPlacingUnderneath?: boolean;
@@ -221,13 +245,14 @@ export class ZoneManager {
 
     // 区域内顺序以 state.cards 的键顺序表示：
     // 默认放在末尾 (墓地 3.5.2、信号球区 3.7.2、处理区 3.8.2 的「最上方」；牌组的「最下方」)；
-    // 当 toBottom=true 且目标非牌组时，放在对象最前 (信号球区等区域的「最下方」，Q&A·9 BP04-065)
-    if (effectiveToBottom && effectiveToZone !== 'DECK') {
+    // 当 toBottom=true 且目标非牌组 (信号球区等区域的「最下方」，Q&A·9 BP04-065)，或 toFront=true 且目标为牌组 (牌组顶) 时，放在对象最前
+    if ((options?.toFront && effectiveToZone === 'DECK') || (effectiveToBottom && effectiveToZone !== 'DECK')) {
       this.placeCardKeyAtFront(cardInstanceId, card);
     } else {
       delete this.state.cards[cardInstanceId];
       this.state.cards[cardInstanceId] = card;
     }
+    this.invalidateZoneCache();
 
     // 3.1.4 移动到其他区域的卡牌 (或离开战场顶层沦为下方牌/搭档) 视为新卡牌，原区域适用的效果与状态不延续
     const shouldResetState =
@@ -261,6 +286,10 @@ export class ZoneManager {
       if (!(card.isAirborne && effectiveToZone === 'PROCESSING')) {
         card.isAirborne = undefined;
       }
+      card.effectivePP = undefined;
+      card.effectiveDP = undefined;
+      card.effectiveKeywords = undefined;
+      card.effectiveTraits = undefined;
       card.effectiveProhibitions = undefined;
       card.effectiveOrbColors = undefined;
       card.effectiveOrbValue = undefined;
@@ -455,6 +484,9 @@ export class ZoneManager {
       delete this.state.cards[cardInstanceId];
       this.state.cards[cardInstanceId] = card;
     }
+    if (prevZone !== toZone || options?.controllerPlayerId !== undefined || options?.clearTransientState) {
+      this.invalidateZoneCache();
+    }
     if (prevZone === 'COST' || toZone === 'COST') {
       this.syncCostStats(card.controllerPlayerId);
     }
@@ -469,18 +501,19 @@ export class ZoneManager {
 
   /** 将卡牌键放到 state.cards 最前 (供牌组顶、信号球区最下方等使用) */
   private placeCardKeyAtFront(cardInstanceId: string, card: CardInstance): void {
-    const newCards: Record<string, CardInstance> = {
-      [cardInstanceId]: card,
-    };
-    for (const [k, v] of Object.entries(this.state.cards)) {
+    const prevCards = { ...this.state.cards };
+    const keys = Object.keys(prevCards);
+    for (let i = 0; i < keys.length; i++) {
+      delete this.state.cards[keys[i]!];
+    }
+    this.state.cards[cardInstanceId] = card;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i]!;
       if (k !== cardInstanceId) {
-        newCards[k] = v;
+        this.state.cards[k] = prevCards[k]!;
       }
     }
-    for (const k of Object.keys(this.state.cards)) {
-      delete this.state.cards[k];
-    }
-    Object.assign(this.state.cards, newCards);
+    this.invalidateZoneCache();
   }
 
   /**
@@ -498,8 +531,29 @@ export class ZoneManager {
       if (slot.standaloneEquipmentId === card.instanceId) slot.standaloneEquipmentId = undefined;
     }
 
-    // 若该卡牌本身是其他卡牌的装备、下方牌或协战搭档，解除关系
-    for (const other of Object.values(this.state.cards)) {
+    // 仅扫描双方战场顶层卡位与 PROCESSING 浮空卡，解除其装备/下方牌/搭档引用 (避免扫全量 100 张牌)
+    const candidateHosts: CardInstance[] = [];
+    const seenHostIds = new Set<string>();
+    for (const pid of Object.keys(this.state.players)) {
+      for (const slot of this.state.battlefields[pid] ?? []) {
+        for (const hid of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+          if (!hid || seenHostIds.has(hid)) continue;
+          const hc = this.state.cards[hid];
+          if (hc) {
+            seenHostIds.add(hid);
+            candidateHosts.push(hc);
+          }
+        }
+      }
+      for (const pc of this.getCardsInZone(pid, 'PROCESSING')) {
+        if (pc.isAirborne && !seenHostIds.has(pc.instanceId)) {
+          seenHostIds.add(pc.instanceId);
+          candidateHosts.push(pc);
+        }
+      }
+    }
+
+    for (const other of candidateHosts) {
       if (other.attachedEquipmentId === card.instanceId) {
         if (other.extraAttachedEquipmentIds && other.extraAttachedEquipmentIds.length > 0) {
           other.attachedEquipmentId = other.extraAttachedEquipmentIds.shift();
@@ -613,6 +667,7 @@ export class ZoneManager {
       delete this.state.cards[k];
     }
     Object.assign(this.state.cards, newCards);
+    this.invalidateZoneCache();
     return true;
   }
 
@@ -626,10 +681,6 @@ export class ZoneManager {
     const moved = this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false, toBottom: true });
     if (!moved) return false;
     if (card.zone !== 'DECK') return false;
-
-    // 将键移至对象末尾以保证在牌组底（Object.values 遍历顺序最末）
-    delete this.state.cards[cardInstanceId];
-    this.state.cards[cardInstanceId] = card;
     return true;
   }
 
@@ -640,10 +691,9 @@ export class ZoneManager {
     const card = this.state.cards[cardInstanceId];
     if (!card) return false;
 
-    const moved = this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false });
+    const moved = this.moveCard(cardInstanceId, 'DECK', { isFaceUp: false, toFront: true });
     if (!moved) return false;
     if (card.zone !== 'DECK') return false;
-    this.placeCardKeyAtFront(cardInstanceId, card);
     return true;
   }
 
@@ -690,6 +740,7 @@ export class ZoneManager {
       delete this.state.cards[k];
     }
     Object.assign(this.state.cards, newCards);
+    this.invalidateZoneCache();
 
     this.events.push({
       type: 'CARDS_SHUFFLED',
@@ -699,10 +750,21 @@ export class ZoneManager {
   }
 
   /**
-   * 获取指定玩家某区域的卡牌列表 (保持物理顺序，零多余对象分配)
+   * 获取指定玩家某区域的卡牌列表 (保持物理顺序；在 dispatchAction 作用域内使用单遍扫描读缓存)
    * 10.18.3.b 浮空模式卡牌下方的卡牌与附着装备不视为处理区中的卡牌
    */
   getCardsInZone(playerId: string, zone: ZoneId): CardInstance[] {
+    if (this.zoneCacheDepth > 0) {
+      if (this.cachedCardsRef !== this.state.cards || !this.zoneCache) {
+        this.rebuildZoneCache();
+      }
+      const cached = this.zoneCache!.get(`${playerId}:${zone}`);
+      return cached ? cached.slice() : [];
+    }
+    return this.computeCardsInZone(playerId, zone);
+  }
+
+  private computeCardsInZone(playerId: string, zone: ZoneId): CardInstance[] {
     const res: CardInstance[] = [];
     const cards = this.state.cards;
     let excludedFromProcessing: Set<string> | undefined;
@@ -732,6 +794,58 @@ export class ZoneManager {
       }
     }
     return res;
+  }
+
+  private rebuildZoneCache(): void {
+    const cards = this.state.cards;
+    const cache = new Map<string, CardInstance[]>();
+    let excludedByPlayer: Map<string, Set<string>> | undefined;
+
+    for (const id in cards) {
+      const c = cards[id];
+      if (!c) continue;
+      const key = `${c.controllerPlayerId}:${c.zone}`;
+      let list = cache.get(key);
+      if (!list) {
+        list = [c];
+        cache.set(key, list);
+      } else {
+        list.push(c);
+      }
+      if (c.zone === 'PROCESSING' && c.isAirborne) {
+        const hasAttach =
+          (c.underneathCardIds && c.underneathCardIds.length > 0) ||
+          Boolean(c.attachedEquipmentId) ||
+          (c.extraAttachedEquipmentIds && c.extraAttachedEquipmentIds.length > 0);
+        if (hasAttach) {
+          excludedByPlayer ??= new Map();
+          let set = excludedByPlayer.get(c.controllerPlayerId);
+          if (!set) {
+            set = new Set();
+            excludedByPlayer.set(c.controllerPlayerId, set);
+          }
+          for (const uid of c.underneathCardIds ?? []) set.add(uid);
+          if (c.attachedEquipmentId) set.add(c.attachedEquipmentId);
+          for (const eqId of c.extraAttachedEquipmentIds ?? []) set.add(eqId);
+        }
+      }
+    }
+
+    if (excludedByPlayer) {
+      for (const [pid, excluded] of excludedByPlayer) {
+        const key = `${pid}:PROCESSING`;
+        const list = cache.get(key);
+        if (list) {
+          cache.set(
+            key,
+            list.filter((c) => !excluded.has(c.instanceId))
+          );
+        }
+      }
+    }
+
+    this.zoneCache = cache;
+    this.cachedCardsRef = cards;
   }
 
   private isFinished(): boolean {

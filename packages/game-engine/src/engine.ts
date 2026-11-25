@@ -15,6 +15,7 @@ import { SeedRng } from './rng/seed-rng.js';
 import { ICardDatabase, BASE_TEST_CARDS, MemoryCardDatabase } from './database/card-registry.js';
 import { RULE_CONSTANTS } from '@zhanshuang/game-rules';
 import { createInitialGameState, PlayerInitConfig } from './state/create-game.js';
+import { fastDeepClone } from './state/fast-clone.js';
 import { sanitizeGameEventsForPlayer, sanitizeGameStateForPlayer } from './state/sanitize-state.js';
 import { ZoneManager } from './zone/zone-manager.js';
 import { BattlefieldManager, getAttachedEquipmentIds } from './zone/battlefield-manager.js';
@@ -50,6 +51,9 @@ export interface GameEngineSnapshot {
   events?: GameEvent[];
 }
 
+/** 10.8 非战术牌【瞬时】白名单，避免在瞬时窗口判定时扫描全量 100 张卡牌 */
+const NON_TACTICS_INSTANT_CARD_NUMBERS = new Set(['BP03-054', 'BP04-004', 'BP04-007', 'BP04-028']);
+
 export class GameEngine {
   state!: GameState;
   rng!: SeedRng;
@@ -66,6 +70,10 @@ export class GameEngine {
   combatMgr!: CombatManager;
   phaseMachine!: PhaseMachine;
   effectEngine!: CardEffectEngine;
+
+  /** 上一次 refreshDisplayedStats 写入过 effective* 字段的卡牌集合，用于跳过无关卡牌清理 */
+  private displayedStatsCardIds: Set<string> = new Set();
+  private displayedStatsRescanNeeded = true;
 
   constructor(
     gameId: string,
@@ -244,9 +252,9 @@ export class GameEngine {
    */
   toSnapshot(): GameEngineSnapshot {
     return {
-      state: JSON.parse(JSON.stringify(this.state)),
+      state: fastDeepClone(this.state),
       rngState: this.rng.getSeed(),
-      events: [...this.events],
+      events: fastDeepClone(this.events),
     };
   }
 
@@ -255,10 +263,12 @@ export class GameEngine {
    */
   static fromSnapshot(snapshot: GameEngineSnapshot, cardDb?: ICardDatabase): GameEngine {
     const engine = Object.create(GameEngine.prototype) as GameEngine;
-    engine.state = JSON.parse(JSON.stringify(snapshot.state));
+    engine.state = fastDeepClone(snapshot.state);
     engine.rng = new SeedRng(snapshot.rngState);
     engine.cardDb = cardDb ?? new MemoryCardDatabase(BASE_TEST_CARDS);
-    engine.events = snapshot.events ? [...snapshot.events] : [];
+    engine.events = snapshot.events ? fastDeepClone(snapshot.events) : [];
+    engine.displayedStatsCardIds = new Set();
+    engine.displayedStatsRescanNeeded = true;
     engine.initManagers();
     return engine;
   }
@@ -285,44 +295,15 @@ export class GameEngine {
    * 避免出现「费用已支付但出牌失败」之类的半完成状态。
    */
   dispatchAction(action: GameAction): ActionResult {
-    const startEventIndex = this.events.length;
-    const stateBackup = JSON.stringify(this.state);
-    const rngBackup = this.rng.getSeed();
-
-    let result: ActionResult;
-    try {
-      result = this.applyActionUnsafe(action, startEventIndex);
-    } catch (err) {
-      result = {
+    // 纯只读守卫前置：拦截明显非法请求，避免无意义的深拷贝备份与回滚
+    if (!action || typeof action !== 'object' || !action.type) {
+      return {
         success: false,
-        error: `行动处理失败：${err instanceof Error ? err.message : String(err)}`,
+        error: '无效的行动请求',
         events: [],
         state: this.state,
       };
     }
-
-    if (!result.success) {
-      this.restoreState(stateBackup);
-      this.rng.setState(rngBackup);
-      this.events.length = startEventIndex;
-      return { success: false, error: result.error, events: [], state: this.state };
-    }
-    return result;
-  }
-
-  /**
-   * 原地恢复状态对象：各管理器持有的是同一个 state 引用，不能直接替换引用
-   */
-  private restoreState(serialized: string): void {
-    const restored = JSON.parse(serialized) as GameState;
-    const target = this.state as unknown as Record<string, unknown>;
-    for (const key of Object.keys(target)) {
-      delete target[key];
-    }
-    Object.assign(target, restored);
-  }
-
-  private applyActionUnsafe(action: GameAction, startEventIndex: number): ActionResult {
 
     if (this.state.status === 'FINISHED') {
       return {
@@ -334,7 +315,7 @@ export class GameEngine {
     }
 
     // 仅本局玩家可提交行动 (防止旁观者或伪造身份发起投降等操作)
-    if (!action?.playerId || !this.state.players[action.playerId]) {
+    if (!action.playerId || !this.state.players[action.playerId]) {
       return {
         success: false,
         error: '非本局玩家，无法执行该行动',
@@ -358,6 +339,51 @@ export class GameEngine {
       };
     }
 
+    const startEventIndex = this.events.length;
+    const stateBackup = fastDeepClone(this.state);
+    const rngBackup = this.rng.getSeed();
+
+    let result: ActionResult;
+    try {
+      this.zoneMgr.beginZoneCacheScope();
+      try {
+        result = this.applyActionUnsafe(action, startEventIndex);
+      } finally {
+        this.zoneMgr.endZoneCacheScope();
+      }
+    } catch (err) {
+      result = {
+        success: false,
+        error: `行动处理失败：${err instanceof Error ? err.message : String(err)}`,
+        events: [],
+        state: this.state,
+      };
+    }
+
+    if (!result.success) {
+      this.restoreState(stateBackup);
+      this.rng.setState(rngBackup);
+      this.events.length = startEventIndex;
+      return { success: false, error: result.error, events: [], state: this.state };
+    }
+    return result;
+  }
+
+  /**
+   * 原地恢复状态对象：各管理器持有的是同一个 state 引用，不能直接替换引用
+   */
+  private restoreState(backup: GameState): void {
+    const target = this.state as unknown as Record<string, unknown>;
+    for (const key of Object.keys(target)) {
+      delete target[key];
+    }
+    Object.assign(target, backup);
+    this.continuousEffects.invalidateEvalFrame();
+    this.zoneMgr.invalidateZoneCache();
+    this.displayedStatsRescanNeeded = true;
+  }
+
+  private applyActionUnsafe(action: GameAction, startEventIndex: number): ActionResult {
     let success = false;
     let error: string | undefined;
 
@@ -2293,63 +2319,128 @@ export class GameEngine {
     }
   }
 
+  /** 清除卡牌上展示用的派生属性字段 (仅在字段存在时删除，避免不必要写操作) */
+  private clearCardDisplayedStats(card: CardInstance): void {
+    if (card.effectivePP !== undefined) delete card.effectivePP;
+    if (card.effectiveDP !== undefined) delete card.effectiveDP;
+    if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
+    if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
+    if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
+    if (card.effectiveOrbValue !== undefined) delete card.effectiveOrbValue;
+    if (card.effectiveProhibitions !== undefined) delete card.effectiveProhibitions;
+  }
+
   /**
    * 将战场角色当前的 PP/DP、关键字、特征、禁止标志与信号球有效颜色写入状态，供前端直接展示
    * (前端不重复实现装备、8.9 持续效果层与永久能力的计算)
    */
   private refreshDisplayedStats(): void {
-    for (const card of Object.values(this.state.cards)) {
-      if (card.zone === 'BATTLEFIELD' && this.fieldMgr.isSlotRole(card.controllerPlayerId, card.instanceId)) {
-        const evaluated = this.fieldMgr.evaluateRoleStats(card.instanceId);
-        card.effectivePP = evaluated.pp;
-        card.effectiveDP = evaluated.dp;
-        card.effectiveKeywords = evaluated.keywords;
-        card.effectiveTraits = evaluated.traits;
-        if (evaluated.prohibitions.length > 0) {
-          card.effectiveProhibitions = evaluated.prohibitions;
-        } else {
-          delete card.effectiveProhibitions;
+    this.continuousEffects.withEvalFrame(() => {
+      const nextDisplayedIds = new Set<string>();
+      const playerIds = Object.keys(this.state.players);
+
+      for (const pid of playerIds) {
+        // 1. 仅扫描双方战场顶层卡位 (角色位写入有效属性，非角色顶层卡清理残留 effective* 字段)
+        for (const slot of this.state.battlefields[pid] ?? []) {
+          for (const cid of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+            if (!cid) continue;
+            const card = this.state.cards[cid];
+            if (!card || card.zone !== 'BATTLEFIELD') continue;
+            const isRoleSlotCard =
+              cid !== slot.standaloneEquipmentId &&
+              (() => {
+                const def =
+                  this.cardDb.getCard(card.cardNumber) ||
+                  (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+                return getModifierEffectiveCardType(card, def) === CardType.ROLE;
+              })();
+            if (isRoleSlotCard) {
+              const evaluated = this.fieldMgr.evaluateRoleStats(card.instanceId);
+              card.effectivePP = evaluated.pp;
+              card.effectiveDP = evaluated.dp;
+              card.effectiveKeywords = evaluated.keywords;
+              card.effectiveTraits = evaluated.traits;
+              if (evaluated.prohibitions.length > 0) {
+                card.effectiveProhibitions = evaluated.prohibitions;
+              } else if (card.effectiveProhibitions !== undefined) {
+                delete card.effectiveProhibitions;
+              }
+              if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
+              if (card.effectiveOrbValue !== undefined) delete card.effectiveOrbValue;
+              nextDisplayedIds.add(cid);
+            } else {
+              this.clearCardDisplayedStats(card);
+            }
+          }
         }
-        delete card.effectiveOrbColors;
-        delete card.effectiveOrbValue;
-      } else if (card.zone === 'SIGNAL_ORB' && card.isFaceUp) {
-        delete card.effectivePP;
-        delete card.effectiveDP;
-        delete card.effectiveKeywords;
-        delete card.effectiveTraits;
-        const orbInfo = this.continuousEffects.getEffectiveOrbInfo(card.instanceId);
-        if (orbInfo.colors.length > 0) {
-          card.effectiveOrbColors = orbInfo.colors;
-        } else {
-          delete card.effectiveOrbColors;
+
+        // 2. 扫描信号球区正面卡 (计算有效信号球颜色/个数/禁消；背面卡清理残留)
+        for (const card of this.zoneMgr.getCardsInZone(pid, 'SIGNAL_ORB')) {
+          if (card.isFaceUp) {
+            if (card.effectivePP !== undefined) delete card.effectivePP;
+            if (card.effectiveDP !== undefined) delete card.effectiveDP;
+            if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
+            if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
+            const orbInfo = this.continuousEffects.getEffectiveOrbInfo(card.instanceId);
+            if (orbInfo.colors.length > 0) {
+              card.effectiveOrbColors = orbInfo.colors;
+            } else if (card.effectiveOrbColors !== undefined) {
+              delete card.effectiveOrbColors;
+            }
+            if (orbInfo.isOrb && orbInfo.orbValue > 0) {
+              card.effectiveOrbValue = orbInfo.orbValue;
+            } else if (card.effectiveOrbValue !== undefined) {
+              delete card.effectiveOrbValue;
+            }
+            if (orbInfo.cannotEliminate) {
+              card.effectiveProhibitions = ['CANNOT_ELIMINATE'];
+            } else if (card.effectiveProhibitions !== undefined) {
+              delete card.effectiveProhibitions;
+            }
+            nextDisplayedIds.add(card.instanceId);
+          } else {
+            this.clearCardDisplayedStats(card);
+          }
         }
-        if (orbInfo.isOrb && orbInfo.orbValue > 0) {
-          card.effectiveOrbValue = orbInfo.orbValue;
-        } else {
-          delete card.effectiveOrbValue;
-        }
-        if (orbInfo.cannotEliminate) {
-          card.effectiveProhibitions = ['CANNOT_ELIMINATE'];
-        } else {
-          delete card.effectiveProhibitions;
-        }
-      } else {
-        if (card.effectivePP !== undefined) delete card.effectivePP;
-        if (card.effectiveDP !== undefined) delete card.effectiveDP;
-        if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
-        if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
-        if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
-        if (card.effectiveOrbValue !== undefined) delete card.effectiveOrbValue;
-        if (
-          card.zone === 'COST' &&
-          this.continuousEffects.hasProhibition(card.instanceId, 'CANNOT_DISCARD_HIDDEN_COST_AT_END')
-        ) {
-          card.effectiveProhibitions = ['CANNOT_DISCARD_HIDDEN_COST_AT_END'];
-        } else if (card.effectiveProhibitions !== undefined) {
-          delete card.effectiveProhibitions;
+
+        // 3. 扫描费用区：仅背面暗费判定 CANNOT_DISCARD_HIDDEN_COST_AT_END，其余费用卡清理残留
+        for (const card of this.zoneMgr.getCardsInZone(pid, 'COST')) {
+          if (card.effectivePP !== undefined) delete card.effectivePP;
+          if (card.effectiveDP !== undefined) delete card.effectiveDP;
+          if (card.effectiveKeywords !== undefined) delete card.effectiveKeywords;
+          if (card.effectiveTraits !== undefined) delete card.effectiveTraits;
+          if (card.effectiveOrbColors !== undefined) delete card.effectiveOrbColors;
+          if (card.effectiveOrbValue !== undefined) delete card.effectiveOrbValue;
+          if (
+            !card.isFaceUp &&
+            this.continuousEffects.hasProhibition(card.instanceId, 'CANNOT_DISCARD_HIDDEN_COST_AT_END')
+          ) {
+            card.effectiveProhibitions = ['CANNOT_DISCARD_HIDDEN_COST_AT_END'];
+            nextDisplayedIds.add(card.instanceId);
+          } else if (card.effectiveProhibitions !== undefined) {
+            delete card.effectiveProhibitions;
+          }
         }
       }
-    }
+
+      // 4. 清理此前曾写入过 effective* 但已离场或离开目标区的卡牌残留（首次/回滚后额外全扫一次兜底）
+      if (this.displayedStatsRescanNeeded) {
+        for (const id in this.state.cards) {
+          if (nextDisplayedIds.has(id)) continue;
+          const c = this.state.cards[id];
+          if (c) this.clearCardDisplayedStats(c);
+        }
+        this.displayedStatsRescanNeeded = false;
+      } else {
+        for (const id of this.displayedStatsCardIds) {
+          if (nextDisplayedIds.has(id)) continue;
+          const c = this.state.cards[id];
+          if (c) this.clearCardDisplayedStats(c);
+        }
+      }
+
+      this.displayedStatsCardIds = nextDisplayedIds;
+    });
   }
 
   private getOpponentId(playerId: string): string {
@@ -2479,78 +2570,94 @@ export class GameEngine {
    * 玩家当前是否持有可以使用的【瞬时】、非战术【瞬时】能力或 8.13 协战能力
    */
   private hasUsableInstant(playerId: string): boolean {
-    const player = this.state.players[playerId];
-    const costCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
-    const payable = costCards.filter((c) => !c.isFaceUp || c.isReady).length;
-    const openAttributes = new Set(
-      costCards.filter((c) => c.isFaceUp).map((c) => this.cardDb.getCard(c.cardNumber)?.attribute)
-    );
-    const canUseInstantTacticsCard = (card: CardInstance): boolean => {
-      const def = this.cardDb.getCard(card.cardNumber);
-      if (!def || !isInstantTactics(def)) return false;
-      const spec = this.effectEngine.presets.getSpec(def.cardNumber);
-      if (
-        spec?.maxPlaysPerTurnByName !== undefined &&
-        (player?.turnCardPlayedCountByName?.[def.name] ?? 0) >= spec.maxPlaysPerTurnByName
-      ) {
-        return false;
-      }
-      if (
-        card.zone === 'HAND' &&
-        def.attribute !== ElementAttribute.NONE &&
-        !openAttributes.has(def.attribute) &&
-        !this.effectEngine.presets.canIgnoreAttributeCondition(playerId, def.cardNumber) &&
-        !this.effectEngine.presets.canPlayerIgnoreAttributeForPlay(playerId, card.instanceId, def, false)
-      ) {
-        return false;
-      }
-      const baseCost = this.calculateCardCost(playerId, card.instanceId).costToPay;
-      const minPayable = this.getMinimumPayableCostForPlay(playerId, card.instanceId, def, baseCost, false);
-      if (minPayable > payable) return false;
-      return !this.checkInstantTiming(playerId, def);
-    };
-    const hasHandInstantTactics = this.zoneMgr
-      .getCardsInZone(playerId, 'HAND')
-      .some(canUseInstantTacticsCard);
-    if (hasHandInstantTactics) return true;
-
-    const hasGraveyardInstantTactics = this.zoneMgr
-      .getCardsInZone(playerId, 'GRAVEYARD')
-      .some(
-        (c) =>
-          Boolean(this.effectEngine.presets.getSpec(c.cardNumber)?.playFromZones?.includes('GRAVEYARD')) &&
-          canUseInstantTacticsCard(c)
+    return this.continuousEffects.withEvalFrame(() => {
+      const player = this.state.players[playerId];
+      const costCards = this.zoneMgr.getCardsInZone(playerId, 'COST');
+      const payable = costCards.filter((c) => !c.isFaceUp || c.isReady).length;
+      const openAttributes = new Set(
+        costCards.filter((c) => c.isFaceUp).map((c) => this.cardDb.getCard(c.cardNumber)?.attribute)
       );
-    if (hasGraveyardInstantTactics) return true;
+      const canUseInstantTacticsCard = (card: CardInstance): boolean => {
+        const def = this.cardDb.getCard(card.cardNumber);
+        if (!def || !isInstantTactics(def)) return false;
+        const spec = this.effectEngine.presets.getSpec(def.cardNumber);
+        if (
+          spec?.maxPlaysPerTurnByName !== undefined &&
+          (player?.turnCardPlayedCountByName?.[def.name] ?? 0) >= spec.maxPlaysPerTurnByName
+        ) {
+          return false;
+        }
+        if (
+          card.zone === 'HAND' &&
+          def.attribute !== ElementAttribute.NONE &&
+          !openAttributes.has(def.attribute) &&
+          !this.effectEngine.presets.canIgnoreAttributeCondition(playerId, def.cardNumber) &&
+          !this.effectEngine.presets.canPlayerIgnoreAttributeForPlay(playerId, card.instanceId, def, false)
+        ) {
+          return false;
+        }
+        const baseCost = this.calculateCardCost(playerId, card.instanceId).costToPay;
+        const minPayable = this.getMinimumPayableCostForPlay(playerId, card.instanceId, def, baseCost, false);
+        if (minPayable > payable) return false;
+        return !this.checkInstantTiming(playerId, def);
+      };
+      const handCards = this.zoneMgr.getCardsInZone(playerId, 'HAND');
+      if (handCards.some(canUseInstantTacticsCard)) return true;
 
-    const hasUnderneathInstantTactics = this.fieldMgr.getSlots(playerId).some((s) => {
-      const role = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
-      if (!role || !this.continuousEffects.hasCardName(role.instanceId, '露娜·终焉')) return false;
-      return role.underneathCardIds.some((uid) => {
-        const uCard = this.state.cards[uid];
-        return (
-          Boolean(uCard) &&
-          Boolean(this.effectEngine.presets.getSpec(uCard!.cardNumber)?.playFromZones?.includes('UNDERNEATH')) &&
-          canUseInstantTacticsCard(uCard!)
+      const hasGraveyardInstantTactics = this.zoneMgr
+        .getCardsInZone(playerId, 'GRAVEYARD')
+        .some(
+          (c) =>
+            Boolean(this.effectEngine.presets.getSpec(c.cardNumber)?.playFromZones?.includes('GRAVEYARD')) &&
+            canUseInstantTacticsCard(c)
         );
+      if (hasGraveyardInstantTactics) return true;
+
+      const slots = this.fieldMgr.getSlots(playerId);
+      const hasUnderneathInstantTactics = slots.some((s) => {
+        const role = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
+        if (!role || !this.continuousEffects.hasCardName(role.instanceId, '露娜·终焉')) return false;
+        return role.underneathCardIds.some((uid) => {
+          const uCard = this.state.cards[uid];
+          return (
+            Boolean(uCard) &&
+            Boolean(this.effectEngine.presets.getSpec(uCard!.cardNumber)?.playFromZones?.includes('UNDERNEATH')) &&
+            canUseInstantTacticsCard(uCard!)
+          );
+        });
       });
-    });
-    if (hasUnderneathInstantTactics) return true;
+      if (hasUnderneathInstantTactics) return true;
 
-    // 10.8 角色与装备上的【瞬时】能力 (COST / BATTLEFIELD 下方 / HAND)
-    const hasNonTacticsInstant = Object.values(this.state.cards).some((card) => {
-      if (card.controllerPlayerId !== playerId) return false;
-      const def = this.cardDb.getCard(card.cardNumber);
-      if (!def || def.cardType === CardType.TACTICS) return false;
-      return this.effectEngine.canUseNonTacticsInstant(playerId, card, def).usable;
-    });
-    if (hasNonTacticsInstant) return true;
+      // 10.8 角色与装备上的【瞬时】能力：仅按白名单检查 COST / BATTLEFIELD 下方 / HAND，避免扫全量 100 卡
+      const checkNonTacticsInstant = (card: CardInstance | undefined): boolean => {
+        if (!card || !NON_TACTICS_INSTANT_CARD_NUMBERS.has(card.cardNumber)) return false;
+        const def = this.cardDb.getCard(card.cardNumber);
+        if (!def || def.cardType === CardType.TACTICS) return false;
+        return this.effectEngine.canUseNonTacticsInstant(playerId, card, def).usable;
+      };
+      for (const c of costCards) {
+        if (c.isFaceUp && checkNonTacticsInstant(c)) return true;
+      }
+      for (const c of handCards) {
+        if (checkNonTacticsInstant(c)) return true;
+      }
+      for (const s of slots) {
+        for (const hostId of [s.roleCardId, s.assistCardId]) {
+          if (!hostId) continue;
+          const host = this.state.cards[hostId];
+          if (!host || !host.underneathCardIds.length) continue;
+          for (const uid of host.underneathCardIds) {
+            if (checkNonTacticsInstant(this.state.cards[uid])) return true;
+          }
+        }
+      }
 
-    // 8.13.3.a 自由时点步骤检查是否可发动协战
-    if (this.state.phase === 'COMBAT_FREE_TIMING' && this.state.timingWindow?.kind === 'FREE_TIMING') {
-      return this.hasUsableAssist(playerId);
-    }
-    return false;
+      // 8.13.3.a 自由时点步骤检查是否可发动协战
+      if (this.state.phase === 'COMBAT_FREE_TIMING' && this.state.timingWindow?.kind === 'FREE_TIMING') {
+        return this.hasUsableAssist(playerId);
+      }
+      return false;
+    });
   }
 
   private resolveAssistCostOptions(

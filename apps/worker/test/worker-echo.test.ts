@@ -118,6 +118,19 @@ describe('Cloudflare Worker & EchoDO 连通性测试服务', () => {
       const res = await worker.fetch(req, mockEnv);
       expect(res.status).toBe(404);
     });
+
+    it('POST /api/auth/login 请求体超过 256 KB 应返回 HTTP 413', async () => {
+      const body = JSON.stringify({ username: 'alice', password: 'x'.repeat(270 * 1024) });
+      const req = new Request('https://test.example.com/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      const res = await worker.fetch(req, { ...mockEnv, JWT_SECRET: 'test-jwt-secret-0123456789' });
+      expect(res.status).toBe(413);
+      const data = (await res.json()) as { success: boolean; error: string };
+      expect(data.success).toBe(false);
+    });
   });
 
   describe('EchoDO 状态管理与 WebSocket 协议交互', () => {
@@ -206,6 +219,22 @@ describe('Cloudflare Worker & EchoDO 连通性测试服务', () => {
 
       expect(sent.length).toBe(1);
       expect(sent[0]).toBe('hello cloudflare');
+    });
+
+    it('接收超过 16 KB 的 WS 消息应返回错误提示且不原样回声', async () => {
+      const { ctx } = createMockDOState();
+      const echoDo = new EchoDO(ctx, {} as Env);
+      const { ws, sent } = createMockWebSocket();
+
+      await echoDo.webSocketMessage(ws, 'a'.repeat(17 * 1024));
+      await echoDo.webSocketMessage(ws, new ArrayBuffer(17 * 1024));
+
+      expect(sent.length).toBe(2);
+      for (const raw of sent) {
+        const msg = JSON.parse(raw as string) as { type: string; error: string };
+        expect(msg.type).toBe('error');
+        expect(msg.error).toContain('上限');
+      }
     });
   });
 });

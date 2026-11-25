@@ -15,8 +15,17 @@ import {
 } from './interfaces.js';
 import { Role, RoomStatus } from '@prisma/client';
 
+export interface MemoryUserRepositoryOptions {
+  maxUsers?: number;
+}
+
 export class MemoryUserRepository implements IUserRepository {
   private users: Map<string, UserEntity> = new Map();
+  private readonly maxUsers: number;
+
+  constructor(options?: MemoryUserRepositoryOptions) {
+    this.maxUsers = Math.max(1, options?.maxUsers ?? 5000);
+  }
 
   async findById(id: string): Promise<UserEntity | null> {
     return this.users.get(id) ?? null;
@@ -30,6 +39,14 @@ export class MemoryUserRepository implements IUserRepository {
   }
 
   async create(username: string, passwordHash: string, nickname: string, role: Role = Role.USER): Promise<UserEntity> {
+    if (this.users.size >= this.maxUsers) {
+      for (const [existingId, existingUser] of this.users) {
+        if (existingUser.role !== Role.ADMIN) {
+          this.users.delete(existingId);
+          if (this.users.size < this.maxUsers) break;
+        }
+      }
+    }
     const id = `user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const user: UserEntity = {
       id,
@@ -55,9 +72,18 @@ export class MemoryUserRepository implements IUserRepository {
   }
 }
 
+export interface MemoryCardRepositoryOptions {
+  maxVersionsPerCard?: number;
+}
+
 export class MemoryCardRepository implements ICardRepository {
   private cards: Map<string, CardEntity> = new Map();
   private versions: Map<string, any[]> = new Map();
+  private readonly maxVersionsPerCard: number;
+
+  constructor(options?: MemoryCardRepositoryOptions) {
+    this.maxVersionsPerCard = Math.max(1, options?.maxVersionsPerCard ?? 50);
+  }
 
   async findById(id: string): Promise<CardEntity | null> {
     return this.cards.get(id) ?? null;
@@ -152,6 +178,9 @@ export class MemoryCardRepository implements ICardRepository {
         snapshotData: newVersionSnapshot,
         createdAt: new Date(),
       });
+      if (list.length > this.maxVersionsPerCard) {
+        list.splice(0, list.length - this.maxVersionsPerCard);
+      }
       this.versions.set(id, list);
     }
 
@@ -179,10 +208,18 @@ export class MemoryCardRepository implements ICardRepository {
   }
 }
 
+export interface MemoryDeckRepositoryOptions {
+  maxUserDecks?: number;
+}
+
 export class MemoryDeckRepository implements IDeckRepository {
   private decks: Map<string, DeckEntity> = new Map();
+  private userDeckIds: Set<string> = new Set();
+  private readonly maxUserDecks: number;
 
-  constructor(private cardRepo: ICardRepository) {}
+  constructor(private cardRepo: ICardRepository, options?: MemoryDeckRepositoryOptions) {
+    this.maxUserDecks = Math.max(1, options?.maxUserDecks ?? 1000);
+  }
 
   async findById(id: string): Promise<DeckEntity | null> {
     return this.decks.get(id) ?? null;
@@ -194,6 +231,18 @@ export class MemoryDeckRepository implements IDeckRepository {
 
   async create(userId: string, name: string, description?: string, customId?: string): Promise<DeckEntity> {
     const id = customId || `deck-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    if (userId !== 'system' && !this.decks.has(id)) {
+      while (this.userDeckIds.size >= this.maxUserDecks) {
+        const oldestId = this.userDeckIds.values().next().value;
+        if (!oldestId) break;
+        this.userDeckIds.delete(oldestId);
+        const oldest = this.decks.get(oldestId);
+        // 硬保护系统官方预组，绝不淘汰 userId === 'system'
+        if (oldest && oldest.userId !== 'system') {
+          this.decks.delete(oldestId);
+        }
+      }
+    }
     const deck: DeckEntity = {
       id,
       userId,
@@ -205,6 +254,9 @@ export class MemoryDeckRepository implements IDeckRepository {
       updatedAt: new Date(),
     };
     this.decks.set(id, deck);
+    if (userId !== 'system') {
+      this.userDeckIds.add(id);
+    }
     return deck;
   }
 
@@ -258,12 +310,23 @@ export class MemoryDeckRepository implements IDeckRepository {
   }
 
   async delete(id: string): Promise<boolean> {
+    this.userDeckIds.delete(id);
     return this.decks.delete(id);
   }
 }
 
+export interface MemoryRoomRepositoryOptions {
+  maxClosedRooms?: number;
+}
+
 export class MemoryRoomRepository implements IRoomRepository {
   private rooms: Map<string, RoomEntity> = new Map();
+  private closedRoomIds: Set<string> = new Set();
+  private readonly maxClosedRooms: number;
+
+  constructor(options?: MemoryRoomRepositoryOptions) {
+    this.maxClosedRooms = Math.max(1, options?.maxClosedRooms ?? 200);
+  }
 
   async findById(id: string): Promise<RoomEntity | null> {
     return this.rooms.get(id) ?? null;
@@ -312,6 +375,7 @@ export class MemoryRoomRepository implements IRoomRepository {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+    this.closedRoomIds.delete(id);
     this.rooms.set(id, room);
     return room;
   }
@@ -329,6 +393,7 @@ export class MemoryRoomRepository implements IRoomRepository {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
+      this.closedRoomIds.delete(roomId);
       this.rooms.set(roomId, room);
     }
 
@@ -390,6 +455,7 @@ export class MemoryRoomRepository implements IRoomRepository {
     const allReady = room.players.length === 2 && room.players.every((item) => item.isReady);
     room.status = allReady ? RoomStatus.READY : RoomStatus.WAITING;
     room.updatedAt = new Date();
+    this.closedRoomIds.delete(roomId);
     return room;
   }
 
@@ -410,8 +476,30 @@ export class MemoryRoomRepository implements IRoomRepository {
     }
     room.status = status;
     room.updatedAt = new Date();
+    if (status === RoomStatus.CLOSED) {
+      this.closedRoomIds.delete(roomId);
+      this.closedRoomIds.add(roomId);
+      while (this.closedRoomIds.size > this.maxClosedRooms) {
+        const oldestId = this.closedRoomIds.values().next().value;
+        if (!oldestId) break;
+        this.closedRoomIds.delete(oldestId);
+        const candidate = this.rooms.get(oldestId);
+        // 绝不淘汰活跃或进行中房间
+        if (candidate && candidate.status === RoomStatus.CLOSED) {
+          this.rooms.delete(oldestId);
+        }
+      }
+    } else {
+      this.closedRoomIds.delete(roomId);
+    }
     return room;
   }
+}
+
+export interface MemoryGameRepositoryOptions {
+  maxFinishedGames?: number;
+  maxActionsPerGame?: number;
+  maxEventsPerGame?: number;
 }
 
 export class MemoryGameRepository implements IGameRepository {
@@ -419,6 +507,16 @@ export class MemoryGameRepository implements IGameRepository {
   private players: Map<string, { userId: string; deckId: string; seatOrder: number }[]> = new Map();
   private actions: Map<string, any[]> = new Map();
   private events: Map<string, any[]> = new Map();
+  private finishedGameIds: Set<string> = new Set();
+  private readonly maxFinishedGames: number;
+  private readonly maxActionsPerGame: number;
+  private readonly maxEventsPerGame: number;
+
+  constructor(options?: MemoryGameRepositoryOptions) {
+    this.maxFinishedGames = Math.max(1, options?.maxFinishedGames ?? 200);
+    this.maxActionsPerGame = Math.max(1, options?.maxActionsPerGame ?? 5000);
+    this.maxEventsPerGame = Math.max(1, options?.maxEventsPerGame ?? 20000);
+  }
 
   async createGame(
     roomId: string,
@@ -434,6 +532,7 @@ export class MemoryGameRepository implements IGameRepository {
       isDraw: false,
       startedAt: new Date(),
     };
+    this.finishedGameIds.delete(id);
     this.games.set(id, game);
     this.players.set(id, playersList);
     this.actions.set(id, []);
@@ -448,13 +547,17 @@ export class MemoryGameRepository implements IGameRepository {
     actionType: string,
     payload: unknown
   ): Promise<void> {
+    if (!this.games.has(gameId)) return;
     const list = this.actions.get(gameId) ?? [];
+    if (list.length >= this.maxActionsPerGame) return;
     list.push({ seq, playerId, actionType, payload, timestamp: new Date() });
     this.actions.set(gameId, list);
   }
 
   async recordEvent(gameId: string, seq: number, eventType: string, payload: unknown): Promise<void> {
+    if (!this.games.has(gameId)) return;
     const list = this.events.get(gameId) ?? [];
+    if (list.length >= this.maxEventsPerGame) return;
     list.push({ seq, eventType, payload, timestamp: new Date() });
     this.events.set(gameId, list);
   }
@@ -467,6 +570,22 @@ export class MemoryGameRepository implements IGameRepository {
     game.isDraw = isDraw;
     game.finishReason = reason;
     game.finishedAt = new Date();
+    this.finishedGameIds.delete(gameId);
+    this.finishedGameIds.add(gameId);
+
+    while (this.finishedGameIds.size > this.maxFinishedGames) {
+      const oldestId = this.finishedGameIds.values().next().value;
+      if (!oldestId) break;
+      this.finishedGameIds.delete(oldestId);
+      const candidate = this.games.get(oldestId);
+      // 仅淘汰已结束对局，绝不淘汰活跃进行中对局
+      if (candidate?.finishedAt) {
+        this.games.delete(oldestId);
+        this.players.delete(oldestId);
+        this.actions.delete(oldestId);
+        this.events.delete(oldestId);
+      }
+    }
     return game;
   }
 

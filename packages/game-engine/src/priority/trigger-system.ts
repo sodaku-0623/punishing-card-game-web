@@ -117,6 +117,7 @@ export interface TriggerDefinition {
  */
 export class TriggerManager {
   private definitions = new Map<string, TriggerDefinition>();
+  private triggersByEventType = new Map<TriggerEventType, TriggerDefinition[]>();
 
   constructor(
     private state: GameState,
@@ -131,9 +132,36 @@ export class TriggerManager {
     this.registerBuiltinRuleTriggers();
   }
 
-  /** 注册一个自动能力触发定义 */
+  /** 注册一个自动能力触发定义（同步维护按 eventType 分桶的索引，保持注册顺序与去重） */
   registerTrigger(def: TriggerDefinition): void {
+    const prev = this.definitions.get(def.abilityId);
     this.definitions.set(def.abilityId, def);
+    const nextTypes = new Set(def.eventTypes);
+    if (prev) {
+      for (const et of new Set(prev.eventTypes)) {
+        if (!nextTypes.has(et)) {
+          const bucket = this.triggersByEventType.get(et);
+          if (bucket) {
+            const idx = bucket.findIndex((d) => d.abilityId === def.abilityId);
+            if (idx >= 0) bucket.splice(idx, 1);
+          }
+        }
+      }
+    }
+    for (const et of nextTypes) {
+      let bucket = this.triggersByEventType.get(et);
+      if (!bucket) {
+        bucket = [def];
+        this.triggersByEventType.set(et, bucket);
+      } else {
+        const existingIdx = prev ? bucket.findIndex((d) => d.abilityId === def.abilityId) : -1;
+        if (existingIdx >= 0) {
+          bucket[existingIdx] = def;
+        } else {
+          bucket.push(def);
+        }
+      }
+    }
   }
 
   /** 注册 8.7.5 时限触发 (可随 GameState 快照持久化恢复) */
@@ -233,35 +261,38 @@ export class TriggerManager {
       snapshotCard: (id) => this.snapshotCard(id),
     };
 
-    // 1. 扫描所有注册的【自】能力定义
-    for (const def of this.definitions.values()) {
-      if (!def.eventTypes.includes(event.type)) continue;
-      const matches = def.collect(collectCtx);
-      for (const m of matches) {
-        const seq = nextEffectTimestamp(this.state);
-        const pending: PendingTrigger = {
-          id: `trig-${this.state.turnNumber}-${seq}`,
-          abilityId: def.abilityId,
-          eventType: event.type,
-          sourceCardInstanceId: m.sourceCardInstanceId,
-          sourceCardNumber: m.sourceCardNumber,
-          controllerPlayerId: m.controllerPlayerId,
-          label: m.label,
-          oncePerTurn: m.oncePerTurn ?? def.oncePerTurn,
-          maxPerTurn: m.maxPerTurn ?? def.maxPerTurn,
-          oncePerTurnKey: m.oncePerTurnKey,
-          deferOncePerTurnUntilCostPaid: m.deferOncePerTurnUntilCostPaid ?? def.deferOncePerTurnUntilCostPaid,
-          oncePerTurnByPlayer: m.oncePerTurnByPlayer ?? def.oncePerTurnByPlayer,
-          maxPerTurnByPlayer: m.maxPerTurnByPlayer ?? def.maxPerTurnByPlayer,
-          sharedTurnKey: m.sharedTurnKey ?? def.sharedTurnKey,
-          triggerContext: {
-            ...m.triggerContext,
-            sourceAbilitiesLostAtTrigger:
-              (m.triggerContext.sourceAbilitiesLostAtTrigger as boolean | undefined) ??
-              this.continuousEffects.hasLostInherentAbilities(m.sourceCardInstanceId),
-          },
-        };
-        this.state.pendingTriggers.push(pending);
+    // 1. 按事件类型桶 O(1) 定位并扫描匹配的【自】能力定义
+    const bucket = this.triggersByEventType.get(event.type);
+    if (bucket) {
+      for (let i = 0; i < bucket.length; i++) {
+        const def = bucket[i]!;
+        const matches = def.collect(collectCtx);
+        for (const m of matches) {
+          const seq = nextEffectTimestamp(this.state);
+          const pending: PendingTrigger = {
+            id: `trig-${this.state.turnNumber}-${seq}`,
+            abilityId: def.abilityId,
+            eventType: event.type,
+            sourceCardInstanceId: m.sourceCardInstanceId,
+            sourceCardNumber: m.sourceCardNumber,
+            controllerPlayerId: m.controllerPlayerId,
+            label: m.label,
+            oncePerTurn: m.oncePerTurn ?? def.oncePerTurn,
+            maxPerTurn: m.maxPerTurn ?? def.maxPerTurn,
+            oncePerTurnKey: m.oncePerTurnKey,
+            deferOncePerTurnUntilCostPaid: m.deferOncePerTurnUntilCostPaid ?? def.deferOncePerTurnUntilCostPaid,
+            oncePerTurnByPlayer: m.oncePerTurnByPlayer ?? def.oncePerTurnByPlayer,
+            maxPerTurnByPlayer: m.maxPerTurnByPlayer ?? def.maxPerTurnByPlayer,
+            sharedTurnKey: m.sharedTurnKey ?? def.sharedTurnKey,
+            triggerContext: {
+              ...m.triggerContext,
+              sourceAbilitiesLostAtTrigger:
+                (m.triggerContext.sourceAbilitiesLostAtTrigger as boolean | undefined) ??
+                this.continuousEffects.hasLostInherentAbilities(m.sourceCardInstanceId),
+            },
+          };
+          this.state.pendingTriggers.push(pending);
+        }
       }
     }
 

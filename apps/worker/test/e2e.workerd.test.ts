@@ -527,4 +527,42 @@ describe('Cloudflare Worker 端到端 (真实 workerd 运行时)', () => {
     expect(invalidCost.status).toBe(200);
     expect(invalidCost.body.data.length).toBe(5);
   });
+
+  it('包体大小上限与重复 room:ready 幂等保护：HTTP >256KB 返回 413、WS >64KB 返回 INVALID_ACTION、重复准备不破坏状态', async () => {
+    const oversizedLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'alice', password: 'x'.repeat(270 * 1024) }),
+    });
+    expect(oversizedLogin.status).toBe(413);
+    expect(oversizedLogin.body.success).toBe(false);
+
+    const cred = await issueGuest('限额测试员');
+    const c = await connect(`/ws/rooms/750003?token=${encodeURIComponent(cred.token)}&nickname=限额测试员`);
+    c.send('room:join', { roomId: '750003' });
+    await c.next('room:state_updated');
+
+    const mOversized = c.mark();
+    c.send('room:ready', {
+      roomId: '750003',
+      isReady: true,
+      deckId: OFFICIAL_STARTER_DECKS[0]!.id,
+      padding: 'a'.repeat(70 * 1024),
+    });
+    expect((await c.next('game:error', () => true, 5000, mOversized)).code).toBe('INVALID_ACTION');
+
+    // 重复发送 room:ready 不破坏原有状态
+    const deck = OFFICIAL_STARTER_DECKS[0]!;
+    const mReady1 = c.mark();
+    c.send('room:ready', { roomId: '750003', isReady: true, deckId: deck.id, customDeck: deck });
+    const state1 = await c.next('room:state_updated', () => true, 5000, mReady1);
+    expect(state1.players[0].isReady).toBe(true);
+    expect(state1.players[0].deckId).toBe(deck.id);
+
+    const mReady2 = c.mark();
+    c.send('room:ready', { roomId: '750003', isReady: true, deckId: deck.id, customDeck: deck });
+    const state2 = await c.next('room:state_updated', () => true, 5000, mReady2);
+    expect(state2.players[0].isReady).toBe(true);
+    expect(state2.players[0].deckId).toBe(deck.id);
+    expect(state2.status).toBe(state1.status);
+  });
 });
