@@ -37,13 +37,22 @@ export function getModifierEffectiveCardType(
 ): CardType | undefined {
   if (!card) return cardDef?.cardType;
   let effective = cardDef?.cardType;
-  const mods = (card.modifiers ?? []).filter((m) => m.setCardType !== undefined);
-  if (mods.length > 0) {
-    mods.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+  const rawMods = card.modifiers;
+  if (!rawMods || rawMods.length === 0) return effective;
+  let mods: CardModifier[] | undefined;
+  for (let i = 0; i < rawMods.length; i++) {
+    const m = rawMods[i]!;
+    if (m.setCardType !== undefined) {
+      if (!mods) mods = [m];
+      else mods.push(m);
+    }
+  }
+  if (mods) {
+    if (mods.length > 1) {
+      mods.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    }
     for (const m of mods) {
-      if (m.setCardType !== undefined) {
-        effective = m.setCardType;
-      }
+      effective = m.setCardType;
     }
   }
   return effective;
@@ -91,6 +100,8 @@ export function addCardModifier(
  */
 export interface StaticContinuousRule {
   id: string;
+  /** 可选来源卡牌编号索引：填写后引擎将按来源卡编号 O(1) 分桶查找，未填则作为通配规则兜底匹配 */
+  sourceCardNumber?: string;
   /** 匹配产生该永久能力的战场来源卡 */
   matchSource: (source: CardInstance, ctx: StaticRuleContext) => boolean;
   /** 层级：NON_STAT = 8.9.1.b (特征/词条/失去能力)，STAT = 8.9.1.c (PP/DP/充能数) */
@@ -103,6 +114,8 @@ export interface StaticContinuousRule {
   providesTraits?: boolean;
   /** 若该规则可能返回 loseAbilities: true，须显式声明以便 8.3.4 失能预筛跳过无关规则 */
   providesLoseAbilities?: boolean;
+  /** 声明该规则可能赋予的禁止标志；未显式声明的动态规则将保守视为可能作用于费用区 */
+  providesProhibitions?: ProhibitionFlag[];
   dependsOnTraits?: boolean;
   /** 对目标卡牌计算本次持续效果贡献；返回 undefined 表示不作用于该目标 */
   evaluate: (
@@ -232,6 +245,73 @@ interface TimestampedStat {
   appliedByPlayerId?: string;
 }
 
+interface RuleGroup {
+  byCardNumber: Map<string, StaticContinuousRule[]>;
+  wildcard: StaticContinuousRule[];
+}
+
+interface RuleBuckets {
+  fieldRole: RuleGroup;
+  partner: RuleGroup;
+  underneath: RuleGroup;
+  equipped: RuleGroup;
+  sourceZones: RuleGroup;
+  hasAny: boolean;
+}
+
+interface FieldSources {
+  allFieldTopCards: CardInstance[];
+  allActivePartners: CardInstance[];
+  allActiveUnderneath: CardInstance[];
+  allAttachedEquipment: CardInstance[];
+}
+
+function createEmptyRuleGroup(): RuleGroup {
+  return { byCardNumber: new Map(), wildcard: [] };
+}
+
+function createEmptyRuleBuckets(): RuleBuckets {
+  return {
+    fieldRole: createEmptyRuleGroup(),
+    partner: createEmptyRuleGroup(),
+    underneath: createEmptyRuleGroup(),
+    equipped: createEmptyRuleGroup(),
+    sourceZones: createEmptyRuleGroup(),
+    hasAny: false,
+  };
+}
+
+function addRuleToGroup(group: RuleGroup, rule: StaticContinuousRule): void {
+  if (rule.sourceCardNumber) {
+    let list = group.byCardNumber.get(rule.sourceCardNumber);
+    if (!list) {
+      list = [rule];
+      group.byCardNumber.set(rule.sourceCardNumber, list);
+    } else {
+      list.push(rule);
+    }
+  } else {
+    group.wildcard.push(rule);
+  }
+}
+
+function addRuleToBuckets(buckets: RuleBuckets, rule: StaticContinuousRule): void {
+  buckets.hasAny = true;
+  if (rule.sourceZones) {
+    addRuleToGroup(buckets.sourceZones, rule);
+  } else if (rule.sourceKind === 'PARTNER') {
+    addRuleToGroup(buckets.partner, rule);
+  } else if (rule.sourceKind === 'UNDERNEATH') {
+    addRuleToGroup(buckets.underneath, rule);
+  } else if (rule.sourceKind === 'EQUIPPED') {
+    addRuleToGroup(buckets.equipped, rule);
+  } else {
+    addRuleToGroup(buckets.fieldRole, rule);
+  }
+}
+
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
+
 /**
  * 8.9 统一持续效果引擎：
  * 严格按 8.9.1.a (基本值 + 装备 4.18.2) → 8.9.1.b (非 PP/DP/充能数) → 8.9.1.c (PP/DP/充能数)
@@ -239,12 +319,22 @@ interface TimestampedStat {
  */
 export class ContinuousEffectEngine {
   private staticRules: StaticContinuousRule[] = [];
-  private traitRules: StaticContinuousRule[] = [];
-  private loseAbilitiesRules: StaticContinuousRule[] = [];
-  private layer1StaticRules: StaticContinuousRule[] = [];
-  private layer2StaticRules: StaticContinuousRule[] = [];
+  private traitBuckets: RuleBuckets = createEmptyRuleBuckets();
+  private loseAbilitiesBuckets: RuleBuckets = createEmptyRuleBuckets();
+  private layer1Buckets: RuleBuckets = createEmptyRuleBuckets();
+  private layer2Buckets: RuleBuckets = createEmptyRuleBuckets();
+  private hasCostZoneProhibitionRules = false;
   private activeLoseAbilitiesIds: Set<string> = new Set();
   private evaluatingCardIds: Set<string> = new Set();
+
+  /** 帧级作用域缓存：通过引用计数确保仅在单次批量求值/单次查询周期内有效 */
+  private evalFrameDepth = 0;
+  private frameFieldSources: FieldSources | undefined;
+  private frameEvalCard: Map<string, EvaluatedCardStats> = new Map();
+  private frameLayer1Traits: Map<string, Set<string>> = new Map();
+  private frameLoseAbilities: Map<string, boolean> = new Map();
+  /** 记录是否发生过递归防环降级；命中防环的降级结果绝不写入帧缓存 */
+  private cycleFallbackCount = 0;
 
   constructor(
     private state: GameState,
@@ -253,6 +343,39 @@ export class ContinuousEffectEngine {
     private getFieldRoles: (playerId: string) => CardInstance[]
   ) {
     this.registerBuiltinStaticRules();
+  }
+
+  /** 开启一个帧级求值缓存作用域 (支持嵌套引用计数) */
+  beginEvalFrame(): void {
+    this.evalFrameDepth += 1;
+  }
+
+  /** 结束一个帧级求值缓存作用域；计数归零时清空全部帧缓存 */
+  endEvalFrame(): void {
+    if (this.evalFrameDepth > 0) {
+      this.evalFrameDepth -= 1;
+      if (this.evalFrameDepth === 0) {
+        this.invalidateEvalFrame();
+      }
+    }
+  }
+
+  /** 在帧级求值缓存作用域内执行回调，异常安全自动清理 */
+  withEvalFrame<T>(fn: () => T): T {
+    this.beginEvalFrame();
+    try {
+      return fn();
+    } finally {
+      this.endEvalFrame();
+    }
+  }
+
+  /** 主动使当前帧级缓存失效 (用于状态回滚或动态规则变更) */
+  invalidateEvalFrame(): void {
+    this.frameFieldSources = undefined;
+    this.frameEvalCard.clear();
+    this.frameLayer1Traits.clear();
+    this.frameLoseAbilities.clear();
   }
 
   /** 注册自定义持续判定型永久能力 (便于卡牌包扩展与规则测试) */
@@ -264,13 +387,103 @@ export class ContinuousEffectEngine {
       this.staticRules.push(rule);
     }
     this.rebuildRuleBuckets();
+    this.invalidateEvalFrame();
   }
 
   private rebuildRuleBuckets(): void {
-    this.traitRules = this.staticRules.filter((r) => r.layer === 'NON_STAT' && r.providesTraits);
-    this.loseAbilitiesRules = this.staticRules.filter((r) => r.layer === 'NON_STAT' && r.providesLoseAbilities);
-    this.layer1StaticRules = this.staticRules.filter((r) => r.layer === 'NON_STAT');
-    this.layer2StaticRules = this.staticRules.filter((r) => r.layer === 'STAT');
+    const traitBuckets = createEmptyRuleBuckets();
+    const loseAbilitiesBuckets = createEmptyRuleBuckets();
+    const layer1Buckets = createEmptyRuleBuckets();
+    const layer2Buckets = createEmptyRuleBuckets();
+    let hasCostZoneProhibitionRules = false;
+
+    for (let i = 0; i < this.staticRules.length; i++) {
+      const rule = this.staticRules[i]!;
+      if (rule.layer === 'NON_STAT') {
+        addRuleToBuckets(layer1Buckets, rule);
+        if (rule.providesTraits) {
+          addRuleToBuckets(traitBuckets, rule);
+        }
+        if (rule.providesLoseAbilities) {
+          addRuleToBuckets(loseAbilitiesBuckets, rule);
+        }
+        if (
+          (!rule.sourceZones || rule.sourceZones.includes('COST')) &&
+          (rule.providesProhibitions === undefined ||
+            rule.providesProhibitions.includes('CANNOT_DISCARD_HIDDEN_COST_AT_END'))
+        ) {
+          hasCostZoneProhibitionRules = true;
+        }
+      } else {
+        addRuleToBuckets(layer2Buckets, rule);
+      }
+    }
+
+    this.traitBuckets = traitBuckets;
+    this.loseAbilitiesBuckets = loseAbilitiesBuckets;
+    this.layer1Buckets = layer1Buckets;
+    this.layer2Buckets = layer2Buckets;
+    this.hasCostZoneProhibitionRules = hasCostZoneProhibitionRules;
+  }
+
+  private visitCandidateRules(
+    buckets: RuleBuckets,
+    targetCard: CardInstance,
+    sources: FieldSources,
+    visitor: (rule: StaticContinuousRule, source: CardInstance) => boolean | void
+  ): boolean {
+    if (!buckets.hasAny) return false;
+
+    if (buckets.sourceZones.byCardNumber.size > 0 || buckets.sourceZones.wildcard.length > 0) {
+      const byNum = buckets.sourceZones.byCardNumber.get(targetCard.cardNumber);
+      if (byNum) {
+        for (let i = 0; i < byNum.length; i++) {
+          const rule = byNum[i]!;
+          if (rule.sourceZones!.includes(targetCard.zone)) {
+            if (visitor(rule, targetCard) === true) return true;
+          }
+        }
+      }
+      const wc = buckets.sourceZones.wildcard;
+      for (let i = 0; i < wc.length; i++) {
+        const rule = wc[i]!;
+        if (rule.sourceZones!.includes(targetCard.zone)) {
+          if (visitor(rule, targetCard) === true) return true;
+        }
+      }
+    }
+
+    if (this.visitGroupSources(buckets.fieldRole, sources.allFieldTopCards, visitor)) return true;
+    if (this.visitGroupSources(buckets.partner, sources.allActivePartners, visitor)) return true;
+    if (this.visitGroupSources(buckets.underneath, sources.allActiveUnderneath, visitor)) return true;
+    if (this.visitGroupSources(buckets.equipped, sources.allAttachedEquipment, visitor)) return true;
+    return false;
+  }
+
+  private visitGroupSources(
+    group: RuleGroup,
+    sources: CardInstance[],
+    visitor: (rule: StaticContinuousRule, source: CardInstance) => boolean | void
+  ): boolean {
+    if (sources.length === 0) return false;
+    const hasWildcard = group.wildcard.length > 0;
+    if (group.byCardNumber.size === 0 && !hasWildcard) return false;
+    for (let s = 0; s < sources.length; s++) {
+      const source = sources[s]!;
+      const byNum = group.byCardNumber.get(source.cardNumber);
+      if (byNum) {
+        for (let i = 0; i < byNum.length; i++) {
+          if (visitor(byNum[i]!, source) === true) return true;
+        }
+      }
+      if (hasWildcard) {
+        const wc = group.wildcard;
+        for (let i = 0; i < wc.length; i++) {
+          if (visitor(wc[i]!, source) === true) return true;
+        }
+      }
+    }
+    return false;
   }
 
   private getDef(card: CardInstance) {
@@ -281,6 +494,9 @@ export class ContinuousEffectEngine {
    * 10.14 暮形态 / 晖形态是否有效：操控玩家信号球区最下方卡牌的实时费用为偶数 / 奇数 (BP02-024 +1 后生效)
    */
   isFormActive(playerId: string, form: '暮' | '晖'): boolean {
+    if (this.evalFrameDepth === 0) {
+      return this.withEvalFrame(() => this.isFormActive(playerId, form));
+    }
     const bottom = this.getCardsInZone(playerId, 'SIGNAL_ORB')[0];
     if (!bottom || !bottom.isFaceUp) return false;
     const def = this.getDef(bottom);
@@ -294,11 +510,23 @@ export class ContinuousEffectEngine {
     if (!card) return 0;
     const def = this.getDef(card);
     let basePP = def?.basePP ?? 0;
-    const overrides = (card.modifiers ?? [])
-      .filter((m) => m.setBasePP !== undefined)
-      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-    for (const m of overrides) {
-      basePP = m.setBasePP!;
+    const rawMods = card.modifiers;
+    if (!rawMods || rawMods.length === 0) return basePP;
+    let overrides: CardModifier[] | undefined;
+    for (let i = 0; i < rawMods.length; i++) {
+      const m = rawMods[i]!;
+      if (m.setBasePP !== undefined) {
+        if (!overrides) overrides = [m];
+        else overrides.push(m);
+      }
+    }
+    if (overrides) {
+      if (overrides.length > 1) {
+        overrides.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+      }
+      for (const m of overrides) {
+        basePP = m.setBasePP!;
+      }
     }
     return basePP;
   }
@@ -308,22 +536,32 @@ export class ContinuousEffectEngine {
     if (!card) return 0;
     const def = this.getDef(card);
     let baseDP = def?.baseDP ?? 0;
-    const overrides = (card.modifiers ?? [])
-      .filter((m) => m.setBaseDP !== undefined)
-      .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-    for (const m of overrides) {
-      baseDP = m.setBaseDP!;
+    const rawMods = card.modifiers;
+    if (!rawMods || rawMods.length === 0) return baseDP;
+    let overrides: CardModifier[] | undefined;
+    for (let i = 0; i < rawMods.length; i++) {
+      const m = rawMods[i]!;
+      if (m.setBaseDP !== undefined) {
+        if (!overrides) overrides = [m];
+        else overrides.push(m);
+      }
+    }
+    if (overrides) {
+      if (overrides.length > 1) {
+        overrides.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+      }
+      for (const m of overrides) {
+        baseDP = m.setBaseDP!;
+      }
     }
     return baseDP;
   }
 
   /** 收集战场各位置上的永久能力来源集合 (含顶层角色/辅助机/独立装备，以及搭档/下方/附着装备) */
-  private collectFieldSources(): {
-    allFieldTopCards: CardInstance[];
-    allActivePartners: CardInstance[];
-    allActiveUnderneath: CardInstance[];
-    allAttachedEquipment: CardInstance[];
-  } {
+  private collectFieldSources(): FieldSources {
+    if (this.evalFrameDepth > 0 && this.frameFieldSources) {
+      return this.frameFieldSources;
+    }
     const allFieldTopCards: CardInstance[] = [];
     const seenTopIds = new Set<string>();
     for (const pid of [this.state.activePlayerId, this.state.nonActivePlayerId]) {
@@ -338,50 +576,79 @@ export class ContinuousEffectEngine {
         }
       }
     }
-    const allActivePartners = allFieldTopCards
-      .map((r) => (r.partnerCardId ? this.state.cards[r.partnerCardId] : undefined))
-      .filter((p): p is CardInstance => Boolean(p && p.zone === 'BATTLEFIELD'));
+    const allActivePartners: CardInstance[] = [];
     const allActiveUnderneath: CardInstance[] = [];
     const allAttachedEquipment: CardInstance[] = [];
-    for (const r of allFieldTopCards) {
-      for (const uid of r.underneathCardIds ?? []) {
-        const uCard = this.state.cards[uid];
-        if (uCard) allActiveUnderneath.push(uCard);
+    for (let i = 0; i < allFieldTopCards.length; i++) {
+      const r = allFieldTopCards[i]!;
+      if (r.partnerCardId) {
+        const p = this.state.cards[r.partnerCardId];
+        if (p && p.zone === 'BATTLEFIELD') {
+          allActivePartners.push(p);
+        }
       }
-      if (r.attachedEquipmentId && this.state.cards[r.attachedEquipmentId]) {
-        allAttachedEquipment.push(this.state.cards[r.attachedEquipmentId]!);
+      const underIds = r.underneathCardIds;
+      if (underIds && underIds.length > 0) {
+        for (let j = 0; j < underIds.length; j++) {
+          const uCard = this.state.cards[underIds[j]!];
+          if (uCard) allActiveUnderneath.push(uCard);
+        }
       }
-      for (const extraEqId of r.extraAttachedEquipmentIds ?? []) {
-        if (this.state.cards[extraEqId]) {
-          allAttachedEquipment.push(this.state.cards[extraEqId]!);
+      if (r.attachedEquipmentId) {
+        const eq = this.state.cards[r.attachedEquipmentId];
+        if (eq) allAttachedEquipment.push(eq);
+      }
+      const extraEqIds = r.extraAttachedEquipmentIds;
+      if (extraEqIds && extraEqIds.length > 0) {
+        for (let j = 0; j < extraEqIds.length; j++) {
+          const eq = this.state.cards[extraEqIds[j]!];
+          if (eq) allAttachedEquipment.push(eq);
         }
       }
     }
-    return {
+    const result: FieldSources = {
       allFieldTopCards,
       allActivePartners,
       allActiveUnderneath,
       allAttachedEquipment,
     };
+    if (this.evalFrameDepth > 0) {
+      this.frameFieldSources = result;
+    }
+    return result;
   }
 
   /**
    * 8.3.4 检查卡牌自身固有能力是否因持续效果而处于「失去能力 / 效果无效」状态 (含静态永久能力导致的失能)
    */
   hasLostInherentAbilities(cardInstanceId: string, visited: Set<string> = new Set()): boolean {
+    if (this.evalFrameDepth === 0) {
+      return this.withEvalFrame(() => this.hasLostInherentAbilities(cardInstanceId, visited));
+    }
     const card = this.state.cards[cardInstanceId];
     if (!card) return false;
-    if ((card.modifiers ?? []).some((m) => m.loseAbilities === true)) {
-      return true;
+    const mods = card.modifiers;
+    if (mods) {
+      for (let i = 0; i < mods.length; i++) {
+        if (mods[i]!.loseAbilities === true) return true;
+      }
     }
-    if (this.loseAbilitiesRules.length === 0) return false;
-    if (visited.has(cardInstanceId) || this.activeLoseAbilitiesIds.has(cardInstanceId)) return false;
+    if (!this.loseAbilitiesBuckets.hasAny) return false;
+    if (visited.has(cardInstanceId) || this.activeLoseAbilitiesIds.has(cardInstanceId)) {
+      this.cycleFallbackCount += 1;
+      return false;
+    }
 
+    const isTopLevelCall = visited.size === 0;
+    if (isTopLevelCall && this.frameLoseAbilities.has(cardInstanceId)) {
+      return this.frameLoseAbilities.get(cardInstanceId)!;
+    }
+
+    const prevCycleCount = this.cycleFallbackCount;
     visited.add(cardInstanceId);
     this.activeLoseAbilitiesIds.add(cardInstanceId);
     try {
-      const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
-        this.collectFieldSources();
+      const fieldSources = this.collectFieldSources();
       const baseCtx: StaticRuleContext = {
         state: this.state,
         cardDb: this.cardDb,
@@ -396,37 +663,33 @@ export class ContinuousEffectEngine {
         return cachedTraits;
       };
 
-      for (const rule of this.loseAbilitiesRules) {
-        const candidateSources = rule.sourceZones
-          ? rule.sourceZones.includes(card.zone)
-            ? [card]
-            : []
-          : rule.sourceKind === 'PARTNER'
-            ? allActivePartners
-            : rule.sourceKind === 'UNDERNEATH'
-              ? allActiveUnderneath
-              : rule.sourceKind === 'EQUIPPED'
-                ? allAttachedEquipment
-                : allFieldTopCards;
-        for (const source of candidateSources) {
-          if (!rule.matchSource(source, baseCtx)) continue;
+      const lost = this.visitCandidateRules(
+        this.loseAbilitiesBuckets,
+        card,
+        fieldSources,
+        (rule, source): boolean => {
+          if (!rule.matchSource(source, baseCtx)) return false;
           if (source.instanceId !== cardInstanceId && this.hasLostInherentAbilities(source.instanceId, visited)) {
-            continue;
+            return false;
           }
           const finalTraits = getTargetTraits();
           const evalCtx: StaticRuleEvaluationContext = {
             ...baseCtx,
             targetTraits: finalTraits,
-            targetKeywords: new Set(),
+            targetKeywords: EMPTY_STRING_SET,
             isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
             hasCardTrait: (id, trait) =>
               id === cardInstanceId ? finalTraits.has(trait) : this.evaluateLayer1Traits(id, visited).has(trait),
           };
           const contrib = rule.evaluate(source, card, evalCtx);
-          if (contrib?.loseAbilities) return true;
+          return Boolean(contrib?.loseAbilities);
         }
+      );
+
+      if (isTopLevelCall && this.cycleFallbackCount === prevCycleCount) {
+        this.frameLoseAbilities.set(cardInstanceId, lost);
       }
-      return false;
+      return lost;
     } finally {
       this.activeLoseAbilitiesIds.delete(cardInstanceId);
     }
@@ -436,6 +699,9 @@ export class ContinuousEffectEngine {
    * 8.9.1 完整分层计算一张卡牌的实时情报 (PP / DP / 充能数 / 词条 / 特征 / 能力状态)
    */
   evaluateCard(cardInstanceId: string): EvaluatedCardStats {
+    if (this.evalFrameDepth === 0) {
+      return this.withEvalFrame(() => this.evaluateCard(cardInstanceId));
+    }
     const card = this.state.cards[cardInstanceId];
     if (!card) {
       return {
@@ -455,8 +721,9 @@ export class ContinuousEffectEngine {
       };
     }
 
-    const cardDef = this.getDef(card);
     if (this.evaluatingCardIds.has(cardInstanceId)) {
+      this.cycleFallbackCount += 1;
+      const cardDef = this.getDef(card);
       const parsedFallback = card.zone === 'BATTLEFIELD' ? parseInherentKeywords(cardDef?.rulesText) : [];
       const fallbackCharge = parseInherentChargeCount(parsedFallback);
       return {
@@ -477,6 +744,13 @@ export class ContinuousEffectEngine {
       };
     }
 
+    const cached = this.frameEvalCard.get(cardInstanceId);
+    if (cached) {
+      return cached;
+    }
+
+    const prevCycleCount = this.cycleFallbackCount;
+    const cardDef = this.getDef(card);
     this.evaluatingCardIds.add(cardInstanceId);
     try {
 
@@ -486,12 +760,14 @@ export class ContinuousEffectEngine {
 
     // 4.18.2 装备牌基本 PP (支持双持装备) 与 8.13.4.b 协战搭档基本 PP/DP 为规则加成，
     // 按 Q&A·6 / Q&A·10 在「PP/DP 变为 X」之后按当前附着变化实时净增减
-    const eqIds: string[] = [];
-    if (card.attachedEquipmentId) eqIds.push(card.attachedEquipmentId);
-    if (card.extraAttachedEquipmentIds?.length) eqIds.push(...card.extraAttachedEquipmentIds);
     let currentEquipPP = 0;
-    for (const eqId of eqIds) {
-      currentEquipPP += this.getCardBasePP(this.state.cards[eqId]);
+    if (card.attachedEquipmentId) {
+      currentEquipPP += this.getCardBasePP(this.state.cards[card.attachedEquipmentId]);
+    }
+    if (card.extraAttachedEquipmentIds && card.extraAttachedEquipmentIds.length > 0) {
+      for (const eqId of card.extraAttachedEquipmentIds) {
+        currentEquipPP += this.getCardBasePP(this.state.cards[eqId]);
+      }
     }
     let currentPartnerPP = 0;
     let currentPartnerDP = 0;
@@ -541,20 +817,7 @@ export class ContinuousEffectEngine {
       getFieldRoles: this.getFieldRoles,
     };
 
-    const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
-      this.collectFieldSources();
-    const resolveCandidateSources = (rule: StaticContinuousRule): CardInstance[] =>
-      rule.sourceZones
-        ? rule.sourceZones.includes(card.zone)
-          ? [card]
-          : []
-        : rule.sourceKind === 'PARTNER'
-          ? allActivePartners
-          : rule.sourceKind === 'UNDERNEATH'
-            ? allActiveUnderneath
-            : rule.sourceKind === 'EQUIPPED'
-              ? allAttachedEquipment
-              : allFieldTopCards;
+    const fieldSources = this.collectFieldSources();
 
     // ==================== Layer 1 (8.9.1.b / 8.9.1.d) 两阶段计算 ====================
     // Phase 1A：先行结算全部提供/清除特征的效果 (含 modifiers 与 providesTraits 静态规则)，严格按时间戳排序
@@ -568,10 +831,10 @@ export class ContinuousEffectEngine {
         });
       }
     }
-    for (const rule of this.traitRules) {
-      for (const source of resolveCandidateSources(rule)) {
-        if (!rule.matchSource(source, baseCtx)) continue;
-        if (this.hasLostInherentAbilities(source.instanceId)) continue;
+    if (this.traitBuckets.hasAny) {
+      this.visitCandidateRules(this.traitBuckets, card, fieldSources, (rule, source) => {
+        if (!rule.matchSource(source, baseCtx)) return;
+        if (this.hasLostInherentAbilities(source.instanceId)) return;
         const evalCtx: StaticRuleEvaluationContext = {
           ...baseCtx,
           targetTraits: traitsSet,
@@ -581,15 +844,17 @@ export class ContinuousEffectEngine {
             id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
         };
         const contrib = rule.evaluate(source, card, evalCtx);
-        if (!contrib || (!contrib.clearBaseTraits && !contrib.addTraits?.length)) continue;
+        if (!contrib || (!contrib.clearBaseTraits && !contrib.addTraits?.length)) return;
         traitOps.push({
           timestamp: source.enteredZoneTimestamp ?? 0,
           addTraits: contrib.addTraits,
           clearBaseTraits: contrib.clearBaseTraits,
         });
-      }
+      });
     }
-    traitOps.sort((a, b) => a.timestamp - b.timestamp);
+    if (traitOps.length > 1) {
+      traitOps.sort((a, b) => a.timestamp - b.timestamp);
+    }
     for (const op of traitOps) {
       if (op.clearBaseTraits) traitsSet.clear();
       if (op.addTraits) {
@@ -642,10 +907,10 @@ export class ContinuousEffectEngine {
       }
     }
 
-    for (const rule of this.layer1StaticRules) {
-      for (const source of resolveCandidateSources(rule)) {
-        if (!rule.matchSource(source, baseCtx)) continue;
-        if (this.hasLostInherentAbilities(source.instanceId)) continue;
+    if (this.layer1Buckets.hasAny) {
+      this.visitCandidateRules(this.layer1Buckets, card, fieldSources, (rule, source) => {
+        if (!rule.matchSource(source, baseCtx)) return;
+        if (this.hasLostInherentAbilities(source.instanceId)) return;
         const evalCtx: StaticRuleEvaluationContext = {
           ...baseCtx,
           targetTraits: traitsSet,
@@ -655,7 +920,7 @@ export class ContinuousEffectEngine {
             id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
         };
         const contrib = rule.evaluate(source, card, evalCtx);
-        if (!contrib) continue;
+        if (!contrib) return;
         const hasPhase1BFields = Boolean(
           contrib.keywords?.length ||
             contrib.removeKeywords?.length ||
@@ -674,7 +939,7 @@ export class ContinuousEffectEngine {
             contrib.unblockableMaxPP !== undefined ||
             contrib.canDualEquipFengren
         );
-        if (!hasPhase1BFields) continue;
+        if (!hasPhase1BFields) return;
         nonStatOps.push({
           timestamp: source.enteredZoneTimestamp ?? 0,
           keywords: contrib.keywords,
@@ -695,11 +960,13 @@ export class ContinuousEffectEngine {
           unblockableMaxPP: contrib.unblockableMaxPP,
           canDualEquipFengren: contrib.canDualEquipFengren,
         });
-      }
+      });
     }
 
     // 8.9.1.e 纯时间戳严格弱序排序（确保失能前后赋予的能力严格按获得/失能时间顺序生效）
-    nonStatOps.sort((a, b) => a.timestamp - b.timestamp);
+    if (nonStatOps.length > 1) {
+      nonStatOps.sort((a, b) => a.timestamp - b.timestamp);
+    }
 
     let abilitiesLost = false;
     let latestLoseAbilitiesTs = -1;
@@ -822,13 +1089,13 @@ export class ContinuousEffectEngine {
       }
     }
 
-    for (const rule of this.layer2StaticRules) {
-      for (const source of resolveCandidateSources(rule)) {
-        if (!rule.matchSource(source, baseCtx)) continue;
+    if (this.layer2Buckets.hasAny) {
+      this.visitCandidateRules(this.layer2Buckets, card, fieldSources, (rule, source) => {
+        if (!rule.matchSource(source, baseCtx)) return;
         // 8.3.4 失去能力的来源卡其【永】不产生效果 (Q&A·10 BP04-001 失去永久能力时 PP 变为 0)
         const sourceLost =
           source.instanceId === card.instanceId ? abilitiesLost : this.hasLostInherentAbilities(source.instanceId);
-        if (sourceLost) continue;
+        if (sourceLost) return;
         const evalCtx: StaticRuleEvaluationContext = {
           ...baseCtx,
           targetTraits: traitsSet,
@@ -838,7 +1105,7 @@ export class ContinuousEffectEngine {
             id === card.instanceId ? traitsSet.has(trait) : this.evaluateLayer1Traits(id).has(trait),
         };
         const contrib = rule.evaluate(source, card, evalCtx);
-        if (!contrib) continue;
+        if (!contrib) return;
         statOps.push({
           timestamp: source.enteredZoneTimestamp ?? 0,
           pp: contrib.pp,
@@ -851,11 +1118,13 @@ export class ContinuousEffectEngine {
           setCharge: contrib.setCharge,
           appliedByPlayerId: contrib.appliedByPlayerId ?? source.controllerPlayerId,
         });
-      }
+      });
     }
 
     // 8.9.1.e 按时间戳升序依次适用 (支持「基本DP变为 X」先覆盖基值，「PP/DP 变为 X」覆盖此前增减)
-    statOps.sort((a, b) => a.timestamp - b.timestamp);
+    if (statOps.length > 1) {
+      statOps.sort((a, b) => a.timestamp - b.timestamp);
+    }
     for (const op of statOps) {
       if (op.setBaseDP !== undefined) baseDPValue = op.setBaseDP;
     }
@@ -900,7 +1169,7 @@ export class ContinuousEffectEngine {
     pp += currentRulePP;
     dp += currentPartnerDP;
 
-    return {
+    const evaluated: EvaluatedCardStats = {
       pp,
       dp: Math.max(0, dp),
       charge: Math.max(0, charge),
@@ -922,6 +1191,10 @@ export class ContinuousEffectEngine {
       canAttackReadyRolesMaxCost,
       mustBeAttackTarget,
     };
+    if (this.cycleFallbackCount === prevCycleCount) {
+      this.frameEvalCard.set(cardInstanceId, evaluated);
+    }
+    return evaluated;
     } finally {
       this.evaluatingCardIds.delete(cardInstanceId);
     }
@@ -981,6 +1254,14 @@ export class ContinuousEffectEngine {
    * 1.3.3 查询卡牌当前生效的禁止效果标志
    */
   hasProhibition(cardInstanceId: string, flag: ProhibitionFlag): boolean {
+    if (flag === 'CANNOT_DISCARD_HIDDEN_COST_AT_END' && !this.hasCostZoneProhibitionRules) {
+      const card = this.state.cards[cardInstanceId];
+      if (!card) return false;
+      const mods = card.modifiers;
+      if (!mods || !mods.some((m) => m.prohibitions?.includes('CANNOT_DISCARD_HIDDEN_COST_AT_END'))) {
+        return false;
+      }
+    }
     return this.evaluateCard(cardInstanceId).prohibitions.includes(flag);
   }
 
@@ -1019,8 +1300,18 @@ export class ContinuousEffectEngine {
    * 仅计算 Layer 0 + Layer 1 (8.9.1.a/b) 的有效特征集合，避免 Layer 2 规则互相引用时产生递归
    */
   private evaluateLayer1Traits(cardInstanceId: string, visited: Set<string> = new Set()): Set<string> {
+    if (this.evalFrameDepth === 0) {
+      return this.withEvalFrame(() => this.evaluateLayer1Traits(cardInstanceId, visited));
+    }
     const card = this.state.cards[cardInstanceId];
     if (!card) return new Set();
+
+    const isTopLevelCall = visited.size === 0;
+    if (isTopLevelCall && this.frameLayer1Traits.has(cardInstanceId)) {
+      return this.frameLayer1Traits.get(cardInstanceId)!;
+    }
+
+    const prevCycleCount = this.cycleFallbackCount;
     const cardDef = this.getDef(card);
     const traitsSet = expandBaseTraits(cardDef?.traits);
     const ops: Array<{ timestamp: number; clearBaseTraits?: boolean; addTraits?: string[] }> = [];
@@ -1029,59 +1320,53 @@ export class ContinuousEffectEngine {
         ops.push({ timestamp: m.timestamp ?? 0, clearBaseTraits: m.clearBaseTraits, addTraits: m.addTraits });
       }
     }
-    if (this.traitRules.length > 0) {
+    if (this.traitBuckets.hasAny) {
       const baseCtx: StaticRuleContext = {
         state: this.state,
         cardDb: this.cardDb,
         getCardsInZone: this.getCardsInZone,
         getFieldRoles: this.getFieldRoles,
       };
-      const { allFieldTopCards, allActivePartners, allActiveUnderneath, allAttachedEquipment } =
-        this.collectFieldSources();
-      for (const rule of this.traitRules) {
-        const candidateSources = rule.sourceZones
-          ? rule.sourceZones.includes(card.zone)
-            ? [card]
-            : []
-          : rule.sourceKind === 'PARTNER'
-            ? allActivePartners
-            : rule.sourceKind === 'UNDERNEATH'
-              ? allActiveUnderneath
-              : rule.sourceKind === 'EQUIPPED'
-                ? allAttachedEquipment
-                : allFieldTopCards;
-        for (const source of candidateSources) {
-          if (!rule.matchSource(source, baseCtx)) continue;
-          if (visited.has(source.instanceId)) continue;
-          if (source.instanceId !== cardInstanceId && this.hasLostInherentAbilities(source.instanceId, visited)) {
-            continue;
-          }
-          const contrib = rule.evaluate(source, card, {
-            ...baseCtx,
-            targetTraits: traitsSet,
-            targetKeywords: new Set(),
-            isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
-            hasCardTrait: (id, trait) =>
-              id === card.instanceId
-                ? traitsSet.has(trait)
-                : Boolean(this.state.cards[id] && expandBaseTraits(this.getDef(this.state.cards[id]!)?.traits).has(trait)),
-          });
-          if (contrib?.clearBaseTraits || contrib?.addTraits?.length) {
-            ops.push({
-              timestamp: source.enteredZoneTimestamp ?? 0,
-              clearBaseTraits: contrib.clearBaseTraits,
-              addTraits: contrib.addTraits,
-            });
-          }
+      const fieldSources = this.collectFieldSources();
+      this.visitCandidateRules(this.traitBuckets, card, fieldSources, (rule, source) => {
+        if (!rule.matchSource(source, baseCtx)) return;
+        if (visited.has(source.instanceId)) {
+          this.cycleFallbackCount += 1;
+          return;
         }
-      }
+        if (source.instanceId !== cardInstanceId && this.hasLostInherentAbilities(source.instanceId, visited)) {
+          return;
+        }
+        const contrib = rule.evaluate(source, card, {
+          ...baseCtx,
+          targetTraits: traitsSet,
+          targetKeywords: EMPTY_STRING_SET,
+          isOpponentTurnForSource: this.state.activePlayerId !== source.controllerPlayerId,
+          hasCardTrait: (id, trait) =>
+            id === card.instanceId
+              ? traitsSet.has(trait)
+              : Boolean(this.state.cards[id] && expandBaseTraits(this.getDef(this.state.cards[id]!)?.traits).has(trait)),
+        });
+        if (contrib?.clearBaseTraits || contrib?.addTraits?.length) {
+          ops.push({
+            timestamp: source.enteredZoneTimestamp ?? 0,
+            clearBaseTraits: contrib.clearBaseTraits,
+            addTraits: contrib.addTraits,
+          });
+        }
+      });
     }
-    ops.sort((a, b) => a.timestamp - b.timestamp);
+    if (ops.length > 1) {
+      ops.sort((a, b) => a.timestamp - b.timestamp);
+    }
     for (const op of ops) {
       if (op.clearBaseTraits) traitsSet.clear();
       if (op.addTraits) {
         for (const t of op.addTraits) traitsSet.add(t);
       }
+    }
+    if (isTopLevelCall && this.cycleFallbackCount === prevCycleCount) {
+      this.frameLayer1Traits.set(cardInstanceId, traitsSet);
     }
     return traitsSet;
   }
@@ -1095,6 +1380,7 @@ export class ContinuousEffectEngine {
     // BP04-001 露娜·终焉：【永】该牌下方的牌每有1张，该牌PP+1000。若该牌下方的牌为10张及以上，该牌DP+1。(Q&A·10)
     this.registerStaticRule({
       id: 'static:BP04-001',
+      sourceCardNumber: 'BP04-001',
       layer: 'STAT',
       matchSource: (src) => src.cardNumber === 'BP04-001',
       evaluate: (src, target) => {
@@ -1111,8 +1397,10 @@ export class ContinuousEffectEngine {
     // BP04-032 炽能球：【永】若我方战场存在《渡边·尘铭》，我方信号球区的该牌可以视为【红色信号球】（视为【红色信号球】时可以被消除）
     this.registerStaticRule({
       id: 'static:BP04-032',
+      sourceCardNumber: 'BP04-032',
       layer: 'NON_STAT',
       sourceZones: ['SIGNAL_ORB'],
+      providesProhibitions: [],
       matchSource: (src) => src.cardNumber === 'BP04-032' && src.isFaceUp,
       evaluate: (src, target, ctx) => {
         if (src.instanceId !== target.instanceId) return undefined;
@@ -1129,8 +1417,10 @@ export class ContinuousEffectEngine {
     // BP02-040 含英·檀心：【永】该牌的卡牌名称在所有区域可以视为《飞叶点翠》。(Q&A·4/5)
     this.registerStaticRule({
       id: 'static:BP02-040',
+      sourceCardNumber: 'BP02-040',
       layer: 'NON_STAT',
       sourceZones: ['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'PROCESSING', 'DECK'],
+      providesProhibitions: [],
       matchSource: (src) => src.cardNumber === 'BP02-040',
       evaluate: (src, target) => {
         if (src.instanceId !== target.instanceId) return undefined;
@@ -1141,7 +1431,9 @@ export class ContinuousEffectEngine {
     // BP04-016 薇拉·灼惘：【永】对方回合中，该牌的PP不会因对方的效果增减。(Q&A·9)
     this.registerStaticRule({
       id: 'static:BP04-016',
+      sourceCardNumber: 'BP04-016',
       layer: 'NON_STAT',
+      providesProhibitions: ['CANNOT_MODIFY_PP_BY_OPPONENT'],
       matchSource: (src) => src.cardNumber === 'BP04-016',
       evaluate: (src, target, ctx) => {
         if (src.instanceId !== target.instanceId) return undefined;

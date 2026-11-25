@@ -1,6 +1,16 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Env, PingMessage, PongMessage, WelcomeMessage } from './types.js';
 
+const MAX_ECHO_MESSAGE_BYTES = 16 * 1024;
+const TEXT_ENCODER = new TextEncoder();
+
+function isEchoMessageTooLarge(message: string | ArrayBuffer): boolean {
+  if (typeof message === 'string') {
+    return message.length > MAX_ECHO_MESSAGE_BYTES || TEXT_ENCODER.encode(message).byteLength > MAX_ECHO_MESSAGE_BYTES;
+  }
+  return message.byteLength > MAX_ECHO_MESSAGE_BYTES;
+}
+
 /**
  * 连通性探测 Durable Object (EchoDO)：
  * 1. 仅使用内存计数器统计连接与 Ping 次数，避免每次心跳写入 SQLite 消耗免费行写额度；
@@ -65,6 +75,10 @@ export class EchoDO extends DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isEchoMessageTooLarge(message)) {
+      ws.send(JSON.stringify({ type: 'error', error: '消息体积超过上限 (16 KB)' }));
+      return;
+    }
     const now = Date.now();
     try {
       if (typeof message === 'string') {

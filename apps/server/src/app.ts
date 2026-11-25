@@ -22,7 +22,7 @@ import {
 } from '@zhanshuang/database';
 import { RoomManager } from './services/room-manager.js';
 import { GameSessionManager } from './services/game-session-manager.js';
-import { setupSocketGateway } from './socket/gateway.js';
+import { setupSocketGateway, MAX_SOCKET_BUFFER_BYTES } from './socket/gateway.js';
 import {
   validateDeck,
   DeckCardInput,
@@ -398,7 +398,29 @@ export async function createServerApp(options?: {
   corsOrigin?: string;
   jwtSecret?: string;
 }): Promise<AppComponents> {
-  const fastify = Fastify({ logger: false });
+  const fastify = Fastify({ logger: false, bodyLimit: 256 * 1024 });
+
+  fastify.setErrorHandler((err, _req, reply) => {
+    const statusCode =
+      typeof (err as { statusCode?: unknown }).statusCode === 'number'
+        ? (err as { statusCode: number }).statusCode
+        : 500;
+    const code = (err as { code?: unknown }).code;
+    if (statusCode === 413 || code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      return reply.code(413).send({ success: false, error: '请求体超过大小限制' });
+    }
+    if (statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({
+        success: false,
+        error: err instanceof Error ? err.message : '请求参数非法',
+      });
+    }
+    console.error('Server Error:', err);
+    return reply.code(statusCode >= 500 ? statusCode : 500).send({
+      success: false,
+      error: '服务端内部错误',
+    });
+  });
 
   // 按 IP 的认证端点内存限流器（放在闭包内以隔离各单测实例）
   const AUTH_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1079,7 +1101,10 @@ export async function createServerApp(options?: {
     return { success: true, data: versions };
   });
 
-  fastify.post('/api/admin/cards/batch', { preHandler: [verifyAdmin] }, async (req, reply) => {
+  fastify.post(
+    '/api/admin/cards/batch',
+    { preHandler: [verifyAdmin], bodyLimit: 2 * 1024 * 1024 },
+    async (req, reply) => {
     if (!isPlainObject(req.body)) {
       return reply.code(400).send({ success: false, error: '请求体格式非法' });
     }
@@ -1154,6 +1179,7 @@ export async function createServerApp(options?: {
       origin: (_origin, callback) => callback(null, true),
       credentials: true,
     },
+    maxHttpBufferSize: MAX_SOCKET_BUFFER_BYTES,
   });
 
   setupSocketGateway(io, roomMgr, gameSessionMgr, {

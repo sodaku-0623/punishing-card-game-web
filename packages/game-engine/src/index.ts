@@ -2,6 +2,7 @@ export * from './rng/seed-rng.js';
 export * from './database/card-registry.js';
 export * from './database/assist-parser.js';
 export * from './state/create-game.js';
+export * from './state/fast-clone.js';
 export * from './state/sanitize-state.js';
 export * from './zone/zone-manager.js';
 export * from './zone/battlefield-manager.js';

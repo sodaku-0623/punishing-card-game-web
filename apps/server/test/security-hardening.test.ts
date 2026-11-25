@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { io as ClientSocket, Socket } from 'socket.io-client';
 import { createServerApp, AppComponents, hashPassword, verifyPassword } from '../src/app.js';
+import { MAX_SOCKET_BUFFER_BYTES } from '../src/socket/gateway.js';
 import { OFFICIAL_STARTER_DECKS } from '@zhanshuang/game-rules';
 import { MemoryGameRepository } from '@zhanshuang/database';
 import {
@@ -756,5 +757,55 @@ describe('安全加固回归测试 (Socket 身份 / 房间密码 / 卡组归属 
     const aliasDeck = JSON.parse(aliasRes.body).data;
     expect(aliasDeck.id).toBe(OFFICIAL_STARTER_DECKS[0]!.id);
     expect(aliasDeck.isValid).toBe(true);
+  });
+
+  it('HTTP 全局包体上限 256 KB 返回 413，POST /api/admin/cards/batch 放行 > 256 KB 批量导入且 Socket.IO 限制 128 KB', async () => {
+    expect(MAX_SOCKET_BUFFER_BYTES).toBe(128 * 1024);
+    expect(app.io.opts.maxHttpBufferSize).toBe(128 * 1024);
+
+    // 普通写接口超过 256 KB 返回 413
+    const oversizedLogin = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'player1', password: 'x'.repeat(270 * 1024) },
+    });
+    expect(oversizedLogin.statusCode).toBe(413);
+    expect(JSON.parse(oversizedLogin.body)).toEqual({
+      success: false,
+      error: '请求体超过大小限制',
+    });
+
+    // POST /api/admin/cards/batch 单独放行 2 MB，确保合法的大批量卡牌导入 (> 256 KB) 不被误杀
+    const adminLogin = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'admin888' },
+    });
+    const adminToken = JSON.parse(adminLogin.body).token as string;
+    const batchCards = Array.from({ length: 600 }, (_, i) => ({
+      cardNumber: `BATCH-LIMIT-${String(i + 1).padStart(4, '0')}`,
+      name: `批量测试卡_${i + 1}`,
+      cardType: 'ROLE',
+      attribute: 'FIRE',
+      cost: 2,
+      basePP: 3000,
+      baseDP: 2000,
+      traits: ['测试特征'],
+      rulesText: 'R'.repeat(420),
+    }));
+    const batchPayload = JSON.stringify({ cards: batchCards });
+    expect(Buffer.byteLength(batchPayload)).toBeGreaterThan(256 * 1024);
+
+    const batchRes = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/admin/cards/batch',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        'content-type': 'application/json',
+      },
+      payload: batchPayload,
+    });
+    expect(batchRes.statusCode).toBe(200);
+    expect(JSON.parse(batchRes.body).data.importedCount).toBe(600);
   });
 });

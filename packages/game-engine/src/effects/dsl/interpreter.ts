@@ -100,11 +100,21 @@ interface DslExecutionFrame {
  * 战术牌、登场能力【出】、起动能力【起】、自动能力【自】、静态持续能力【永】与手牌静态减费。
  */
 export class DeclarativeEffectInterpreter {
+  private readonly fieldIgnoreAttributeSpecs: CardEffectSpec[];
+
   constructor(
     private ctx: CardEffectContext,
     private effects: CardEffectEngine,
     private registry: ReadonlyMap<string, CardEffectSpec>
-  ) {}
+  ) {
+    // 预索引含 fieldIgnoreAttributeRule 的卡牌（全表仅 BP02-009 与 BP04-059），避免每次出牌扫描全表 490 条声明式规格
+    this.fieldIgnoreAttributeSpecs = [];
+    for (const spec of this.registry.values()) {
+      if (spec.fieldIgnoreAttributeRule) {
+        this.fieldIgnoreAttributeSpecs.push(spec);
+      }
+    }
+  }
 
   getSpec(cardNumber: string): CardEffectSpec | undefined {
     return this.registry.get(cardNumber);
@@ -178,9 +188,8 @@ export class DeclarativeEffectInterpreter {
     isAscension: boolean
   ): boolean {
     const targetCard = this.ctx.state.cards[cardInstanceId];
-    for (const spec of this.registry.values()) {
-      const rule = spec.fieldIgnoreAttributeRule;
-      if (!rule) continue;
+    for (const spec of this.fieldIgnoreAttributeSpecs) {
+      const rule = spec.fieldIgnoreAttributeRule!;
       if (rule.onlyAscensionRoles && (isAscension || cardDef.cardType !== 'ROLE' || !cardDef.ascensionConfig)) {
         continue;
       }
@@ -310,10 +319,10 @@ export class DeclarativeEffectInterpreter {
     let discount = 0;
 
     for (const role of this.roles(playerId)) {
-      if (this.ctx.continuousEffects?.hasLostInherentAbilities(role.instanceId)) continue;
       const spec = this.registry.get(role.cardNumber);
       const rule = spec?.fieldCardCostRule;
       if (!rule) continue;
+      if (this.ctx.continuousEffects?.hasLostInherentAbilities(role.instanceId)) continue;
       if (rule.cardType && cardDef.cardType !== rule.cardType) continue;
       if (rule.targetName && normalizeCardName(cardDef.name) !== normalizeCardName(rule.targetName)) continue;
       if (rule.targetTrait && !expandBaseTraits(cardDef.traits).has(rule.targetTrait)) continue;
@@ -1591,10 +1600,12 @@ export class DeclarativeEffectInterpreter {
         if (hasNonStat) {
           continuousEffects.registerStaticRule({
             id: `dsl:${eff.id}:nonstat`,
+            sourceCardNumber: spec.cardNumber,
             layer: 'NON_STAT',
             sourceKind,
             ...(eff.sourceZones ? { sourceZones: eff.sourceZones } : {}),
             providesTraits: Boolean(eff.addTraits?.length || eff.clearBaseTraits),
+            providesProhibitions: eff.prohibitions ?? [],
             dependsOnTraits: eff.dependsOnTraits,
             matchSource: (src) => src.cardNumber === spec.cardNumber,
             evaluate: (source, target, ctx) => {
@@ -1638,6 +1649,7 @@ export class DeclarativeEffectInterpreter {
         if (hasStat) {
           continuousEffects.registerStaticRule({
             id: `dsl:${eff.id}:stat`,
+            sourceCardNumber: spec.cardNumber,
             layer: 'STAT',
             sourceKind,
             ...(eff.sourceZones ? { sourceZones: eff.sourceZones } : {}),

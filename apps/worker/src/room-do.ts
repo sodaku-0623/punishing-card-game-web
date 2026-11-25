@@ -27,6 +27,17 @@ import { OFFICIAL_CARD_DB, ResolvedDeck, resolveDeckWithD1 } from './lib/cards.j
 
 const RATE_LIMIT_WINDOW_MS = 1000;
 const MAX_ACTIONS_PER_WINDOW = 15;
+const MAX_WS_MESSAGE_BYTES = 64 * 1024;
+/** 公开摘要未变更时的 D1 续租周期，防止长连房间被 6h 过期过滤误清理 */
+const LOBBY_RESYNC_INTERVAL_MS = 30 * 60 * 1000;
+const TEXT_ENCODER = new TextEncoder();
+
+function isWsMessageTooLarge(message: string | ArrayBuffer): boolean {
+  if (typeof message === 'string') {
+    return message.length > MAX_WS_MESSAGE_BYTES || TEXT_ENCODER.encode(message).byteLength > MAX_WS_MESSAGE_BYTES;
+  }
+  return message.byteLength > MAX_WS_MESSAGE_BYTES;
+}
 /** 等待阶段掉线后保留席位的时间 (刷新页面不丢座位) */
 const WAITING_DISCONNECT_GRACE_MS = 15_000;
 /** 对战中单方掉线超过该时长判负，避免房间永久卡死 */
@@ -78,6 +89,8 @@ export class RoomDO extends DurableObject<Env> {
   private engine: GameEngine | null = null;
   private engineGameId: string | null = null;
   private startingGame = false;
+  private lastSyncedLobbyDigest: string | null = null;
+  private lastSyncedLobbyAt = 0;
   private readonly actionTimestamps = new Map<string, number[]>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -186,6 +199,9 @@ export class RoomDO extends DurableObject<Env> {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const me = ws.deserializeAttachment() as WsClientAttachment | null;
     if (!me?.userId) return;
+    if (isWsMessageTooLarge(message)) {
+      return this.sendError(ws, ErrorCode.INVALID_ACTION, '消息体积超过上限');
+    }
     if (this.isRateLimited(me.userId)) {
       return this.sendError(ws, ErrorCode.RATE_LIMIT_EXCEEDED, '操作提交过于频繁，防作弊系统已限流拦截');
     }
@@ -319,6 +335,8 @@ export class RoomDO extends DurableObject<Env> {
     );
     this.engine = null;
     this.engineGameId = null;
+    this.lastSyncedLobbyDigest = null;
+    this.lastSyncedLobbyAt = 0;
 
     // 房间 ID 以 Worker 路由确定的值为准 (它决定了请求被分配到哪个 Durable Object)
     const roomId = me.roomIdHint || clip(payload.roomId, 64) || 'room';
@@ -758,6 +776,8 @@ export class RoomDO extends DurableObject<Env> {
     );
     this.engine = null;
     this.engineGameId = null;
+    this.lastSyncedLobbyDigest = null;
+    this.lastSyncedLobbyAt = 0;
     this.actionTimestamps.clear();
     await this.ctx.storage.deleteAlarm();
     await this.syncLobby(roomId, null);
@@ -899,21 +919,14 @@ export class RoomDO extends DurableObject<Env> {
     await this.syncLobby(room.roomId, room);
   }
 
-  /** 同步大厅展示用的 D1 投影 (房间关闭时删除) */
+  /** 同步大厅展示用的 D1 投影 (房间关闭时删除；公开摘要未变更且未到续租窗口时跳过 D1 写入) */
   private async syncLobby(roomId: string, room: PublicRoomState | null): Promise<void> {
     if (!this.env.DB || !roomId) return;
-    try {
-      await initializeDatabase(this.env.DB, this.env.ADMIN_PASSWORD);
-      if (!room || room.players.length === 0) {
-        await this.env.DB.prepare('DELETE FROM lobby_rooms WHERE room_id = ?').bind(roomId).run();
-        return;
-      }
-      await this.env.DB.prepare(
-        `INSERT OR REPLACE INTO lobby_rooms (room_id, room_code, title, has_password, creator_id, status,
-           player_count, players_json, current_game_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-        .bind(
+    const isDelete = !room || room.players.length === 0;
+    const playersJson = isDelete ? '' : JSON.stringify(room.players);
+    const digest = isDelete
+      ? `DELETED:${roomId}`
+      : JSON.stringify([
           room.roomId,
           room.roomCode,
           room.title,
@@ -921,12 +934,46 @@ export class RoomDO extends DurableObject<Env> {
           room.creatorId,
           room.status,
           room.players.length,
-          JSON.stringify(room.players),
+          playersJson,
           room.currentGameId ?? null,
           room.createdAt,
-          Date.now()
+        ]);
+
+    const now = Date.now();
+    if (
+      digest === this.lastSyncedLobbyDigest &&
+      (isDelete || now - this.lastSyncedLobbyAt < LOBBY_RESYNC_INTERVAL_MS)
+    ) {
+      return;
+    }
+
+    try {
+      await initializeDatabase(this.env.DB, this.env.ADMIN_PASSWORD);
+      if (isDelete) {
+        await this.env.DB.prepare('DELETE FROM lobby_rooms WHERE room_id = ?').bind(roomId).run();
+      } else {
+        await this.env.DB.prepare(
+          `INSERT OR REPLACE INTO lobby_rooms (room_id, room_code, title, has_password, creator_id, status,
+             player_count, players_json, current_game_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run();
+          .bind(
+            room.roomId,
+            room.roomCode,
+            room.title,
+            room.hasPassword ? 1 : 0,
+            room.creatorId,
+            room.status,
+            room.players.length,
+            playersJson,
+            room.currentGameId ?? null,
+            room.createdAt,
+            now
+          )
+          .run();
+      }
+      this.lastSyncedLobbyDigest = digest;
+      this.lastSyncedLobbyAt = now;
     } catch (err) {
       console.error('同步大厅房间列表失败:', err);
     }

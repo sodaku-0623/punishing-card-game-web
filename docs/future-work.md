@@ -126,8 +126,9 @@
 
 ### 5.1 性能与架构可扩展性
 
-- [ ] **持续效果层与 490 卡查找性能优化（守住 CF Worker 10ms CPU 红线）**：在 `ContinuousEffectEngine` 按 `cardNumber` 建索引并增加同行动版本号缓存；为 `canPlayerIgnoreAttributeForPlay` 等构建索引避免每次遍历 490 条规格；仅在存在对应光环时扫费用区；`dispatchAction` 将只读守卫提至快照备份前，将全量 `JSON.stringify` 替换为 `structuredClone` 或增量日志；`ZoneManager` 引入 `zoneOrder` 数组消除键删插重建。
-- [ ] **服务端资源保护**：CF `RoomDO.syncLobby` 仅在公开摘要变更时写 D1；限制 WS/HTTP 单包体上限；Node `Memory*Repository` 增加淘汰上限或补齐 Prisma 接口（`PrismaRoomRepository.create` / `PrismaDeckRepository.setCards` 异画）并接入持久化。
+- [x] **持续效果层与 490 卡查找性能优化（守住 CF Worker 10ms CPU 红线）**：已在 Stage 3C 通过帧缓存/同行动版本号缓存、`cardNumber` 及 `canPlayerIgnoreAttributeForPlay` 等索引、仅在存在光环时扫描费用区、`fastDeepClone` 快照备份与 `ZoneManager` 作用域缓存完成优化。
+- [x] **服务端资源保护（Stage 3C 已完成限流与内存淘汰部分）**：CF `RoomDO.syncLobby` 仅在公开摘要变更（或 30 分钟续租窗口）时写 D1；限制 WS（RoomDO 64 KB / EchoDO 16 KB / Node Socket.IO 128 KB）与 HTTP（全局 256 KB、`POST /api/admin/cards/batch` 单独 2 MB）单包体上限；Node `Memory*Repository` 已增加可配置 FIFO 淘汰上限（保护活跃对局、活跃房间、系统预组与管理员）。
+- [ ] **Node 版持久化接入**：补齐 Prisma 接口（`PrismaRoomRepository.create` / `PrismaDeckRepository.setCards` 异画）并接入 PostgreSQL 持久化（当前仍固定使用 `Memory*Repository`）。
 - [ ] **前端架构拆分与重渲染治理**：拆分 1910 行 `GameClient.tsx`（`useGameSocket`、`useGameHotkeys`、`HandTrayView` 触控拖拽下沉并做 rAF 节流）；补齐 `useMemo`/`useCallback` 恢复 `React.memo`；修复 `AuthProvider` 刷新清空状态及 `RoomClient` 漏 `user` 依赖；修复 `TargetingArrowOverlay` 无效重排与 `useLongPress` 定时器泄漏。
 
 ### 5.2 前端增值功能与视觉收尾
@@ -140,7 +141,8 @@
 - [ ] 补全规则条款（9.5.2/9.5.3、1.2.3、2.7.3、3.2.4）与剩余 ~47 条官方 Q&A（全量 71 条真打用例化，淘汰手工 `addCardModifier` 伪造用例）。
 - [ ] 升级 `fuzz-invariants.test.ts` 至全 490 卡池抽样对抗，补齐 `ACTIVATE_ABILITY`/升变/`EQUIP_ITEM`/`PERFORM_ASSIST`/非战术瞬时/自选费用与深层中途失败回滚，脱敏校验覆盖己方背面球、`opponentPendingChoice.prompt` 与 `GameEvent[]`。
 - [ ] 新建真实对局 `(seed, decks, actions[])` 回放回归测试；补充前端交互单测（弹窗连续切换、三消、断线重连、快捷键互斥）。
-- [ ] `.github/workflows/ci.yml` 补跑 `npm run typecheck` 与 `npm run build:cf-static`；排查修复 Windows 本地 `apps/worker` `workerd` `src\win\fs-event.c` 崩溃；同步清理旧测试虚标表述。
+- [x] **CI 流程加固**：`.github/workflows/ci.yml` 已补跑 `npm run typecheck` 与 `npm run build:cf-static`。
+- [ ] 排查修复 Windows 本地 `apps/worker` `workerd` `src\win\fs-event.c` 崩溃；同步清理旧测试虚标表述。
 
 ### 5.4 部署脚本与仓库卫生
 

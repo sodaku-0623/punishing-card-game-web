@@ -15,8 +15,11 @@ const LOBBY_STALE_MS = 6 * 60 * 60 * 1000;
 const RULES_ENGINE_VERSION = 'A0 First Edition (2025-11-14)';
 const AUTH_RATE_WINDOW_MS = 60_000;
 const AUTH_RATE_MAX_KEYS = 500;
+const MAX_API_BODY_BYTES = 256 * 1024;
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
-function fail(c: AppContext, status: 400 | 401 | 403 | 404 | 409 | 429 | 501 | 503, error: string) {
+function fail(c: AppContext, status: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 501 | 503, error: string) {
   return c.json({ success: false, error }, status);
 }
 
@@ -37,15 +40,68 @@ function singleQuery(c: AppContext, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+async function readBodyTextWithLimit(
+  c: AppContext,
+  maxBytes: number
+): Promise<{ ok: true; text: string } | { ok: false; tooLarge: boolean }> {
+  const contentLengthRaw = c.req.header('content-length');
+  if (contentLengthRaw !== undefined) {
+    const contentLength = Number(contentLengthRaw);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      return { ok: false, tooLarge: true };
+    }
+  }
+
+  const stream = c.req.raw.body;
+  if (stream && typeof stream.getReader === 'function') {
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          totalBytes += value.byteLength;
+          if (totalBytes > maxBytes) {
+            await reader.cancel().catch(() => {});
+            return { ok: false, tooLarge: true };
+          }
+          chunks.push(value);
+        }
+      }
+      const merged = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { ok: true, text: TEXT_DECODER.decode(merged) };
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  const text = await c.req.text();
+  if (TEXT_ENCODER.encode(text).byteLength > maxBytes) {
+    return { ok: false, tooLarge: true };
+  }
+  return { ok: true, text };
+}
+
 /**
- * 解析并校验请求体为非 null、非数组的 JSON 对象
+ * 解析并校验请求体为非 null、非数组的 JSON 对象（同时限制包体字节上限）
  */
 async function readJsonObject(
   c: AppContext,
   options?: { allowEmpty?: boolean }
-): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false }> {
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; tooLarge?: boolean }> {
   try {
-    const text = await c.req.text();
+    const bodyRes = await readBodyTextWithLimit(c, MAX_API_BODY_BYTES);
+    if (!bodyRes.ok) {
+      return { ok: false, tooLarge: bodyRes.tooLarge };
+    }
+    const text = bodyRes.text;
     if (!text.trim()) {
       return options?.allowEmpty ? { ok: true, data: {} } : { ok: false };
     }
@@ -57,6 +113,12 @@ async function readJsonObject(
   } catch {
     return { ok: false };
   }
+}
+
+function failInvalidBody(c: AppContext, result: { ok: false; tooLarge?: boolean }) {
+  return result.tooLarge
+    ? fail(c, 413, '请求体超过大小限制')
+    : fail(c, 400, '请求体必须是 JSON 对象');
 }
 
 function getClientIp(c: AppContext): string {
@@ -251,7 +313,7 @@ export function createApiApp() {
     }
     if (!getJwtSecret(c.env)) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法注册');
     const parsed = await readJsonObject(c);
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const body = parsed.data;
     const username = typeof body.username === 'string' ? body.username.trim() : '';
     const password = typeof body.password === 'string' ? body.password : '';
@@ -285,7 +347,7 @@ export function createApiApp() {
     }
     if (!getJwtSecret(c.env)) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法登录');
     const parsed = await readJsonObject(c);
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const body = parsed.data;
     const username = typeof body.username === 'string' ? body.username.trim() : '';
     if (typeof body.password !== 'string') return fail(c, 400, '请输入用户名和密码');
@@ -317,7 +379,7 @@ export function createApiApp() {
     const secret = getJwtSecret(c.env);
     if (!secret) return fail(c, 503, '服务端未配置 JWT_SECRET，暂无法签发游客凭据');
     const parsed = await readJsonObject(c, { allowEmpty: true });
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const rawBody = parsed.data;
 
     const header = c.req.header('Authorization');
@@ -380,7 +442,7 @@ export function createApiApp() {
     const auth = await readAuth(c);
     if (!auth) return fail(c, 401, '未登录或登录凭据已过期，请重新登录');
     const parsed = await readJsonObject(c);
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const body = parsed.data;
     const nickname = typeof body.nickname === 'string' ? body.nickname.trim().slice(0, 32) : '';
     if (!nickname) return fail(c, 400, '昵称/指挥官名称不能为空');
@@ -479,7 +541,7 @@ export function createApiApp() {
 
   app.post('/api/decks', async (c) => {
     const parsed = await readJsonObject(c);
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const body = parsed.data;
     let deckId: string | undefined;
     if (body.id !== undefined) {
@@ -493,7 +555,7 @@ export function createApiApp() {
 
   app.put('/api/decks/:id', async (c) => {
     const parsed = await readJsonObject(c);
-    if (!parsed.ok) return fail(c, 400, '请求体必须是 JSON 对象');
+    if (!parsed.ok) return failInvalidBody(c, parsed);
     const deckId = c.req.param('id').trim();
     if (!deckId || deckId.length > 128) return fail(c, 400, '卡组 ID 格式不正确');
     return saveDeck(c, deckId, parsed.data);

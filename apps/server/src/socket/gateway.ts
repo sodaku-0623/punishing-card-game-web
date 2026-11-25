@@ -29,6 +29,7 @@ export interface GatewayOptions {
   isRegisteredUserId?: (userId: string) => Promise<boolean>;
 }
 
+export const MAX_SOCKET_BUFFER_BYTES = 128 * 1024;
 const MAX_USERNAME_LENGTH = 32;
 
 function isPlainObject(value: unknown): value is Record<string, any> {
