@@ -235,11 +235,14 @@ export default function HomePage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {ENTRY_CARDS.map((card, index) => {
             const Icon = card.icon;
+            const delayClass = (
+              ['pgr-delay-1', 'pgr-delay-2', 'pgr-delay-3', 'pgr-delay-4'] as const
+            )[Math.min(index, 3)];
             return (
               <Link
                 key={card.href}
                 href={card.href}
-                className={`group relative border border-line bg-ink-850 p-5 flex flex-col justify-between min-h-[210px] pgr-sweep transition-colors duration-fast ease-enter hover:bg-ink-800 hover:border-line-strong pgr-enter pgr-delay-${Math.min(index + 1, 4)}`}
+                className={`group relative border border-line bg-ink-850 p-5 flex flex-col justify-between min-h-[210px] pgr-sweep transition-colors duration-fast ease-enter hover:bg-ink-800 hover:border-line-strong pgr-enter ${delayClass}`}
               >
                 <HudBrackets color="steel" interactive />
 

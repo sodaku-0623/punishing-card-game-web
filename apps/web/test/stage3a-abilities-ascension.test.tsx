@@ -133,6 +133,7 @@ describe('Stage 3A (§3.3.1) 全区域【起】与特殊升变 UI 回归测试',
         controllerPlayerId: 'p2',
         zone: 'BATTLEFIELD',
         slotIndex: 0,
+        isReady: false, // 7.2.1.b.1 横置的变身角色可作为合法攻击目标
         effectivePP: 5000,
         effectiveDP: 1,
         modifiers: [{ setCardType: CardType.ROLE, timestamp: 12 }],

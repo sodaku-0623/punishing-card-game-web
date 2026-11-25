@@ -19,6 +19,10 @@ export interface TimingStatus {
   passLabel: string;
   /** 等待对方行动时的提示 */
   waitingHint?: string;
+  /** 当前【瞬时】时点窗口类型 */
+  timingWindowKind?: 'FREE_TIMING' | 'END_PHASE';
+  /** 当前【瞬时】窗口标题 */
+  windowTitle?: string;
 }
 
 export function getTimingStatus(state: PublicGameState, myUserId: string): TimingStatus {
@@ -32,13 +36,27 @@ export function getTimingStatus(state: PublicGameState, myUserId: string): Timin
   const canActMainPhase =
     isMyTurn && state.phase === 'MAIN_PHASE' && !state.currentCombat && !window && !choicePending;
 
+  const timingWindowKind = window?.kind;
+  const windowTitle =
+    timingWindowKind === 'END_PHASE'
+      ? '结束阶段【瞬时】窗口'
+      : timingWindowKind === 'FREE_TIMING'
+      ? '自由时点【瞬时】窗口'
+      : undefined;
+
   let passLabel = '时点让渡 / 推进阶段';
   if (hasInstantPriority) passLabel = '不使用【瞬时】';
   else if (canDeclareBlock) passLabel = '放弃阻挡 / 推进结算';
 
   let waitingHint: string | undefined;
-  if (window && window.priorityPlayerId !== myUserId) waitingHint = '等待对方选择是否使用【瞬时】...';
-  else if (isBlockStep && isMyTurn) waitingHint = '等待对方选择是否阻挡...';
+  if (window && window.priorityPlayerId !== myUserId) {
+    waitingHint =
+      timingWindowKind === 'END_PHASE'
+        ? '结束阶段 · 等待对方选择是否使用【瞬时】...'
+        : '自由时点 · 等待对方选择是否使用【瞬时】...';
+  } else if (isBlockStep && isMyTurn) {
+    waitingHint = '等待对方选择是否阻挡...';
+  }
 
   return {
     isMyTurn,
@@ -48,5 +66,7 @@ export function getTimingStatus(state: PublicGameState, myUserId: string): Timin
     canPass: hasInstantPriority || canDeclareBlock || canActMainPhase,
     passLabel,
     waitingHint,
+    timingWindowKind,
+    windowTitle,
   };
 }

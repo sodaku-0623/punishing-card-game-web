@@ -17,11 +17,13 @@ interface BattlefieldSlotViewProps {
   isTransformed?: boolean;
   isOpponent?: boolean;
   isSelected?: boolean;
+  isLegalPlay?: boolean;
   isPlayTargetable?: boolean;
   isEquipTargetable?: boolean;
   canActivateAbility?: boolean;
   activateOptions?: ActivatedAbilityOption[];
   canAttack?: boolean;
+  canAttackPlayer?: boolean;
   canBlock?: boolean;
   canEquipStandalone?: boolean;
   canPerformAssist?: boolean;
@@ -55,11 +57,13 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
   isTransformed = false,
   isOpponent = false,
   isSelected = false,
+  isLegalPlay = false,
   isPlayTargetable = false,
   isEquipTargetable = false,
   canActivateAbility = false,
   activateOptions,
   canAttack = false,
+  canAttackPlayer,
   canBlock = false,
   canEquipStandalone = false,
   canPerformAssist = false,
@@ -236,7 +240,7 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
         <div
           data-card-instance-id={roleCard.instanceId}
           data-slot-card-kind={slotCardKind}
-          {...(isOpponent && slotCardKind === 'ROLE' ? { 'data-opponent-role-id': roleCard.instanceId } : {})}
+          {...(isOpponent && slotCardKind === 'ROLE' && isLegalAttackTarget ? { 'data-opponent-role-id': roleCard.instanceId } : {})}
           draggable={!isOpponent && ((slotCardKind === 'ROLE' && canAttack) || (slotCardKind === 'STANDALONE_EQUIPMENT' && canEquipStandalone))}
           onDragStart={handleCardDragStart}
           className="relative w-full h-full flex items-center justify-center"
@@ -244,33 +248,13 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
           <CardView
             card={roleCard}
             isSelected={isSelected}
+            isLegalPlay={isLegalPlay}
             isTargetable={isLegalAttackTarget || isEquipTargetable}
             isRested={!roleCard.isReady || isAttacking}
+            hideStatusBadges={true}
             size="full"
             onLongPress={roleCard && onRoleLongPress ? () => onRoleLongPress(roleCard) : undefined}
           />
-
-          {/* 变身角色 (PR-041) / 辅助机 / 独立装备占位标识 */}
-          {slotCardKind === 'ROLE' && isTransformed && transformedStats && (
-            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-1 z-20 font-sans font-semibold whitespace-nowrap">
-              <span>变身角色</span>
-              <span className="font-num tabular-nums text-gold-300">
-                {transformedStats.pp}/{transformedStats.dp}
-              </span>
-            </div>
-          )}
-          {slotCardKind === 'ASSIST' && (
-            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-semibold whitespace-nowrap">
-              <Cpu className="w-2.5 h-2.5" />
-              <span>{isTransformed ? '变身辅助机' : '辅助机'}</span>
-            </div>
-          )}
-          {slotCardKind === 'STANDALONE_EQUIPMENT' && (
-            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-ink-950/95 border border-gold-300/80 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-semibold whitespace-nowrap">
-              <Shield className="w-2.5 h-2.5" />
-              <span>独立装备</span>
-            </div>
-          )}
 
           {/* 横置与冰冻 (10.15) 状态水平正向指示牌 (绝对水平正向，不随卡面旋转倾倒) */}
           {(!roleCard.isReady || isAttacking || roleCard.isFrozen) && (
@@ -306,18 +290,44 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
             </button>
           )}
 
-          {/* 附着装备指示（支持双持装备数量显示） */}
-          {equipCount > 0 && (
-            <div className="absolute -bottom-1.5 -right-1 bg-ink-950 border border-gold-300/70 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 z-20 font-sans font-medium">
-              <Shield className="w-2.5 h-2.5" />
-              <span>{equipCount > 1 ? `装备×${equipCount}` : '装备'}</span>
-            </div>
-          )}
-
-          {/* 8.13 协战状态指示 */}
-          {roleCard.partnerCardId && (
-            <div className="absolute -bottom-1.5 -left-1 bg-ink-950/95 border border-teal-400/70 text-teal-400 text-hud px-1.5 py-px z-20 font-sans font-semibold">
-              协战
+          {/* 底边统一非叠压状态栏：协战 -> 变身角色/辅助机/独立装备 -> 装备/装备×N */}
+          {(roleCard.partnerCardId ||
+            (slotCardKind === 'ROLE' && isTransformed && transformedStats) ||
+            slotCardKind === 'ASSIST' ||
+            slotCardKind === 'STANDALONE_EQUIPMENT' ||
+            equipCount > 0) && (
+            <div className="absolute -bottom-1.5 inset-x-0.5 z-20 flex items-center justify-center gap-0.5 flex-wrap pointer-events-none">
+              {roleCard.partnerCardId && (
+                <div className="bg-ink-950/95 border border-teal-400/70 text-teal-400 text-hud px-1.5 py-px font-sans font-semibold whitespace-nowrap">
+                  协战
+                </div>
+              )}
+              {slotCardKind === 'ROLE' && isTransformed && transformedStats && (
+                <div className="bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-1 font-sans font-semibold whitespace-nowrap">
+                  <span>变身角色</span>
+                  <span className="font-num tabular-nums text-gold-300">
+                    {transformedStats.pp}/{transformedStats.dp}
+                  </span>
+                </div>
+              )}
+              {slotCardKind === 'ASSIST' && (
+                <div className="bg-ink-950/95 border border-teal-400/80 text-teal-400 text-hud px-1.5 py-px flex items-center gap-0.5 font-sans font-semibold whitespace-nowrap">
+                  <Cpu className="w-2.5 h-2.5" />
+                  <span>{isTransformed ? '变身辅助机' : '辅助机'}</span>
+                </div>
+              )}
+              {slotCardKind === 'STANDALONE_EQUIPMENT' && (
+                <div className="bg-ink-950/95 border border-gold-300/80 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 font-sans font-semibold whitespace-nowrap">
+                  <Shield className="w-2.5 h-2.5" />
+                  <span>独立装备</span>
+                </div>
+              )}
+              {equipCount > 0 && (
+                <div className="bg-ink-950 border border-gold-300/70 text-gold-300 text-hud px-1.5 py-px flex items-center gap-0.5 font-sans font-medium whitespace-nowrap">
+                  <Shield className="w-2.5 h-2.5" />
+                  <span>{equipCount > 1 ? `装备×${equipCount}` : '装备'}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -428,14 +438,23 @@ export const BattlefieldSlotView: React.FC<BattlefieldSlotViewProps> = React.mem
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (canAttackPlayer === false) {
+                      sfx.playClick();
+                      onRoleClick?.(roleCard.instanceId);
+                      return;
+                    }
                     sfx.playAttack();
                     onAttackClick?.(roleCard.instanceId);
                   }}
                   className="pgr-sweep px-2 py-1 clip-corner-sm bg-crimson-500 hover:bg-crimson-400 text-fg text-hud font-sans font-semibold shadow-glow-crimson active:scale-95 flex items-center gap-1 border border-fg/30 cursor-pointer transition-all duration-fast whitespace-nowrap"
-                  title="宣告攻击对方玩家 (或拖拽至敌方角色)"
+                  title={
+                    canAttackPlayer === false
+                      ? '【突进】本回合仅可攻击对方角色 (点击选择或拖拽至敌方角色)'
+                      : '宣告攻击对方玩家 (或拖拽至敌方角色)'
+                  }
                 >
                   <Swords className="w-3 h-3" />
-                  <span>攻击</span>
+                  <span>{canAttackPlayer === false ? '突进攻击' : '攻击'}</span>
                 </button>
               )}
 

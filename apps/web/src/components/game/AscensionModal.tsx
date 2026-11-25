@@ -3,9 +3,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, AlertTriangle, CheckCircle2, Layers, Sparkles, Zap } from 'lucide-react';
 import { Button, Dialog } from '@/components/ui';
+import type { PublicGameState } from '@zhanshuang/shared';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { getCardThumbnailUrl, handleThumbnailError } from '@/lib/card-image';
-import type { AscensionPlan, AscensionTargetCandidate, AscensionTargetZone } from '@/lib/battle-actions';
+import {
+  getCardEffectiveCostInfo,
+  type AscensionPlan,
+  type AscensionTargetCandidate,
+  type AscensionTargetZone,
+} from '@/lib/battle-actions';
 
 export interface AscensionConfirmPayload {
   targetAscensionCardId?: string;
@@ -17,6 +23,8 @@ export interface AscensionConfirmPayload {
 interface AscensionModalProps {
   isOpen: boolean;
   plan: AscensionPlan | null;
+  gameState?: PublicGameState | null;
+  myUserId?: string;
   myAvailableCost?: number;
   initialTargetCardId?: string | null;
   initialSlotIndex?: number | null;
@@ -81,6 +89,8 @@ function computeInitialSlotIndex(
 export const AscensionModal: React.FC<AscensionModalProps> = ({
   isOpen,
   plan,
+  gameState,
+  myUserId,
   myAvailableCost,
   initialTargetCardId,
   initialSlotIndex,
@@ -154,13 +164,34 @@ export const AscensionModal: React.FC<AscensionModalProps> = ({
   }, [plan]);
 
   const ascDef = plan ? findCardByNumberOrId(plan.card.cardNumber || plan.card.cardId) : null;
-  const baseAscCost = plan?.config.ascensionCost ?? 0;
   const hasTappedSelected = selectedTargets.some((t) => !t.card.isReady);
   const appliedTax =
     hasTappedSelected && (plan?.tappedOpponentTaxCount ?? 0) > 0
       ? plan!.tappedOpponentTaxCount
       : 0;
-  const totalDisplayCost = baseAscCost + appliedTax;
+
+  const ascCostInfo = useMemo(() => {
+    if (!plan) return null;
+    if (gameState && myUserId) {
+      return getCardEffectiveCostInfo(gameState, myUserId, plan.card, {
+        isAscension: true,
+        targetAscensionCards: selectedTargets.map((t) => t.card),
+      });
+    }
+    const base = plan.config.ascensionCost + appliedTax;
+    const discountFromPlan = Math.max(0, (plan.config.ascensionCost + (plan.tappedOpponentTaxCount || 0)) - plan.ascensionCost);
+    const effective = Math.max(0, base - (plan.ascensionCost < plan.config.ascensionCost ? plan.config.ascensionCost - plan.ascensionCost : discountFromPlan));
+    return {
+      baseCost: base,
+      effectiveCost: selectedTargets.length > 0 ? effective : plan.ascensionCost,
+      minPayableCost: selectedTargets.length > 0 ? Math.min(effective, plan.minPayableCost) : plan.minPayableCost,
+      hasOptionalDiscount: false,
+    };
+  }, [plan, gameState, myUserId, selectedTargets, appliedTax]);
+
+  const baseAscCost = plan?.config.ascensionCost ?? 0;
+  const totalDisplayCost = ascCostInfo?.effectiveCost ?? baseAscCost;
+  const costDelta = totalDisplayCost - (baseAscCost + appliedTax);
 
   const needsExtraCost = Boolean(
     plan && (plan.extraCostCandidates.length > 0 || plan.config.extraCost)
@@ -178,7 +209,8 @@ export const AscensionModal: React.FC<AscensionModalProps> = ({
       !plan.restrictionError &&
       selectedTargets.length >= plan.minCount &&
       (!needsExtraCost || Boolean(effectiveExtraCostId)) &&
-      hasEmptySlotForSelection
+      hasEmptySlotForSelection &&
+      (myAvailableCost === undefined || (ascCostInfo?.minPayableCost ?? totalDisplayCost) <= myAvailableCost)
   );
 
   const handleToggleTarget = (candidate: AscensionTargetCandidate) => {
@@ -286,6 +318,16 @@ export const AscensionModal: React.FC<AscensionModalProps> = ({
                 {appliedTax > 0 && (
                   <span className="px-2 py-0.5 bg-crimson-500/15 border border-crimson-500/60 text-crimson-400 font-medium">
                     对手横置《万事·明晰梦》增费 +{appliedTax}
+                  </span>
+                )}
+                {costDelta < 0 && (
+                  <span className="px-2 py-0.5 bg-teal-400/15 border border-teal-400/60 text-teal-400 font-num font-semibold">
+                    效果减费 {costDelta} (实付 {totalDisplayCost} 费)
+                  </span>
+                )}
+                {costDelta > 0 && (
+                  <span className="px-2 py-0.5 bg-crimson-500/15 border border-crimson-500/60 text-crimson-400 font-num font-semibold">
+                    费用修正 +{costDelta} (实付 {totalDisplayCost} 费)
                   </span>
                 )}
                 {plan.config.grantKeywords.map((kw) => (

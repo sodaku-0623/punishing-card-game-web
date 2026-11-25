@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { PendingChoice } from '@zhanshuang/shared';
+import type { CardInstance, PendingChoice, PublicGameState } from '@zhanshuang/shared';
 import {
   Zap,
   Check,
@@ -16,28 +16,90 @@ import {
 } from 'lucide-react';
 import { findCardByNumberOrId, formatCardType } from '@/lib/cards-data';
 import { getCardThumbnailUrl, getCardFullImageUrl } from '@/lib/card-image';
+import {
+  getCardEffectiveCostInfo,
+  hasCardTrait,
+  normalizeCardName,
+  type TraitLookupTarget,
+} from '@/lib/battle-actions';
 import { Button } from '@/components/ui';
 
 interface PendingChoiceModalProps {
   choice: PendingChoice;
+  gameState?: PublicGameState | null;
+  myUserId?: string;
   onConfirm: (selectedIds: string[]) => void;
   onCancel?: () => void;
 }
 
 interface CardPayload {
+  cardInstanceId?: string;
   cardNumber?: string;
   name?: string;
   cardType?: string;
   cost?: number;
+  effectiveCost?: number;
   basePP?: number;
   baseDP?: number;
   attribute?: string;
   traits?: string[];
+  effectiveTraits?: string[];
   imageUrl?: string;
   rulesText?: string;
   slotIndex?: number;
   eligible?: boolean;
   ineligibleReason?: string;
+  reason?: string;
+}
+
+interface OptionResolvedMeta {
+  id: string;
+  cost: number;
+  cardNumber: string;
+  coreCardNumber: string;
+  normalizedName: string;
+  attribute?: string;
+  traitTarget: TraitLookupTarget;
+  baseEligible: boolean;
+  baseIneligibleReason: string;
+}
+
+function readChoiceMeta<T>(choice: PendingChoice, key: string): T | undefined {
+  const meta = choice.metadata as Record<string, any> | undefined;
+  if (!meta) return undefined;
+  if (meta[key] !== undefined) return meta[key] as T;
+  return meta.__dsl?.pendingAction?.[key] as T | undefined;
+}
+
+function extractCoreCardNumber(cardNumber?: string): string {
+  if (!cardNumber) return '';
+  const match = cardNumber.match(/^([A-Z]{2}\d*-\d+)/i);
+  return match ? match[1]!.toUpperCase() : cardNumber.trim().toUpperCase();
+}
+
+function canAssignDistinctTraits(
+  targets: TraitLookupTarget[],
+  requiredTraits: string[]
+): boolean {
+  if (targets.length === 0) return true;
+  if (targets.length > requiredTraits.length) return false;
+  const used = new Array<boolean>(requiredTraits.length).fill(false);
+
+  const dfs = (idx: number): boolean => {
+    if (idx >= targets.length) return true;
+    const target = targets[idx]!;
+    for (let j = 0; j < requiredTraits.length; j++) {
+      if (used[j]) continue;
+      if (hasCardTrait(target, requiredTraits[j]!)) {
+        used[j] = true;
+        if (dfs(idx + 1)) return true;
+        used[j] = false;
+      }
+    }
+    return false;
+  };
+
+  return dfs(0);
 }
 
 function getAttributeBadge(attr?: string) {
@@ -67,6 +129,8 @@ function RevealedCardItem({
   selectionOrder,
   cardWidth,
   cardHeight,
+  resolvedCost,
+  blockReason,
   onSelect,
 }: {
   option: { id: string; label: string; payload?: unknown };
@@ -74,6 +138,8 @@ function RevealedCardItem({
   selectionOrder?: number;
   cardWidth: number;
   cardHeight: number;
+  resolvedCost?: number;
+  blockReason?: string;
   onSelect: () => void;
 }) {
   const [imageError, setImageError] = useState(false);
@@ -81,15 +147,18 @@ function RevealedCardItem({
 
   const fallbackDef = findCardByNumberOrId(payload.cardNumber || option.id);
 
-  const isEligible = payload.eligible !== false;
-  const ineligibleReason = payload.ineligibleReason || '不可选';
+  const baseEligible = payload.eligible !== false;
+  const isEligible = baseEligible && !blockReason;
+  const ineligibleReason = !baseEligible
+    ? payload.ineligibleReason || payload.reason || '不可选'
+    : blockReason || '不可选';
   const cardNumber = payload.cardNumber || fallbackDef?.cardNumber || '';
   const name = payload.name || fallbackDef?.name || option.label;
-  const cost = payload.cost ?? fallbackDef?.cost;
+  const cost = resolvedCost ?? payload.effectiveCost ?? payload.cost ?? fallbackDef?.cost;
   const basePP = payload.basePP ?? fallbackDef?.basePP;
   const cardType = payload.cardType || fallbackDef?.cardType;
   const attribute = payload.attribute || fallbackDef?.attribute;
-  const traits = payload.traits || fallbackDef?.traits || [];
+  const traits = payload.effectiveTraits || payload.traits || fallbackDef?.traits || [];
   const slotIndex = payload.slotIndex;
   const imgSrc = getCardFullImageUrl(payload.imageUrl || (fallbackDef as any)?.imageUrl, cardNumber);
 
@@ -206,9 +275,9 @@ function RevealedCardItem({
 
         {/* 不可选遮罩 */}
         {!isEligible && (
-          <div className="absolute inset-0 bg-ink-950/65 pointer-events-none z-10 flex items-center justify-center">
+          <div className="absolute inset-0 bg-ink-950/65 pointer-events-none z-10 flex items-center justify-center p-1 text-center">
             <span className="px-1.5 py-0.5 bg-ink-950/95 border border-line text-hud text-fg-muted">
-              不可选
+              {ineligibleReason}
             </span>
           </div>
         )}
@@ -227,13 +296,14 @@ function RevealedCardItem({
 
       {/* 底部交互条 */}
       <div
-        className={`py-1 text-center text-hud font-sans font-semibold transition-colors flex-shrink-0 ${
+        className={`py-1 px-1 text-center text-hud font-sans font-semibold transition-colors flex-shrink-0 truncate ${
           isEligible
             ? isSelected
               ? 'bg-teal-400 text-ink-950'
               : 'bg-ink-900 text-fg-secondary group-hover:text-teal-400 group-hover:bg-ink-850'
             : 'bg-ink-950 text-fg-disabled'
         }`}
+        title={!isEligible ? ineligibleReason : undefined}
       >
         {isEligible
           ? isSelected
@@ -241,19 +311,91 @@ function RevealedCardItem({
               ? `第 ${selectionOrder} 顺位`
               : '已选中'
             : '点击选择'
-          : '不可选'}
+          : ineligibleReason}
       </div>
     </div>
   );
 }
 
-export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoiceModalProps) {
+export function PendingChoiceModal({
+  choice,
+  gameState,
+  myUserId,
+  onConfirm,
+  onCancel,
+}: PendingChoiceModalProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   // 连续触发多个 PendingChoice 时兜底清空残留选项（同时调用方应传 key={choice.id}）
   useEffect(() => {
     setSelectedIds([]);
   }, [choice.id]);
+
+  const maxTotalCost = readChoiceMeta<number>(choice, 'maxTotalCost');
+  const distinctTraits = readChoiceMeta<string[]>(choice, 'distinctTraits');
+  const distinctTraitsError = readChoiceMeta<string>(choice, 'distinctTraitsError');
+  const uniqueNames = Boolean(readChoiceMeta<boolean>(choice, 'uniqueNames'));
+  const uniqueCardNumbers = Boolean(readChoiceMeta<boolean>(choice, 'uniqueCardNumbers'));
+  const distinctAttributes = Boolean(readChoiceMeta<boolean>(choice, 'distinctAttributes'));
+
+  const optionMetaMap = useMemo(() => {
+    const map = new Map<string, OptionResolvedMeta>();
+    for (const opt of choice.options) {
+      const payload = (opt.payload as CardPayload) || {};
+      const fallbackDef = findCardByNumberOrId(payload.cardNumber || opt.id);
+      const realCard = gameState
+        ? gameState.myHandCards?.find((c) => c.instanceId === opt.id) ??
+          gameState.publicCards?.[opt.id] ??
+          (payload.cardInstanceId
+            ? gameState.myHandCards?.find((c) => c.instanceId === payload.cardInstanceId) ??
+              gameState.publicCards?.[payload.cardInstanceId]
+            : undefined)
+        : undefined;
+
+      const cardNumber = payload.cardNumber || realCard?.cardNumber || fallbackDef?.cardNumber || '';
+      let optionCost = payload.effectiveCost ?? payload.cost ?? fallbackDef?.cost ?? 0;
+      if (gameState && myUserId) {
+        const cardForCost: CardInstance | undefined =
+          realCard ??
+          (cardNumber
+            ? {
+                instanceId: opt.id,
+                cardId: fallbackDef?.id || cardNumber,
+                cardNumber,
+                ownerPlayerId: myUserId,
+                controllerPlayerId: myUserId,
+                zone: 'HAND',
+                underneathCardIds: [],
+                isFaceUp: true,
+                isReady: true,
+                turnEnteredZone: gameState.turnNumber,
+              }
+            : undefined);
+        if (cardForCost && findCardByNumberOrId(cardForCost.cardNumber || cardForCost.cardId)) {
+          optionCost = getCardEffectiveCostInfo(gameState, myUserId, cardForCost).effectiveCost;
+        }
+      }
+
+      map.set(opt.id, {
+        id: opt.id,
+        cost: optionCost,
+        cardNumber,
+        coreCardNumber: extractCoreCardNumber(cardNumber),
+        normalizedName: normalizeCardName(payload.name || fallbackDef?.name || opt.label || opt.id),
+        attribute: payload.attribute || fallbackDef?.attribute,
+        traitTarget: {
+          cardNumber,
+          cardId: realCard?.cardId || fallbackDef?.id,
+          traits: payload.traits ?? fallbackDef?.traits,
+          effectiveTraits: payload.effectiveTraits ?? realCard?.effectiveTraits,
+          modifiers: realCard?.modifiers,
+        },
+        baseEligible: payload.eligible !== false,
+        baseIneligibleReason: payload.ineligibleReason || payload.reason || '不可选',
+      });
+    }
+    return map;
+  }, [choice.options, gameState, myUserId]);
 
   const isMulti = choice.maxSelections > 1;
 
@@ -280,10 +422,90 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
   const minRequired = Math.min(choice.minSelections, eligibleOptions.length);
   const maxAllowed = Math.min(choice.maxSelections, eligibleOptions.length);
 
+  const selectedMetas = useMemo(
+    () =>
+      selectedIds
+        .map((id) => optionMetaMap.get(id))
+        .filter((m): m is OptionResolvedMeta => Boolean(m)),
+    [selectedIds, optionMetaMap]
+  );
+
+  const selectedTotalCost = useMemo(
+    () => selectedMetas.reduce((sum, m) => sum + m.cost, 0),
+    [selectedMetas]
+  );
+
+  const getOptionBlockReason = (optId: string): string | undefined => {
+    if (selectedIds.includes(optId)) return undefined;
+    const meta = optionMetaMap.get(optId);
+    if (!meta || !meta.baseEligible) return undefined;
+
+    if (maxTotalCost !== undefined && selectedTotalCost + meta.cost > maxTotalCost) {
+      return `超费用上限 (${selectedTotalCost + meta.cost}/${maxTotalCost})`;
+    }
+    if (distinctTraits && distinctTraits.length > 0) {
+      if (selectedMetas.length < distinctTraits.length) {
+        const ok = canAssignDistinctTraits(
+          [...selectedMetas.map((m) => m.traitTarget), meta.traitTarget],
+          distinctTraits
+        );
+        if (!ok) {
+          return distinctTraitsError || '特征不符或与已选冲突';
+        }
+      }
+    }
+    if (uniqueNames && selectedMetas.some((m) => m.normalizedName === meta.normalizedName)) {
+      return '同名卡牌不可重复';
+    }
+    if (
+      uniqueCardNumbers &&
+      meta.coreCardNumber &&
+      selectedMetas.some((m) => m.coreCardNumber === meta.coreCardNumber)
+    ) {
+      return '同编号卡牌不可重复';
+    }
+    if (
+      distinctAttributes &&
+      meta.attribute &&
+      meta.attribute !== 'NONE' &&
+      selectedMetas.some((m) => m.attribute === meta.attribute)
+    ) {
+      return '属性与已选重复';
+    }
+    return undefined;
+  };
+
+  const costConstraintValid = maxTotalCost === undefined || selectedTotalCost <= maxTotalCost;
+  const traitsConstraintValid =
+    !distinctTraits ||
+    distinctTraits.length === 0 ||
+    canAssignDistinctTraits(
+      selectedMetas.map((m) => m.traitTarget),
+      distinctTraits
+    );
+  const uniqueNamesValid =
+    !uniqueNames ||
+    new Set(selectedMetas.map((m) => m.normalizedName)).size === selectedMetas.length;
+  const uniqueCardNumbersValid =
+    !uniqueCardNumbers ||
+    (() => {
+      const nums = selectedMetas.map((m) => m.coreCardNumber).filter(Boolean);
+      return new Set(nums).size === nums.length;
+    })();
+  const distinctAttributesValid =
+    !distinctAttributes ||
+    (() => {
+      const attrs = selectedMetas
+        .map((m) => m.attribute)
+        .filter((a): a is string => Boolean(a && a !== 'NONE'));
+      return new Set(attrs).size === attrs.length;
+    })();
+
   const handleToggle = (id: string) => {
     const opt = choice.options.find((o) => o.id === id);
     const payload = opt?.payload as CardPayload | undefined;
     if (payload?.eligible === false) return;
+    if (getOptionBlockReason(id)) return;
 
     if (isMulti) {
       if (selectedIds.includes(id)) {
@@ -302,7 +524,12 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
 
   const isValid =
     selectedIds.length >= minRequired &&
-    selectedIds.length <= choice.maxSelections;
+    selectedIds.length <= choice.maxSelections &&
+    costConstraintValid &&
+    traitsConstraintValid &&
+    uniqueNamesValid &&
+    uniqueCardNumbersValid &&
+    distinctAttributesValid;
 
   const selectedCardsNames = selectedIds
     .map((id, idx) => {
@@ -399,6 +626,72 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
             </div>
           </div>
 
+          {/* 约束条件与实时合计展示条 */}
+          {(maxTotalCost !== undefined ||
+            (distinctTraits && distinctTraits.length > 0) ||
+            uniqueNames ||
+            uniqueCardNumbers ||
+            distinctAttributes) && (
+            <div className="px-2.5 py-1.5 border border-line bg-ink-950/90 flex flex-wrap items-center gap-2 text-hud flex-shrink-0">
+              {maxTotalCost !== undefined && (
+                <span
+                  className={`px-2 py-0.5 border font-num font-semibold ${
+                    costConstraintValid
+                      ? 'border-teal-400/50 bg-teal-400/10 text-teal-400'
+                      : 'border-crimson-500/70 bg-crimson-500/15 text-crimson-400'
+                  }`}
+                >
+                  费用合计：{selectedTotalCost} / {maxTotalCost}
+                </span>
+              )}
+              {distinctTraits && distinctTraits.length > 0 && (
+                <span
+                  className={`px-2 py-0.5 border font-medium ${
+                    traitsConstraintValid
+                      ? 'border-gold-300/50 bg-gold-300/10 text-gold-300'
+                      : 'border-crimson-500/70 bg-crimson-500/15 text-crimson-400'
+                  }`}
+                >
+                  特征要求：{distinctTraits.map((t) => `<${t}>`).join(' + ')}
+                  {!traitsConstraintValid && (distinctTraitsError ? ` (${distinctTraitsError})` : ' (未满足)')}
+                </span>
+              )}
+              {uniqueNames && (
+                <span
+                  className={`px-2 py-0.5 border ${
+                    uniqueNamesValid
+                      ? 'border-line text-fg-secondary bg-ink-900'
+                      : 'border-crimson-500/70 text-crimson-400 bg-crimson-500/15'
+                  }`}
+                >
+                  不可同名
+                </span>
+              )}
+              {uniqueCardNumbers && (
+                <span
+                  className={`px-2 py-0.5 border ${
+                    uniqueCardNumbersValid
+                      ? 'border-line text-fg-secondary bg-ink-900'
+                      : 'border-crimson-500/70 text-crimson-400 bg-crimson-500/15'
+                  }`}
+                >
+                  不可同编号
+                </span>
+              )}
+              {distinctAttributes && (
+                <span
+                  className={`px-2 py-0.5 border ${
+                    distinctAttributesValid
+                      ? 'border-line text-fg-secondary bg-ink-900'
+                      : 'border-crimson-500/70 text-crimson-400 bg-crimson-500/15'
+                  }`}
+                >
+                  不同属性
+                </span>
+              )}
+            </div>
+          )}
+
           {isCardGalleryMode ? (
             <div className="flex flex-col flex-1 min-h-0 justify-between gap-1.5">
               <div className="flex items-center justify-between text-caption text-fg-muted px-1 flex-shrink-0">
@@ -426,6 +719,8 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                 {choice.options.map((opt) => {
                   const selectedIdx = selectedIds.indexOf(opt.id);
                   const isSelected = selectedIdx >= 0;
+                  const meta = optionMetaMap.get(opt.id);
+                  const blockReason = getOptionBlockReason(opt.id);
                   return (
                     <RevealedCardItem
                       key={opt.id}
@@ -434,6 +729,8 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                       selectionOrder={isMulti && isSelected ? selectedIdx + 1 : undefined}
                       cardWidth={cardWidth}
                       cardHeight={cardHeight}
+                      resolvedCost={meta?.cost}
+                      blockReason={blockReason}
                       onSelect={() => handleToggle(opt.id)}
                     />
                   );
@@ -451,15 +748,21 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                 const selectedIdx = selectedIds.indexOf(opt.id);
                 const isSelected = selectedIdx >= 0;
                 const payload = opt.payload as CardPayload | undefined;
+                const meta = optionMetaMap.get(opt.id);
                 const isOptEligible = payload?.eligible !== false;
+                const blockReason = getOptionBlockReason(opt.id);
+                const disabledReason = !isOptEligible
+                  ? meta?.baseIneligibleReason || payload?.ineligibleReason || payload?.reason || '不可选'
+                  : blockReason;
+                const isRowDisabled = !isOptEligible || Boolean(blockReason);
                 return (
                   <button
                     key={opt.id}
                     type="button"
-                    disabled={!isOptEligible}
+                    disabled={isRowDisabled}
                     onClick={() => handleToggle(opt.id)}
                     className={`w-full p-2.5 border text-left transition-colors duration-fast flex items-center justify-between gap-3 text-caption ${
-                      !isOptEligible
+                      isRowDisabled
                         ? 'border-line bg-ink-950/60 text-fg-disabled opacity-50 cursor-not-allowed'
                         : isSelected
                         ? 'border-teal-400 bg-teal-400/15 text-fg cursor-pointer'
@@ -491,11 +794,18 @@ export function PendingChoiceModal({ choice, onConfirm, onCancel }: PendingChoic
                       )}
                       <span className="font-medium truncate">{opt.label}</span>
                     </div>
-                    <ChevronRight
-                      className={`w-4 h-4 shrink-0 transition-transform duration-fast ${
-                        isSelected ? 'text-teal-400 rotate-90' : 'text-fg-disabled'
-                      }`}
-                    />
+                    <div className="flex items-center gap-2 shrink-0">
+                      {disabledReason && (
+                        <span className="px-1.5 py-px bg-ink-900 border border-line text-hud text-crimson-400">
+                          {disabledReason}
+                        </span>
+                      )}
+                      <ChevronRight
+                        className={`w-4 h-4 shrink-0 transition-transform duration-fast ${
+                          isSelected ? 'text-teal-400 rotate-90' : 'text-fg-disabled'
+                        }`}
+                      />
+                    </div>
                   </button>
                 );
               })}

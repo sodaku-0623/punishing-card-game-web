@@ -1,20 +1,45 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { CardType, ElementAttribute } from '@zhanshuang/shared';
+import { CardInstance, CardType, ElementAttribute, SignalOrbColor } from '@zhanshuang/shared';
 import { isCardApproximatelyImplemented } from '@zhanshuang/game-rules';
 import { CardData, findCardByNumberOrId, getCardVariants, getCardSeries, CardVariant } from '@/lib/cards-data';
 import { getCardFullImageUrl } from '@/lib/card-image';
+import {
+  formatBonus,
+  formatCardModifiers,
+  formatCardProhibitions,
+  getDisplayStats,
+} from '@/lib/card-stats';
+import { getEffectiveCardType } from '@/lib/battle-actions';
 import { X, Sparkles, Shield, Flame, Zap, Moon, Snowflake, Star } from 'lucide-react';
 import { Button, HudBrackets } from '@/components/ui';
 
 interface CardDetailModalProps {
-  card: CardData | any | null;
+  card: CardData | CardInstance | any | null;
   isOpen: boolean;
   onClose: () => void;
+  publicCards?: Record<string, CardInstance>;
+  effectiveCost?: number;
   actionButton?: React.ReactNode;
   selectedImageUrl?: string;
   onSelectVariant?: (variant: CardVariant) => void;
+}
+
+const ORB_COLOR_ZH: Record<SignalOrbColor, string> = {
+  RED: '红',
+  BLUE: '蓝',
+  YELLOW: '黄',
+};
+
+function resolveLinkedCardDisplay(id: string, publicCards?: Record<string, CardInstance>) {
+  const inst = publicCards?.[id];
+  const def = inst ? findCardByNumberOrId(inst.cardNumber || inst.cardId) : undefined;
+  return {
+    id,
+    name: def?.name || inst?.cardNumber || id,
+    cardNumber: inst?.cardNumber || def?.cardNumber || '',
+  };
 }
 
 function getElementInfo(attr: ElementAttribute | string, attrName?: string) {
@@ -93,6 +118,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
   card,
   isOpen,
   onClose,
+  publicCards,
+  effectiveCost,
   actionButton,
   selectedImageUrl,
   onSelectVariant,
@@ -119,6 +146,58 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
     card.cost !== undefined && card.rulesText !== undefined
       ? card
       : findCardByNumberOrId(card.cardNumber || card.cardId) || card;
+
+  const runtimeCard: CardInstance | null =
+    card && typeof card === 'object' && 'instanceId' in card && Boolean(card.instanceId)
+      ? (card as CardInstance)
+      : null;
+
+  const effectiveCardType = runtimeCard
+    ? getEffectiveCardType(runtimeCard, resolvedCard)
+    : resolvedCard.cardType;
+  const isTypeTransformed = Boolean(runtimeCard && effectiveCardType !== resolvedCard.cardType);
+
+  const baseCost = resolvedCard.cost ?? 0;
+  const displayCost = effectiveCost !== undefined ? effectiveCost : baseCost;
+  const costDiff = displayCost - baseCost;
+
+  const displayStats = runtimeCard ? getDisplayStats(runtimeCard, resolvedCard) : null;
+  const displayPP = displayStats ? displayStats.pp : resolvedCard.basePP;
+  const displayDP = displayStats ? displayStats.dp : resolvedCard.baseDP;
+  const ppBonus = displayStats?.ppBonus ?? 0;
+  const dpBonus = displayStats?.dpBonus ?? 0;
+
+  const displayTraits: string[] =
+    runtimeCard && runtimeCard.effectiveTraits !== undefined
+      ? runtimeCard.effectiveTraits
+      : resolvedCard.traits ?? [];
+  const displayKeywords: string[] = runtimeCard?.effectiveKeywords ?? [];
+  const activeModifiers = runtimeCard ? formatCardModifiers(runtimeCard) : [];
+  const activeProhibitions = runtimeCard ? formatCardProhibitions(runtimeCard) : [];
+
+  const equipmentIds = runtimeCard
+    ? Array.from(
+        new Set(
+          [runtimeCard.attachedEquipmentId, ...(runtimeCard.extraAttachedEquipmentIds ?? [])].filter(
+            (id): id is string => Boolean(id)
+          )
+        )
+      )
+    : [];
+  const underneathIds = runtimeCard?.underneathCardIds ?? [];
+  const partnerInfo = runtimeCard?.partnerCardId
+    ? resolveLinkedCardDisplay(runtimeCard.partnerCardId, publicCards)
+    : null;
+  const hostInfo = runtimeCard?.partnerOfCardId
+    ? resolveLinkedCardDisplay(runtimeCard.partnerOfCardId, publicCards)
+    : null;
+  const showOrbRuntimeInfo = Boolean(
+    runtimeCard &&
+      runtimeCard.isFaceUp !== false &&
+      (runtimeCard.zone === 'SIGNAL_ORB' ||
+        (runtimeCard.effectiveOrbColors && runtimeCard.effectiveOrbColors.length > 0) ||
+        runtimeCard.effectiveOrbValue !== undefined)
+  );
 
   const elementInfo = getElementInfo(resolvedCard.attribute, resolvedCard.attributeName);
   const variants = resolvedCard?.cardNumber ? getCardVariants(resolvedCard.cardNumber) : [];
@@ -234,8 +313,16 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               <span className="px-2.5 py-0.5 text-caption font-num font-semibold bg-teal-400/15 text-teal-400 border border-teal-400/40">
                 {resolvedCard.cardNumber}
               </span>
-              <span className="px-2.5 py-0.5 text-caption font-sans border bg-ink-850 border-line text-fg-secondary">
-                {getCardTypeLabel(resolvedCard.cardType, resolvedCard.isInstant)}
+              <span
+                className={`px-2.5 py-0.5 text-caption font-sans border ${
+                  isTypeTransformed
+                    ? 'bg-teal-400/15 border-teal-400/50 text-teal-400 font-semibold'
+                    : 'bg-ink-850 border-line text-fg-secondary'
+                }`}
+              >
+                {isTypeTransformed
+                  ? `变身·${getCardTypeLabel(effectiveCardType, resolvedCard.isInstant)}`
+                  : getCardTypeLabel(effectiveCardType, resolvedCard.isInstant)}
               </span>
               <span className={`px-2.5 py-0.5 text-caption font-sans border flex items-center gap-1 ${elementInfo.badge}`}>
                 {elementInfo.icon}
@@ -251,6 +338,27 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
                   【瞬时】
                 </span>
               )}
+              {runtimeCard && (
+                <span
+                  className={`px-2.5 py-0.5 text-caption font-sans font-semibold border ${
+                    runtimeCard.isReady
+                      ? 'bg-success/15 border-success/50 text-success'
+                      : 'bg-gold-300/15 border-gold-300/50 text-gold-300'
+                  }`}
+                >
+                  {runtimeCard.isReady ? '竖直' : '横置'}
+                </span>
+              )}
+              {runtimeCard?.isFrozen && (
+                <span className="px-2.5 py-0.5 text-caption font-sans font-semibold border border-teal-400/60 bg-teal-400/15 text-teal-400">
+                  冰冻
+                </span>
+              )}
+              {runtimeCard?.isAirborne && (
+                <span className="px-2.5 py-0.5 text-caption font-sans font-semibold border border-steel-300/50 bg-steel-700/30 text-steel-300">
+                  浮空
+                </span>
+              )}
             </div>
 
             {/* 卡牌名称 */}
@@ -258,14 +366,22 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               <h2 className="text-title font-bold text-fg tracking-tight">
                 {resolvedCard.name}
               </h2>
-              {resolvedCard.traits && resolvedCard.traits.length > 0 && (
+              {(displayTraits.length > 0 || displayKeywords.length > 0) && (
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {resolvedCard.traits.map((trait: string, idx: number) => (
+                  {displayTraits.map((trait: string, idx: number) => (
                     <span
-                      key={idx}
+                      key={`trait-${idx}`}
                       className="px-2 py-0.5 text-caption bg-ink-850 border border-line text-fg-secondary"
                     >
                       &lt;{trait}&gt;
+                    </span>
+                  ))}
+                  {displayKeywords.map((kw: string, idx: number) => (
+                    <span
+                      key={`kw-${idx}`}
+                      className="px-2 py-0.5 text-caption bg-teal-400/15 border border-teal-400/40 text-teal-400 font-semibold"
+                    >
+                      【{kw}】
                     </span>
                   ))}
                 </div>
@@ -277,22 +393,161 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               <div className="flex flex-col items-center">
                 <span className="text-hud text-fg-muted font-display uppercase tracking-wider">COST</span>
                 <span className="text-title-sm font-num tabular-nums font-bold text-teal-400 mt-0.5">
-                  {resolvedCard.cost ?? 0}
+                  {displayCost}
+                  {costDiff !== 0 && (
+                    <span className="text-caption text-gold-300 ml-1">
+                      (原{baseCost}{formatBonus(costDiff)})
+                    </span>
+                  )}
                 </span>
               </div>
               <div className="flex flex-col items-center border-x border-line">
                 <span className="text-hud text-fg-muted font-display uppercase tracking-wider">PP</span>
-                <span className="text-title-sm font-num tabular-nums font-bold text-fg mt-0.5">
-                  {resolvedCard.basePP !== undefined ? `${resolvedCard.basePP}` : '--'}
+                <span
+                  className={`text-title-sm font-num tabular-nums font-bold mt-0.5 ${
+                    ppBonus > 0 ? 'text-teal-400' : ppBonus < 0 ? 'text-crimson-400' : 'text-fg'
+                  }`}
+                >
+                  {displayPP !== undefined ? `${displayPP}` : '--'}
+                  {ppBonus !== 0 && (
+                    <span className="text-caption ml-1">{formatBonus(ppBonus)}</span>
+                  )}
                 </span>
               </div>
               <div className="flex flex-col items-center">
                 <span className="text-hud text-fg-muted font-display uppercase tracking-wider">DP</span>
-                <span className="text-title-sm font-num tabular-nums font-bold text-gold-300 mt-0.5">
-                  {resolvedCard.baseDP !== undefined ? `${resolvedCard.baseDP}` : '--'}
+                <span
+                  className={`text-title-sm font-num tabular-nums font-bold mt-0.5 ${
+                    dpBonus < 0 ? 'text-crimson-400' : 'text-gold-300'
+                  }`}
+                >
+                  {displayDP !== undefined ? `${displayDP}` : '--'}
+                  {dpBonus !== 0 && (
+                    <span className="text-caption ml-1">{formatBonus(dpBonus)}</span>
+                  )}
                 </span>
               </div>
             </div>
+
+            {/* 信号球正面运行时属性 */}
+            {showOrbRuntimeInfo && runtimeCard && (
+              <div className="px-3.5 py-2 bg-ink-950 border border-line flex flex-wrap items-center gap-2 text-caption">
+                <span className="text-fg-muted">信号球属性：</span>
+                {runtimeCard.effectiveOrbColors && runtimeCard.effectiveOrbColors.length > 0 && (
+                  <span className="px-2 py-0.5 bg-teal-400/15 border border-teal-400/40 text-teal-400 font-semibold">
+                    视为 {runtimeCard.effectiveOrbColors.map((c) => ORB_COLOR_ZH[c] ?? c).join('/')} 信号球
+                  </span>
+                )}
+                {runtimeCard.effectiveOrbValue !== undefined && (
+                  <span className="px-2 py-0.5 bg-gold-300/15 border border-gold-300/40 text-gold-300 font-num font-semibold">
+                    等效 {runtimeCard.effectiveOrbValue} 球
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* 禁止效果与持续修改器 (1.3.3 / 8.9) */}
+            {(activeProhibitions.length > 0 || activeModifiers.length > 0) && (
+              <div className="p-3 bg-ink-950 border border-line flex flex-col gap-2 text-caption">
+                {activeProhibitions.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeProhibitions.map((label, i) => (
+                      <span
+                        key={`proh-${i}`}
+                        className="px-2 py-0.5 bg-crimson-500/15 border border-crimson-500/50 text-crimson-400 text-hud font-semibold"
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {activeModifiers.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeModifiers.map((tag, i) => (
+                      <span
+                        key={`mod-${i}`}
+                        className="px-2 py-0.5 bg-teal-400/10 border border-teal-400/35 text-teal-400 text-hud font-num"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 关联卡牌明细：双持装备 / 下方叠置牌 / 协战搭档或宿主 */}
+            {(equipmentIds.length > 0 || underneathIds.length > 0 || partnerInfo || hostInfo) && (
+              <div className="p-3 bg-ink-950 border border-line flex flex-col gap-2 text-caption">
+                {equipmentIds.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-hud text-gold-300 font-semibold">
+                      {equipmentIds.length > 1 ? `双持装备 (${equipmentIds.length})` : '附着装备'}
+                    </span>
+                    <div className="flex flex-col gap-0.5">
+                      {equipmentIds.map((eqId) => {
+                        const info = resolveLinkedCardDisplay(eqId, publicCards);
+                        return (
+                          <div key={eqId} className="flex items-center justify-between text-fg-secondary">
+                            <span>{info.name}</span>
+                            {info.cardNumber && (
+                              <span className="font-num text-hud text-fg-muted">{info.cardNumber}</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {underneathIds.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-hud text-steel-300 font-semibold">
+                      下方牌 ({underneathIds.length})
+                    </span>
+                    <div className="flex flex-col gap-0.5">
+                      {underneathIds.map((uid) => {
+                        const info = resolveLinkedCardDisplay(uid, publicCards);
+                        return (
+                          <div key={uid} className="flex items-center justify-between text-fg-secondary">
+                            <span>{info.name}</span>
+                            {info.cardNumber && (
+                              <span className="font-num text-hud text-fg-muted">{info.cardNumber}</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {(partnerInfo || hostInfo) && (
+                  <div className="flex flex-col gap-1">
+                    {partnerInfo && (
+                      <div className="flex items-center justify-between text-teal-400">
+                        <span>协战搭档：{partnerInfo.name}</span>
+                        {partnerInfo.cardNumber && (
+                          <span className="font-num text-hud text-fg-muted">{partnerInfo.cardNumber}</span>
+                        )}
+                      </div>
+                    )}
+                    {hostInfo && (
+                      <div className="flex items-center justify-between text-teal-400">
+                        <span>协战宿主：{hostInfo.name}</span>
+                        {hostInfo.cardNumber && (
+                          <span className="font-num text-hud text-fg-muted">{hostInfo.cardNumber}</span>
+                        )}
+                      </div>
+                    )}
+                    {runtimeCard?.cannotReleasePartnerUntilTurn !== undefined && (
+                      <span className="text-hud text-gold-300">
+                        至第 {runtimeCard.cannotReleasePartnerUntilTurn} 回合末前不可解除协战
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 卡牌效果规则说明 */}
             <div className="flex flex-col gap-1.5">
@@ -308,7 +563,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               </div>
               {isCardApproximatelyImplemented(resolvedCard.cardNumber, resolvedCard.rulesText) && (
                 <div className="px-3 py-2 bg-gold-300/10 border border-gold-300/35 text-hud text-gold-300 leading-relaxed">
-                  提示：该卡尚未完成按官方文本的声明式逐卡转换，当前在线对局按关键字近似结算。官方预组 ST01~ST03 已全部精确实现。
+                  提示：该卡尚未完成按官方文本的声明式逐卡转换，当前在线对局按关键字近似结算（已迁移卡包与官方预组均已精确实现）。
                 </div>
               )}
               <div className="p-4 bg-ink-950 border border-line text-body-sm leading-relaxed text-fg whitespace-pre-wrap">

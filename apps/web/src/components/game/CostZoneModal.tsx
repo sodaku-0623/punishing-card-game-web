@@ -132,6 +132,7 @@ export const CostZoneModal: React.FC<CostZoneModalProps> = ({
                       card={card}
                       isFaceDown={isHidden && isOpponent}
                       isRested={!isReady}
+                      hideStatusBadges={true}
                       size="sm"
                     />
                     {!isHidden && (

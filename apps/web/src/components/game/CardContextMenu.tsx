@@ -13,15 +13,16 @@ import {
   Users,
   Cpu,
 } from 'lucide-react';
-import { CardInstance, CardType, GamePhase } from '@zhanshuang/shared';
+import { CardInstance, CardType, GamePhase, PublicGameState } from '@zhanshuang/shared';
 import { parseAscensionConfig } from '@zhanshuang/game-rules';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { getDisplayStats } from '@/lib/card-stats';
-import type {
-  ActivatedAbilityOption,
-  AscensionPlan,
-  NonHandPlayAction,
-  NonTacticsInstantOption,
+import {
+  getCardEffectiveCostInfo,
+  type ActivatedAbilityOption,
+  type AscensionPlan,
+  type NonHandPlayAction,
+  type NonTacticsInstantOption,
 } from '@/lib/battle-actions';
 
 export interface ContextMenuAction {
@@ -63,6 +64,9 @@ interface CardContextMenuProps {
   hasEmptySlot: boolean;
   hasAssistSlot?: boolean;
   hasSelectedAttacker: boolean;
+  canAttackThisOpponentRole?: boolean;
+  gameState?: PublicGameState | null;
+  myUserId?: string;
   onPlayCard?: (card: CardInstance) => void;
   onAscendCard?: (card: CardInstance) => void;
   onActivateAbility?: (card: CardInstance, abilityIndex?: number) => void;
@@ -106,6 +110,9 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
   hasEmptySlot,
   hasAssistSlot = hasEmptySlot,
   hasSelectedAttacker,
+  canAttackThisOpponentRole = true,
+  gameState,
+  myUserId,
   onPlayCard,
   onAscendCard,
   onActivateAbility,
@@ -185,19 +192,37 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
 
       if (handAscensionPlan !== undefined) {
         if (handAscensionPlan) {
-          const ascCost = handAscensionPlan.config.ascensionCost;
-          const taxSuffix =
-            handAscensionPlan.tappedOpponentTaxCount > 0
-              ? ` (+${handAscensionPlan.tappedOpponentTaxCount})`
-              : '';
+          const usableTargets = handAscensionPlan.targets.filter(
+            (t) => !t.requiresEmptySlot || handAscensionPlan.emptySlotIndices.length > 0
+          );
+          const allUsableTapped =
+            usableTargets.length > 0 && usableTargets.every((t) => !t.card.isReady);
+          const ascCostInfo =
+            gameState && myUserId
+              ? getCardEffectiveCostInfo(gameState, myUserId, card, {
+                  isAscension: true,
+                  targetAscensionCards: allUsableTapped
+                    ? usableTargets.map((t) => t.card)
+                    : undefined,
+                })
+              : undefined;
+          const ascCost = ascCostInfo?.effectiveCost ?? handAscensionPlan.ascensionCost;
+          const baseAscCost = ascCostInfo?.baseCost ?? handAscensionPlan.config.ascensionCost;
+          const discountDiff = ascCost - baseAscCost;
+          const costTag =
+            discountDiff < 0
+              ? `升变 ${ascCost} 费 (原${baseAscCost})`
+              : handAscensionPlan.tappedOpponentTaxCount > 0 && allUsableTapped
+              ? `升变 ${ascCost} 费 (+${handAscensionPlan.tappedOpponentTaxCount})`
+              : `升变 ${ascCost} 费`;
           const canUseAscend =
             isMyTurn && phase === 'MAIN_PHASE' && handAscensionPlan.canAscend;
           actions.push({
             id: 'ascend_role',
             label: '升变登场 (重叠)',
             subLabel: canUseAscend
-              ? `升变 ${ascCost} 费${taxSuffix}`
-              : handAscensionPlan.reason || `升变 ${ascCost} 费`,
+              ? costTag
+              : handAscensionPlan.reason || costTag,
             icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
             variant: 'primary',
             disabled: !canUseAscend,
@@ -210,13 +235,19 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
       } else if (cardDef.rulesText) {
         const parsedAsc = parseAscensionConfig(cardDef.rulesText);
         if (parsedAsc) {
+          const ascCostInfo =
+            gameState && myUserId
+              ? getCardEffectiveCostInfo(gameState, myUserId, card, { isAscension: true })
+              : undefined;
+          const ascCost = ascCostInfo?.effectiveCost ?? parsedAsc.ascensionCost;
+          const minPayable = ascCostInfo?.minPayableCost ?? ascCost;
           actions.push({
             id: 'ascend_role',
             label: '升变登场 (重叠)',
-            subLabel: `升变 ${parsedAsc.ascensionCost} 费`,
+            subLabel: `升变 ${ascCost} 费`,
             icon: <ArrowUpRight className="w-3.5 h-3.5 text-gold-300" />,
             variant: 'primary',
-            disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < parsedAsc.ascensionCost,
+            disabled: !isMyTurn || phase !== 'MAIN_PHASE' || myAvailableCost < minPayable,
             onClick: () => {
               onAscendCard?.(card);
               onClose();
@@ -475,9 +506,10 @@ export const CardContextMenu: React.FC<CardContextMenuProps> = ({
     actions.push({
       id: 'target_role',
       label: '攻击该敌方角色',
-      subLabel: '7.2.1.b.1',
+      subLabel: canAttackThisOpponentRole ? '7.2.1.b.1' : '非合法攻击目标',
       icon: <Swords className="w-3.5 h-3.5" />,
       variant: 'danger',
+      disabled: !canAttackThisOpponentRole,
       onClick: () => {
         onAttackRole?.(card);
         onClose();

@@ -8,6 +8,7 @@ interface ErosionBarProps {
   playerName: string;
   isOpponent?: boolean;
   compact?: boolean;
+  isAttackTargetable?: boolean;
 }
 
 /**
@@ -19,6 +20,7 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
   playerName,
   isOpponent = false,
   compact = false,
+  isAttackTargetable = false,
 }) => {
   const isDanger = current >= 5;
   const isLoss = current >= 7;
@@ -27,8 +29,8 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
   if (compact) {
     return (
       <div
-        {...(isOpponent ? { 'data-opponent-player-target': 'true' } : {})}
-        className={`flex items-center justify-between gap-2 px-2.5 py-1 border bg-ink-900/90 backdrop-blur-md transition-colors duration-fast select-none ${
+        {...(isOpponent && isAttackTargetable ? { 'data-opponent-player-target': 'true' } : {})}
+        className={`flex items-center justify-between gap-2 px-3 py-1 border bg-ink-900/90 backdrop-blur-md transition-colors duration-fast select-none min-w-[196px] ${
           isDanger ? 'border-crimson-500' : 'border-line'
         }`}
       >
@@ -42,11 +44,11 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
               }`}
             />
           )}
-          <span className="font-semibold text-fg text-caption truncate max-w-[72px]">
+          <span className="font-semibold text-fg text-caption truncate max-w-[84px]">
             {playerName}
           </span>
           <span className="text-hud text-fg-muted shrink-0">
-            {isOpponent ? '侵蚀' : '我方'}
+            侵蚀
           </span>
         </div>
 
@@ -83,7 +85,7 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
 
   return (
     <div
-      {...(isOpponent ? { 'data-opponent-player-target': 'true' } : {})}
+      {...(isOpponent && isAttackTargetable ? { 'data-opponent-player-target': 'true' } : {})}
       className={`flex flex-col gap-2 p-3 border bg-ink-900/90 select-none transition-colors duration-fast ${
         isDanger ? 'border-crimson-500' : 'border-line'
       }`}
@@ -96,9 +98,7 @@ export const ErosionBar: React.FC<ErosionBarProps> = React.memo(({
             <Activity className={`w-3.5 h-3.5 ${isOpponent ? 'text-crimson-400' : 'text-teal-400'}`} />
           )}
           <span>{playerName}</span>
-          <span className="text-hud text-fg-muted font-normal">
-            {isOpponent ? '对手' : '我方'}
-          </span>
+          <span className="text-hud text-fg-muted font-normal">侵蚀</span>
         </span>
 
         <div className="flex items-center gap-2">

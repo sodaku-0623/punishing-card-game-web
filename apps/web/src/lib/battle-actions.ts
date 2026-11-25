@@ -4,10 +4,17 @@ import {
   BattlefieldSlot,
   CardInstance,
   CardType,
+  ElementAttribute,
   PublicGameState,
 } from '@zhanshuang/shared';
 import { parseAscensionConfig } from '@zhanshuang/game-rules';
-import { hasCardProhibition } from '@/lib/card-stats';
+import {
+  canRoleAttackCharacterOnEnterTurn,
+  canRoleAttackPlayerOnEnterTurn,
+  getCardUnblockableMaxPP,
+  getDisplayStats,
+  hasCardProhibition,
+} from '@/lib/card-stats';
 import { findCardByNumberOrId } from '@/lib/cards-data';
 import { resolveOrbDisplayInfo } from '@/lib/signal-orbs';
 import { getTimingStatus } from '@/lib/timing';
@@ -89,9 +96,38 @@ export interface AscensionPlan {
   extraCostCandidates: Array<{ card: CardInstance; slotIndex: number; name: string }>;
   emptySlotIndices: number[];
   tappedOpponentTaxCount: number;
+  ascensionCost: number;
+  minPayableCost: number;
   restrictionError?: string;
   canAscend: boolean;
   reason?: string;
+}
+
+export interface TraitLookupTarget {
+  cardNumber?: string;
+  cardId?: string;
+  traits?: string[];
+  effectiveTraits?: string[];
+  modifiers?: CardInstance['modifiers'];
+}
+
+function normalizeCoreCardNumber(cardNumber?: string): string {
+  if (!cardNumber) return '';
+  const match = cardNumber.match(/^([A-Z]{2}\d*-\d+)/i);
+  return match ? match[1]!.toUpperCase() : cardNumber.trim().toUpperCase();
+}
+
+function isModifierActive(untilTurn: number | undefined, turnNumber: number | undefined): boolean {
+  return untilTurn === undefined || turnNumber === undefined || untilTurn >= turnNumber;
+}
+
+function getOpponentPlayerId(gameState: PublicGameState, myUserId: string): string | undefined {
+  return (
+    Object.keys(gameState.players || {}).find((id) => id !== myUserId) ??
+    (gameState.activePlayerId === myUserId
+      ? gameState.nonActivePlayerId
+      : gameState.activePlayerId)
+  );
 }
 
 /**
@@ -104,7 +140,7 @@ export function normalizeCardName(name: string): string {
 /**
  * 展开同义特征名称（与引擎 `expandBaseTraits` 一致：机械教会↔火花、神寂启示录↔异聚体、太刀类↔封刃太刀）
  */
-function expandTraitSynonyms(rawTraits: Iterable<string>): Set<string> {
+export function expandTraitSynonyms(rawTraits: Iterable<string>): Set<string> {
   const traits = new Set<string>(rawTraits);
   if (traits.has('异聚体')) traits.add('神寂启示录');
   if (traits.has('神寂启示录')) traits.add('异聚体');
@@ -122,15 +158,24 @@ function expandTraitSynonyms(rawTraits: Iterable<string>): Set<string> {
 /**
  * 获取卡牌经 `effectiveTraits` / `modifiers` 调整并展开同义特征后的有效特征集合
  */
-function getCardExpandedTraits(card: CardInstance): Set<string> {
+function getCardExpandedTraits(card: TraitLookupTarget): Set<string> {
   if (card.effectiveTraits !== undefined) {
     return expandTraitSynonyms(card.effectiveTraits);
   }
-  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  const key = card.cardNumber || card.cardId || '';
+  const def = key ? findCardByNumberOrId(key) : undefined;
   const clearBase = Boolean(card.modifiers?.some((m) => m.clearBaseTraits));
-  const baseTraits = clearBase ? [] : def?.traits ?? [];
+  const baseTraits = clearBase ? [] : card.traits ?? def?.traits ?? [];
   const addedTraits = card.modifiers?.flatMap((m) => m.addTraits ?? []) ?? [];
   return expandTraitSynonyms([...baseTraits, ...addedTraits]);
+}
+
+/**
+ * 检查卡牌（或卡牌定义/待选负载）是否具备指定特征（自动展开同义特征）
+ */
+export function hasCardTrait(card: TraitLookupTarget | null | undefined, trait: string): boolean {
+  if (!card) return false;
+  return getCardExpandedTraits(card).has(trait);
 }
 
 /**
@@ -147,17 +192,24 @@ function hasCardName(card: CardInstance, targetName: string): boolean {
   );
 }
 
+function getLatestLoseAbilitiesTimestamp(
+  card: CardInstance | null | undefined,
+  turnNumber?: number
+): number {
+  let latestLoseTs = -1;
+  for (const m of card?.modifiers ?? []) {
+    if (m.loseAbilities === true && isModifierActive(m.untilTurn, turnNumber)) {
+      latestLoseTs = Math.max(latestLoseTs, m.timestamp ?? 0);
+    }
+  }
+  return latestLoseTs;
+}
+
 /**
  * 检查卡牌是否带有尚未过期的 `loseAbilities` 失能标记（8.3.4）
  */
 function hasLostInherentAbilities(card: CardInstance, turnNumber?: number): boolean {
-  return Boolean(
-    card.modifiers?.some(
-      (m) =>
-        m.loseAbilities === true &&
-        (m.untilTurn === undefined || turnNumber === undefined || m.untilTurn >= turnNumber)
-    )
-  );
+  return getLatestLoseAbilitiesTimestamp(card, turnNumber) >= 0;
 }
 
 /**
@@ -240,14 +292,11 @@ export function canPlayAssistOnSlot(
   return getSlotOccupancy(slot, publicCards).kind === 'ASSIST';
 }
 
-/**
- * 获取己方战场上全部当前有效「角色牌」（兼容 `PR-041` 变身角色，排除变为辅助机期间的 `BP04-001`）
- */
-export function getAllFriendlyEffectiveRoleCards(
+function getEffectiveRoleCardsForPlayer(
   gameState: PublicGameState,
-  myUserId: string
+  playerId: string
 ): Array<{ slotIndex: number; slot: BattlefieldSlot; card: CardInstance }> {
-  const slots = gameState.battlefields?.[myUserId] || [];
+  const slots = gameState.battlefields?.[playerId] || [];
   const publicCards = gameState.publicCards;
   const results: Array<{ slotIndex: number; slot: BattlefieldSlot; card: CardInstance }> = [];
   for (const slot of slots) {
@@ -257,6 +306,16 @@ export function getAllFriendlyEffectiveRoleCards(
     }
   }
   return results;
+}
+
+/**
+ * 获取己方战场上全部当前有效「角色牌」（兼容 `PR-041` 变身角色，排除变为辅助机期间的 `BP04-001`）
+ */
+export function getAllFriendlyEffectiveRoleCards(
+  gameState: PublicGameState,
+  myUserId: string
+): Array<{ slotIndex: number; slot: BattlefieldSlot; card: CardInstance }> {
+  return getEffectiveRoleCardsForPlayer(gameState, myUserId);
 }
 
 export function isNonTacticsInstantCard(cardNumberOrId?: string): boolean {
@@ -1273,11 +1332,7 @@ export function getAscensionPlan(
   }
 
   // 对方战场有效/顶层横置 BP02-067 数量（横置对象升变额外+1费）
-  const opponentId =
-    Object.keys(gameState.players || {}).find((id) => id !== myUserId) ??
-    (gameState.activePlayerId === myUserId
-      ? gameState.nonActivePlayerId
-      : gameState.activePlayerId);
+  const opponentId = getOpponentPlayerId(gameState, myUserId);
   let tappedOpponentTaxCount = 0;
   if (opponentId) {
     const publicCards = gameState.publicCards || {};
@@ -1286,7 +1341,7 @@ export function getAscensionPlan(
       const topCard = occ.card;
       if (
         topCard &&
-        topCard.cardNumber === 'BP02-067' &&
+        normalizeCoreCardNumber(topCard.cardNumber) === 'BP02-067' &&
         !topCard.isReady &&
         !hasLostInherentAbilities(topCard, gameState.turnNumber)
       ) {
@@ -1316,6 +1371,15 @@ export function getAscensionPlan(
         extraCostCandidates.some((e) => e.card.instanceId !== t.card.instanceId)
       ));
 
+  const allUsableTargetsTapped =
+    usableTargets.length > 0 && usableTargets.every((t) => !t.card.isReady);
+  const costInfo = getCardEffectiveCostInfo(gameState, myUserId, card, {
+    isAscension: true,
+    targetAscensionCards: allUsableTargetsTapped ? usableTargets.map((t) => t.card) : undefined,
+  });
+  const player = gameState.players?.[myUserId];
+  const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
+
   let reason: string | undefined;
   if (config.unsupportedReason) {
     reason = config.unsupportedReason;
@@ -1329,6 +1393,13 @@ export function getAscensionPlan(
     reason = '战场没有空余卡位供升变对象出场';
   } else if (!hasValidExtraCost) {
     reason = `升变代价不足：我方战场不存在可放置到下方的《${config.extraCost?.exactName ?? ''}》`;
+  } else if (
+    card.zone === 'HAND' &&
+    !hasMatchingAttributeForPlay(gameState, myUserId, card, true)
+  ) {
+    reason = `费用区没有与【${def.attribute}】属性匹配的明费 (8.6.2.a.1)`;
+  } else if (costInfo.minPayableCost > availCost) {
+    reason = `费用不足：升变需要 ${costInfo.minPayableCost} 费 (当前可用 ${availCost})`;
   }
 
   return {
@@ -1341,8 +1412,952 @@ export function getAscensionPlan(
     extraCostCandidates,
     emptySlotIndices,
     tappedOpponentTaxCount,
+    ascensionCost: costInfo.effectiveCost,
+    minPayableCost: costInfo.minPayableCost,
     restrictionError,
     canAscend: !reason,
     ...(reason ? { reason } : {}),
   };
+}
+
+// ==================== 全量费用与减费计算 (8.6.2.c) ====================
+
+export interface EffectiveCostInfo {
+  baseCost: number;
+  effectiveCost: number;
+  minPayableCost: number;
+  hasOptionalDiscount: boolean;
+  optionalDiscountLabel?: string;
+}
+
+/**
+ * 计算卡牌当前实时费用（用于信号球区 `ST05-009`/`BP02-022` 奇偶判定含 `BP02-024` +1，及战场 `canAttackReadyRolesMaxCost` 含搭档费用与 `BP02-060` -1）
+ */
+function getRealtimeCardCost(gameState: PublicGameState, card: CardInstance): number {
+  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  let cost = def?.cost ?? 0;
+  if (card.zone === 'BATTLEFIELD' && card.partnerCardId) {
+    const partner = gameState.publicCards?.[card.partnerCardId];
+    if (partner) {
+      const pDef = findCardByNumberOrId(partner.cardNumber || partner.cardId);
+      cost += pDef?.cost ?? 0;
+    }
+  }
+
+  let costDeltaTotal = 0;
+  let setCostOverride: number | undefined;
+  const mods = [...(card.modifiers ?? [])].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+  for (const m of mods) {
+    if (!isModifierActive(m.untilTurn, gameState.turnNumber)) continue;
+    if (m.costDelta !== undefined) costDeltaTotal += m.costDelta;
+    if (m.setCost !== undefined) setCostOverride = m.setCost;
+  }
+
+  const core = normalizeCoreCardNumber(card.cardNumber);
+  if (
+    card.zone === 'SIGNAL_ORB' &&
+    card.isFaceUp &&
+    core === 'BP02-024' &&
+    !hasLostInherentAbilities(card, gameState.turnNumber)
+  ) {
+    costDeltaTotal += 1;
+  }
+  if (
+    card.zone === 'BATTLEFIELD' &&
+    core === 'BP02-060' &&
+    !hasLostInherentAbilities(card, gameState.turnNumber)
+  ) {
+    const ownerId = card.controllerPlayerId;
+    const oppId = getOpponentPlayerId(gameState, ownerId);
+    const selfOpen = gameState.players?.[ownerId]?.openCostCount ?? 0;
+    const oppOpen = oppId ? (gameState.players?.[oppId]?.openCostCount ?? 0) : 0;
+    if (selfOpen <= oppOpen) {
+      costDeltaTotal -= 1;
+    }
+  }
+
+  if (setCostOverride !== undefined) {
+    return Math.max(0, setCostOverride);
+  }
+  return Math.max(0, cost + costDeltaTotal);
+}
+
+/**
+ * 10.14 检查我方信号球区最下方正面卡牌的实时费用奇偶性（晖=奇数 / 暮=偶数）
+ */
+function isSignalOrbBottomCostParity(
+  gameState: PublicGameState,
+  myUserId: string,
+  parity: 'ODD' | 'EVEN'
+): boolean {
+  const myOrbs = Object.values(gameState.publicCards || {}).filter(
+    (c) => c.controllerPlayerId === myUserId && c.zone === 'SIGNAL_ORB'
+  );
+  const bottom = myOrbs[0];
+  if (!bottom || !bottom.isFaceUp) return false;
+  const cost = getRealtimeCardCost(gameState, bottom);
+  return parity === 'ODD' ? cost % 2 === 1 : cost % 2 === 0;
+}
+
+/**
+ * 收集己方战场上可用于 `playSacrificeDiscount` 的候选卡牌（顶层角色/辅助机/独立装备 + 附着装备 + 可选协战搭档）
+ */
+function collectFriendlyBattlefieldSacrificeCards(
+  gameState: PublicGameState,
+  myUserId: string,
+  excludeCardId: string,
+  includePartners: boolean
+): CardInstance[] {
+  const results: CardInstance[] = [];
+  const seen = new Set<string>([excludeCardId]);
+  const publicCards = gameState.publicCards || {};
+  const push = (c: CardInstance | undefined) => {
+    if (!c || seen.has(c.instanceId)) return;
+    seen.add(c.instanceId);
+    results.push(c);
+  };
+  for (const slot of gameState.battlefields?.[myUserId] || []) {
+    for (const id of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+      if (id) push(publicCards[id]);
+    }
+    if (slot.roleCardId && publicCards[slot.roleCardId]) {
+      const roleCard = publicCards[slot.roleCardId]!;
+      for (const eqId of [
+        roleCard.attachedEquipmentId,
+        ...(roleCard.extraAttachedEquipmentIds ?? []),
+      ]) {
+        if (eqId) push(publicCards[eqId]);
+      }
+      if (includePartners && roleCard.partnerCardId) {
+        push(publicCards[roleCard.partnerCardId]);
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * 8.6.2.c 全量计算使用/升变手牌时的费用明细（严格对齐 `engine.ts:672-882` 与 `interpreter.ts:271-337`）
+ */
+export function getCardEffectiveCostInfo(
+  gameState: PublicGameState,
+  myUserId: string,
+  card: CardInstance,
+  options?: { isAscension?: boolean; targetAscensionCards?: CardInstance[] }
+): EffectiveCostInfo {
+  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  if (!def) {
+    return {
+      baseCost: 0,
+      effectiveCost: 0,
+      minPayableCost: 0,
+      hasOptionalDiscount: false,
+    };
+  }
+
+  const player = gameState.players?.[myUserId];
+  const oppId = getOpponentPlayerId(gameState, myUserId);
+  const oppPlayer = oppId ? gameState.players?.[oppId] : undefined;
+  const publicCards = gameState.publicCards || {};
+  const allPublicCards = Object.values(publicCards);
+
+  const ascConfig = def.rulesText ? parseAscensionConfig(def.rulesText) : undefined;
+  const isAscensionPlay = Boolean(options?.isAscension && ascConfig);
+
+  // 1. 基础费用与升变横置《万事·明晰梦》增费
+  let baseCost = isAscensionPlay ? ascConfig!.ascensionCost : (def.cost ?? 0);
+  if (
+    isAscensionPlay &&
+    options?.targetAscensionCards?.some((targetAsc) => !targetAsc.isReady) &&
+    oppId
+  ) {
+    let tappedWanshiCount = 0;
+    for (const slot of gameState.battlefields?.[oppId] || []) {
+      const r = slot.roleCardId ? publicCards[slot.roleCardId] : undefined;
+      if (
+        r &&
+        normalizeCoreCardNumber(r.cardNumber) === 'BP02-067' &&
+        !r.isReady &&
+        !hasLostInherentAbilities(r, gameState.turnNumber)
+      ) {
+        tappedWanshiCount++;
+      }
+    }
+    baseCost += tappedWanshiCount;
+  }
+
+  let discount = 0;
+  const cardTraits = getCardExpandedTraits(card);
+  const normCardName = normalizeCardName(def.name);
+
+  // 2. 玩家动态费用修改器 (player.costModifiers)
+  if (player?.costModifiers && player.costModifiers.length > 0) {
+    for (const mod of player.costModifiers) {
+      if (mod.remainingCount !== undefined && mod.remainingCount <= 0) continue;
+      if (mod.excludeAscension && isAscensionPlay) continue;
+      if (mod.cardType && mod.cardType !== def.cardType) continue;
+      if (mod.targetTrait) {
+        const matchTrait =
+          cardTraits.has(mod.targetTrait) ||
+          def.traits?.some((t) => t.includes(mod.targetTrait!));
+        const matchName = normCardName.includes(normalizeCardName(mod.targetTrait));
+        if (!matchTrait && !matchName) continue;
+      }
+      if (mod.targetName && !normCardName.includes(normalizeCardName(mod.targetName))) continue;
+      discount += mod.amount;
+    }
+  }
+
+  // 3. 18 张卡牌自身静态减费 (handCostDiscount)
+  const core = normalizeCoreCardNumber(card.cardNumber);
+  const myRoles = getEffectiveRoleCardsForPlayer(gameState, myUserId).map((r) => r.card);
+  const oppRoles = oppId
+    ? getEffectiveRoleCardsForPlayer(gameState, oppId).map((r) => r.card)
+    : [];
+
+  switch (core) {
+    case 'ST03-011': {
+      discount += myRoles.filter((r) => hasCardTrait(r, '三头犬小队')).length;
+      break;
+    }
+    case 'ST05-009': {
+      if (isSignalOrbBottomCostParity(gameState, myUserId, 'ODD')) {
+        discount += 3;
+      }
+      break;
+    }
+    case 'ST06-004': {
+      discount +=
+        myRoles.filter((r) => hasCardTrait(r, '亚里莎') && Boolean(r.partnerCardId)).length * 3;
+      break;
+    }
+    case 'BP01-002': {
+      if (
+        myRoles.some((r) => hasCardTrait(r, '里')) &&
+        myRoles.some((r) => hasCardTrait(r, '丽芙'))
+      ) {
+        discount += 3;
+      }
+      break;
+    }
+    case 'BP01-059': {
+      discount += allPublicCards.filter(
+        (c) =>
+          c.controllerPlayerId === myUserId &&
+          c.zone === 'GRAVEYARD' &&
+          hasCardName(c, '梦赴光寥之乡')
+      ).length;
+      break;
+    }
+    case 'BP02-013':
+    case 'BP02-014':
+    case 'BP04-072': {
+      if (myRoles.length < oppRoles.length) {
+        discount += 1;
+      }
+      break;
+    }
+    case 'BP02-022': {
+      if (isSignalOrbBottomCostParity(gameState, myUserId, 'ODD')) {
+        discount += 4;
+      }
+      break;
+    }
+    case 'BP02-060': {
+      if ((player?.openCostCount ?? 0) <= (oppPlayer?.openCostCount ?? 0)) {
+        discount += 1;
+      }
+      break;
+    }
+    case 'BP02-068': {
+      if (oppRoles.some((r) => r.isFrozen === true)) {
+        discount += 2;
+      }
+      break;
+    }
+    case 'BP03-004': {
+      const hasHiddenCost =
+        allPublicCards.some(
+          (c) => c.controllerPlayerId === myUserId && c.zone === 'COST' && !c.isFaceUp
+        ) || (player?.hiddenCostCount ?? 0) >= 1;
+      if (hasHiddenCost) {
+        discount += 2;
+      }
+      break;
+    }
+    case 'BP03-026': {
+      if (player?.chargedAutoByLeeThisTurn) {
+        discount += 2;
+      }
+      break;
+    }
+    case 'BP03-036': {
+      if ((player?.cardsPlayedThisTurn ?? 0) === 2) {
+        discount += 2;
+      }
+      break;
+    }
+    case 'BP03-043': {
+      if ((player?.cardsPlayedThisTurn ?? 0) === 2) {
+        discount += 1;
+      }
+      break;
+    }
+    case 'BP04-014': {
+      if ((player?.damageTakenThisTurn ?? 0) >= 1) {
+        discount += 2;
+      }
+      break;
+    }
+    case 'BP04-047': {
+      if (myRoles.some((r) => hasCardName(r, '亚里莎·回音') && !r.partnerCardId)) {
+        discount += 1;
+      }
+      break;
+    }
+    case 'BP04-066': {
+      discount += allPublicCards.filter(
+        (c) =>
+          c.controllerPlayerId === myUserId &&
+          c.zone === 'SIGNAL_ORB' &&
+          c.isFaceUp === true &&
+          hasCardName(c, '潮涌球')
+      ).length;
+      break;
+    }
+  }
+
+  // 4. 3 张战场【永】手牌费用光环 (fieldCardCostRule，非升变且未失能)
+  let fieldSetCost: number | undefined;
+  let fieldDiscount = 0;
+  if (!isAscensionPlay) {
+    for (const role of myRoles) {
+      if (hasLostInherentAbilities(role, gameState.turnNumber)) continue;
+      const roleCore = normalizeCoreCardNumber(role.cardNumber);
+      if (roleCore === 'BP01-077') {
+        if (
+          normCardName === '荣光护盾' &&
+          (player?.turnCardPlayedCountByName?.['荣光护盾'] ?? 0) === 0
+        ) {
+          fieldSetCost = fieldSetCost === undefined ? 1 : Math.min(fieldSetCost, 1);
+        }
+      } else if (roleCore === 'BP01-015') {
+        if (
+          def.cardType === CardType.EQUIPMENT &&
+          (player?.turnEquipmentPlayedCount ?? 0) === 0
+        ) {
+          fieldDiscount += 1;
+        }
+      } else if (roleCore === 'BP03-073') {
+        if (
+          def.cardType === CardType.TACTICS &&
+          cardTraits.has('艺术协会') &&
+          (player?.turnArtAssocTacticsPlayedCount ?? 0) === 0
+        ) {
+          fieldDiscount += 1;
+        }
+      }
+    }
+  }
+
+  const effectiveBase = fieldSetCost !== undefined ? fieldSetCost : baseCost;
+  const effectiveCost = Math.max(0, effectiveBase - discount - fieldDiscount);
+
+  // 5. 5 张可选减费 (playDiscardDiscount / playSacrificeDiscount，非升变)
+  let minPayableCost = effectiveCost;
+  let optionalDiscountLabel: string | undefined;
+
+  if (!isAscensionPlay) {
+    if (core === 'BP01-067') {
+      const candidates = (gameState.myHandCards || []).filter(
+        (c) => c.instanceId !== card.instanceId && hasCardName(c, '梦赴光寥之乡')
+      );
+      if (candidates.length > 0) {
+        const discounted = Math.max(0, effectiveCost - candidates.length);
+        if (discounted < minPayableCost) {
+          minPayableCost = discounted;
+          optionalDiscountLabel = '可弃手牌《梦赴光寥之乡》减费 (每张-1)';
+        }
+      }
+    } else if (core === 'BP03-075') {
+      const myOrbs = allPublicCards.filter(
+        (c) => c.controllerPlayerId === myUserId && c.zone === 'SIGNAL_ORB'
+      );
+      const blueOrbs = myOrbs.filter((c, idx) => {
+        if (c.instanceId === card.instanceId || !c.isFaceUp) return false;
+        const info = resolveOrbDisplayInfo(c, idx);
+        return info.colors.includes('BLUE') && info.orbValue > 0;
+      });
+      if (blueOrbs.length > 0) {
+        const discounted = Math.max(0, effectiveCost - blueOrbs.length * 2);
+        if (discounted < minPayableCost) {
+          minPayableCost = discounted;
+          optionalDiscountLabel = '可将蓝球送墓减费 (每张-2)';
+        }
+      }
+    } else if (core === 'BP02-012') {
+      const fieldCards = collectFriendlyBattlefieldSacrificeCards(
+        gameState,
+        myUserId,
+        card.instanceId,
+        true
+      );
+      if (fieldCards.some((c) => hasCardName(c, '丽芙·极昼'))) {
+        const discounted = 4;
+        if (discounted < minPayableCost) {
+          minPayableCost = discounted;
+          optionalDiscountLabel = '可送墓战场《丽芙·极昼》使费用变为 4';
+        }
+      }
+    } else if (core === 'BP02-041') {
+      const fieldCards = collectFriendlyBattlefieldSacrificeCards(
+        gameState,
+        myUserId,
+        card.instanceId,
+        true
+      );
+      if (fieldCards.some((c) => hasCardName(c, '飞叶点翠'))) {
+        const discounted = Math.max(0, effectiveCost - 2);
+        if (discounted < minPayableCost) {
+          minPayableCost = discounted;
+          optionalDiscountLabel = '可送墓战场《飞叶点翠》减费 -2';
+        }
+      }
+    } else if (core === 'BP04-060') {
+      const handCandidates = (gameState.myHandCards || []).filter(
+        (c) => c.instanceId !== card.instanceId && hasCardTrait(c, '神寂启示录')
+      );
+      const fieldCandidates = collectFriendlyBattlefieldSacrificeCards(
+        gameState,
+        myUserId,
+        card.instanceId,
+        true
+      ).filter((c) => hasCardTrait(c, '神寂启示录'));
+      if (handCandidates.length > 0 || fieldCandidates.length > 0) {
+        const discounted = Math.max(0, effectiveCost - 2);
+        if (discounted < minPayableCost) {
+          minPayableCost = discounted;
+          optionalDiscountLabel = '可送墓手牌/战场<神寂启示录>减费 -2';
+        }
+      }
+    }
+  }
+
+  return {
+    baseCost,
+    effectiveCost,
+    minPayableCost,
+    hasOptionalDiscount: minPayableCost < effectiveCost,
+    ...(optionalDiscountLabel ? { optionalDiscountLabel } : {}),
+  };
+}
+
+/**
+ * 获取卡牌在当前场面下使用时的实际费用（不含需额外弃牌/送墓的可选减费）
+ */
+export function getCardEffectiveCost(
+  gameState: PublicGameState,
+  myUserId: string,
+  card: CardInstance
+): number {
+  return getCardEffectiveCostInfo(gameState, myUserId, card).effectiveCost;
+}
+
+// ==================== 精准攻击资格、目标与阻挡判定 (第 7 章) ====================
+
+export interface AttackerCapabilities {
+  canAttack: boolean;
+  canAttackPlayer: boolean;
+  canAttackCharacter: boolean;
+  canAttackReadyRolesMaxCost?: number;
+}
+
+function hasEffectiveInherentCannotAttack(
+  card: CardInstance,
+  cardDef: { rulesText?: string } | undefined,
+  turnNumber?: number
+): boolean {
+  if (hasCardProhibition(card, 'CANNOT_ATTACK')) return true;
+  if (card.effectiveProhibitions !== undefined) return false;
+  return Boolean(
+    cardDef?.rulesText?.includes('【永】：该牌不能攻击') &&
+      !hasLostInherentAbilities(card, turnNumber)
+  );
+}
+
+function getCardCanAttackReadyRolesMaxCost(
+  card: CardInstance,
+  turnNumber?: number
+): number | undefined {
+  const latestLoseTs = getLatestLoseAbilitiesTimestamp(card, turnNumber);
+  let maxCost: number | undefined;
+  for (const m of card.modifiers ?? []) {
+    if (m.canAttackReadyRolesMaxCost === undefined) continue;
+    if (!isModifierActive(m.untilTurn, turnNumber)) continue;
+    if (latestLoseTs >= 0 && (m.timestamp ?? 0) <= latestLoseTs) continue;
+    maxCost =
+      maxCost === undefined
+        ? m.canAttackReadyRolesMaxCost
+        : Math.max(maxCost, m.canAttackReadyRolesMaxCost);
+  }
+  return maxCost;
+}
+
+function hasMustBeAttackTarget(gameState: PublicGameState, roleCard: CardInstance): boolean {
+  const latestLoseTs = getLatestLoseAbilitiesTimestamp(roleCard, gameState.turnNumber);
+  for (const m of roleCard.modifiers ?? []) {
+    if (!m.mustBeAttackTarget) continue;
+    if (!isModifierActive(m.untilTurn, gameState.turnNumber)) continue;
+    if (latestLoseTs >= 0 && (m.timestamp ?? 0) <= latestLoseTs) continue;
+    return true;
+  }
+  if (
+    normalizeCoreCardNumber(roleCard.cardNumber) === 'BP02-010' &&
+    latestLoseTs < 0 &&
+    gameState.activePlayerId !== roleCard.controllerPlayerId
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 7.2.1 计算指定己方战场角色在当前时机下的攻击资格与攻击范围（对齐 `combat-manager.ts:130-198`）
+ */
+export function getAttackerCapabilities(
+  gameState: PublicGameState,
+  myUserId: string,
+  attacker: CardInstance
+): AttackerCapabilities {
+  const denied: AttackerCapabilities = {
+    canAttack: false,
+    canAttackPlayer: false,
+    canAttackCharacter: false,
+  };
+
+  if (!attacker || attacker.controllerPlayerId !== myUserId) return denied;
+  if (gameState.status && gameState.status !== 'PLAYING') return denied;
+  if (!getTimingStatus(gameState, myUserId).canActMainPhase) return denied;
+
+  const isFriendlyRole = getEffectiveRoleCardsForPlayer(gameState, myUserId).some(
+    (r) => r.card.instanceId === attacker.instanceId
+  );
+  if (!isFriendlyRole) return denied;
+  if (!attacker.isReady) return denied;
+
+  const def = findCardByNumberOrId(attacker.cardNumber || attacker.cardId);
+  if (hasEffectiveInherentCannotAttack(attacker, def, gameState.turnNumber)) {
+    return denied;
+  }
+
+  const canAttackReadyRolesMaxCost = getCardCanAttackReadyRolesMaxCost(
+    attacker,
+    gameState.turnNumber
+  );
+  const isEnterTurn = attacker.turnEnteredZone === gameState.turnNumber;
+
+  const canAttackPlayer = !isEnterTurn
+    ? true
+    : canRoleAttackPlayerOnEnterTurn(attacker, def, gameState.turnNumber);
+  const canAttackCharacter = !isEnterTurn
+    ? true
+    : canRoleAttackCharacterOnEnterTurn(attacker, def);
+
+  return {
+    canAttack: canAttackPlayer || canAttackCharacter,
+    canAttackPlayer,
+    canAttackCharacter,
+    ...(canAttackReadyRolesMaxCost !== undefined ? { canAttackReadyRolesMaxCost } : {}),
+  };
+}
+
+/**
+ * 7.2.1.b.1 校验指定对方战场角色是否为当前攻击者的合法角色攻击目标（含横置条件、可攻击竖直上限与 `BP02-010` 嘲讽约束）
+ */
+export function isLegalRoleAttackTarget(
+  gameState: PublicGameState,
+  myUserId: string,
+  attacker: CardInstance,
+  targetCard: CardInstance
+): boolean {
+  const caps = getAttackerCapabilities(gameState, myUserId, attacker);
+  if (!caps.canAttackCharacter) return false;
+
+  const opponentId = getOpponentPlayerId(gameState, myUserId);
+  if (!opponentId || targetCard.controllerPlayerId !== opponentId) return false;
+
+  const oppRoles = getEffectiveRoleCardsForPlayer(gameState, opponentId).map((r) => r.card);
+  if (!oppRoles.some((r) => r.instanceId === targetCard.instanceId)) return false;
+
+  const isSelectableByState = (role: CardInstance): boolean => {
+    if (!role.isReady) return true;
+    if (caps.canAttackReadyRolesMaxCost === undefined) return false;
+    return getRealtimeCardCost(gameState, role) <= caps.canAttackReadyRolesMaxCost;
+  };
+
+  if (!isSelectableByState(targetCard)) return false;
+
+  if (!hasMustBeAttackTarget(gameState, targetCard)) {
+    const forcedExists = oppRoles.some(
+      (r) => isSelectableByState(r) && hasMustBeAttackTarget(gameState, r)
+    );
+    if (forcedExists) return false;
+  }
+
+  return true;
+}
+
+/**
+ * 7.3.1.c 校验己方战场角色是否可以阻挡当前攻击者（对齐 `combat-manager.ts:335-402`）
+ */
+export function canRoleBlockAttacker(
+  gameState: PublicGameState,
+  myUserId: string,
+  blockerCard: CardInstance
+): boolean {
+  if (!blockerCard || blockerCard.controllerPlayerId !== myUserId) return false;
+  if (!getTimingStatus(gameState, myUserId).canDeclareBlock) return false;
+
+  const isFriendlyRole = getEffectiveRoleCardsForPlayer(gameState, myUserId).some(
+    (r) => r.card.instanceId === blockerCard.instanceId
+  );
+  if (!isFriendlyRole) return false;
+  if (!blockerCard.isReady) return false;
+  if (hasCardProhibition(blockerCard, 'CANNOT_BLOCK')) return false;
+
+  const attackerId = gameState.currentCombat?.attackerCardId;
+  const attacker = attackerId ? gameState.publicCards?.[attackerId] : undefined;
+  if (attacker) {
+    const unblockableMaxPP = getCardUnblockableMaxPP(attacker, gameState.turnNumber);
+    if (unblockableMaxPP !== undefined) {
+      const blockerDef = findCardByNumberOrId(blockerCard.cardNumber || blockerCard.cardId);
+      const blockerPP = getDisplayStats(blockerCard, blockerDef).pp;
+      if (blockerPP <= unblockableMaxPP) return false;
+    }
+  }
+
+  return true;
+}
+
+// ==================== 手牌出牌合法性判定 (8.6.2 / 10.8 / 6.3) ====================
+
+function canIgnoreAttributeForPlayFrontend(
+  gameState: PublicGameState,
+  myUserId: string,
+  card: CardInstance,
+  isAscension: boolean
+): boolean {
+  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  if (!def) return false;
+  if (def.attribute === ElementAttribute.NONE) return true;
+
+  const core = normalizeCoreCardNumber(card.cardNumber);
+  const myRoles = getEffectiveRoleCardsForPlayer(gameState, myUserId).map((r) => r.card);
+
+  // 自身【永】：无视属性条件
+  if (core === 'ST04-008' || core === 'BP01-076') {
+    if (myRoles.some((r) => hasCardTrait(r, '突击鹰小队'))) return true;
+  } else if (core === 'BP01-070') {
+    if (myRoles.some((r) => hasCardTrait(r, '薇拉') || hasCardTrait(r, '21号'))) return true;
+  } else if (core === 'PR-010' || core === 'BP04-059') {
+    return true;
+  }
+
+  // 战场 / 费用区光环：fieldIgnoreAttributeRule (BP04-059 / BP02-009)
+  const publicCards = gameState.publicCards || {};
+  const topFieldCards: CardInstance[] = [];
+  for (const slot of gameState.battlefields?.[myUserId] || []) {
+    for (const id of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+      if (id && publicCards[id]) topFieldCards.push(publicCards[id]!);
+    }
+  }
+
+  if (
+    hasCardTrait(card, '神寂启示录') &&
+    topFieldCards.some(
+      (c) =>
+        normalizeCoreCardNumber(c.cardNumber) === 'BP04-059' &&
+        !hasLostInherentAbilities(c, gameState.turnNumber)
+    )
+  ) {
+    return true;
+  }
+
+  const hasAscensionConfig = Boolean(def.rulesText && parseAscensionConfig(def.rulesText));
+  if (!isAscension && def.cardType === CardType.ROLE && hasAscensionConfig) {
+    const bp02009Active =
+      topFieldCards.some(
+        (c) =>
+          normalizeCoreCardNumber(c.cardNumber) === 'BP02-009' &&
+          !hasLostInherentAbilities(c, gameState.turnNumber)
+      ) ||
+      Object.values(publicCards).some(
+        (c) =>
+          c.controllerPlayerId === myUserId &&
+          c.zone === 'COST' &&
+          c.isFaceUp === true &&
+          normalizeCoreCardNumber(c.cardNumber) === 'BP02-009'
+      );
+    if (bp02009Active) return true;
+  }
+
+  return false;
+}
+
+function hasMatchingAttributeForPlay(
+  gameState: PublicGameState,
+  myUserId: string,
+  card: CardInstance,
+  isAscension: boolean
+): boolean {
+  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  if (!def) return false;
+  if (def.attribute === ElementAttribute.NONE) return true;
+  if (canIgnoreAttributeForPlayFrontend(gameState, myUserId, card, isAscension)) return true;
+
+  const openCostCards = Object.values(gameState.publicCards || {}).filter(
+    (c) => c.controllerPlayerId === myUserId && c.zone === 'COST' && c.isFaceUp
+  );
+  const player = gameState.players?.[myUserId];
+  if (openCostCards.length === 0 && (player?.openCostCount ?? 0) > 0) {
+    return true;
+  }
+  return openCostCards.some(
+    (c) => findCardByNumberOrId(c.cardNumber || c.cardId)?.attribute === def.attribute
+  );
+}
+
+function wouldViolateUniqueBloodPactFrontend(
+  gameState: PublicGameState,
+  myUserId: string,
+  incomingCard: CardInstance
+): boolean {
+  const def = findCardByNumberOrId(incomingCard.cardNumber || incomingCard.cardId);
+  if (!def || def.cardType !== CardType.ROLE) return false;
+
+  const incomingCore = normalizeCoreCardNumber(incomingCard.cardNumber);
+  const isIncomingBloodPact =
+    hasCardName(incomingCard, '血契者') || incomingCore === 'BP04-052';
+  if (!isIncomingBloodPact) return false;
+
+  const publicCards = gameState.publicCards || {};
+  const existing: CardInstance[] = [];
+  for (const slot of gameState.battlefields?.[myUserId] || []) {
+    const id = slot.roleCardId ?? slot.assistCardId;
+    const c = id ? publicCards[id] : undefined;
+    if (!c || c.instanceId === incomingCard.instanceId) continue;
+    if (hasCardName(c, '血契者') || normalizeCoreCardNumber(c.cardNumber) === 'BP04-052') {
+      existing.push(c);
+    }
+  }
+  if (existing.length === 0) return false;
+
+  const anyExistingActive = existing.some(
+    (c) => !hasLostInherentAbilities(c, gameState.turnNumber)
+  );
+  return anyExistingActive || incomingCore === 'BP04-052';
+}
+
+function isFengrenTachiEquipmentDefFrontend(
+  def: { cardType?: CardType; traits?: string[] } | undefined
+): boolean {
+  if (!def || def.cardType !== CardType.EQUIPMENT) return false;
+  const traits = def.traits ?? [];
+  return traits.some(
+    (t) => t === '封刃太刀' || t === '太刀' || t === '小太刀' || t === '大太刀'
+  );
+}
+
+function canEquipToRoleFrontend(
+  gameState: PublicGameState,
+  myUserId: string,
+  equipCard: CardInstance,
+  roleCard: CardInstance
+): boolean {
+  const existingIds = Array.from(
+    new Set(
+      [roleCard.attachedEquipmentId, ...(roleCard.extraAttachedEquipmentIds ?? [])].filter(
+        (id): id is string => Boolean(id)
+      )
+    )
+  );
+  if (existingIds.includes(equipCard.instanceId)) return false;
+  if (existingIds.length === 0) return true;
+  if (existingIds.length >= 2) return false;
+
+  const roleCore = normalizeCoreCardNumber(roleCard.cardNumber);
+  const canDual =
+    (roleCore === 'BP01-014' || roleCore === 'BP01-016' || roleCore === 'BP01-017') &&
+    !hasLostInherentAbilities(roleCard, gameState.turnNumber);
+  if (!canDual) return false;
+
+  const existingCard = gameState.publicCards?.[existingIds[0]!];
+  const existingDef = existingCard
+    ? findCardByNumberOrId(existingCard.cardNumber || existingCard.cardId)
+    : undefined;
+  const newDef = findCardByNumberOrId(equipCard.cardNumber || equipCard.cardId);
+  return (
+    isFengrenTachiEquipmentDefFrontend(existingDef) &&
+    isFengrenTachiEquipmentDefFrontend(newDef)
+  );
+}
+
+function checkInstantTimingFrontend(
+  gameState: PublicGameState,
+  myUserId: string,
+  rulesText: string
+): boolean {
+  const window = gameState.timingWindow;
+  const combat = gameState.currentCombat;
+  const isOpponentTurn = myUserId !== gameState.activePlayerId;
+
+  if (
+    (rulesText.includes('该牌只能在对方回合使用') ||
+      /【瞬时】[:：]\s*对方回合中/.test(rulesText)) &&
+    !isOpponentTurn
+  ) {
+    return false;
+  }
+  if (rulesText.includes('我方玩家被攻击时才能发动')) {
+    const attacked =
+      window?.kind === 'FREE_TIMING' && combat?.targetType === 'PLAYER' && isOpponentTurn;
+    if (!attacked) return false;
+  }
+  if (
+    (rulesText.includes('角色攻击时才能发动') ||
+      rulesText.includes('该牌只能在自由时点步骤发动')) &&
+    window?.kind !== 'FREE_TIMING'
+  ) {
+    return false;
+  }
+  const fieldRequirement = rulesText.match(
+    /该牌只能在我方战场存在([《<])([^》>]+)[》>](?:角色)?时才能使用/
+  );
+  if (fieldRequirement) {
+    const bracket = fieldRequirement[1]!;
+    const subject = fieldRequirement[2]!;
+    const myRoles = getEffectiveRoleCardsForPlayer(gameState, myUserId).map((r) => r.card);
+    const exists = myRoles.some((r) =>
+      bracket === '《' ? hasCardName(r, subject) : hasCardTrait(r, subject)
+    );
+    if (!exists) return false;
+  }
+  return true;
+}
+
+/**
+ * 校验己方手牌在当前对局状态下是否具备合法操作（`DRAW_CHARGE_PHASE` 充明费 / 瞬时窗口 / 主阶段手牌【起】、常规出牌或升变）
+ */
+export function isHandCardLegalToPlay(
+  gameState: PublicGameState,
+  myUserId: string,
+  card: CardInstance,
+  usableInstantCardIds?: Set<string>,
+  zoneAbilityMap?: Record<string, ActivatedAbilityOption[]>
+): boolean {
+  if (!card || card.controllerPlayerId !== myUserId || card.zone !== 'HAND') return false;
+  if (gameState.status && gameState.status !== 'PLAYING') return false;
+  const choicePending = Boolean(gameState.currentPendingChoice || gameState.opponentPendingChoice);
+  if (choicePending) return false;
+
+  // 1. 6.3 抽牌填充阶段：回合玩家可选择任意手牌放置为明费
+  if (gameState.phase === 'DRAW_CHARGE_PHASE') {
+    return gameState.activePlayerId === myUserId;
+  }
+
+  const def = findCardByNumberOrId(card.cardNumber || card.cardId);
+  if (!def) return false;
+
+  const player = gameState.players?.[myUserId];
+  const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
+  const core = normalizeCoreCardNumber(card.cardNumber);
+  const isInstantTactics =
+    def.cardType === CardType.TACTICS &&
+    Boolean(def.isInstant || def.rulesText?.includes('【瞬时】'));
+  const timing = getTimingStatus(gameState, myUserId);
+
+  const canPlayAsInstantTactics = (): boolean => {
+    if (!isInstantTactics) return false;
+    if (core === 'PR-014' && (player?.turnCardPlayedCountByName?.[def.name] ?? 0) >= 1) {
+      return false;
+    }
+    if (!checkInstantTimingFrontend(gameState, myUserId, def.rulesText || '')) {
+      return false;
+    }
+    if (!hasMatchingAttributeForPlay(gameState, myUserId, card, false)) {
+      return false;
+    }
+    const costInfo = getCardEffectiveCostInfo(gameState, myUserId, card, { isAscension: false });
+    return costInfo.minPayableCost <= availCost;
+  };
+
+  // 2. 10.8 轮流使用【瞬时】时机：非战术瞬时或瞬时战术
+  if (timing.hasInstantPriority) {
+    if (usableInstantCardIds?.has(card.instanceId)) return true;
+    if (
+      !usableInstantCardIds &&
+      getUsableNonTacticsInstants(gameState, myUserId).some(
+        (opt) => opt.card.instanceId === card.instanceId
+      )
+    ) {
+      return true;
+    }
+    return canPlayAsInstantTactics();
+  }
+
+  // 3. 6.4.1.b 主要阶段行动时机：手牌【起】 / 常规出牌 / 升变出场
+  if (!timing.canActMainPhase) return false;
+
+  const handAbilities =
+    zoneAbilityMap?.[card.instanceId] ??
+    getCardActivatedAbilityOptions(gameState, myUserId, card, 'HAND');
+  if (handAbilities.some((opt) => !opt.disabled)) {
+    return true;
+  }
+
+  // 3a. 常规出牌判定
+  let canNormalPlay = true;
+  if (isInstantTactics) {
+    const allowInMain =
+      core === 'PR-011' || Boolean(def.rulesText?.includes('主要阶段也可以发动'));
+    if (!allowInMain || !canPlayAsInstantTactics()) {
+      canNormalPlay = false;
+    }
+  } else {
+    if (core === 'PR-014' && (player?.turnCardPlayedCountByName?.[def.name] ?? 0) >= 1) {
+      canNormalPlay = false;
+    }
+    if (canNormalPlay && wouldViolateUniqueBloodPactFrontend(gameState, myUserId, card)) {
+      canNormalPlay = false;
+    }
+    if (canNormalPlay && !hasMatchingAttributeForPlay(gameState, myUserId, card, false)) {
+      canNormalPlay = false;
+    }
+    if (canNormalPlay) {
+      const mySlots = gameState.battlefields?.[myUserId] || [];
+      const publicCards = gameState.publicCards || {};
+      if (def.cardType === CardType.ROLE) {
+        if (!mySlots.some(isBattlefieldSlotEmpty)) canNormalPlay = false;
+      } else if (def.cardType === CardType.ASSIST) {
+        if (!mySlots.some((s) => canPlayAssistOnSlot(s, publicCards))) canNormalPlay = false;
+      } else if (def.cardType === CardType.EQUIPMENT) {
+        const hasEmptySlot = mySlots.some(isBattlefieldSlotEmpty);
+        const hasValidHost = getEffectiveRoleCardsForPlayer(gameState, myUserId).some((r) =>
+          canEquipToRoleFrontend(gameState, myUserId, card, r.card)
+        );
+        if (!hasEmptySlot && !hasValidHost) canNormalPlay = false;
+      }
+    }
+    if (canNormalPlay) {
+      const costInfo = getCardEffectiveCostInfo(gameState, myUserId, card, { isAscension: false });
+      if (costInfo.minPayableCost > availCost) {
+        canNormalPlay = false;
+      }
+    }
+  }
+  if (canNormalPlay) return true;
+
+  // 3b. 升变出场判定
+  const ascPlan = getAscensionPlan(gameState, myUserId, card);
+  return Boolean(ascPlan && ascPlan.canAscend);
 }

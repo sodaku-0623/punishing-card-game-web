@@ -353,7 +353,7 @@ export default function AdminMonitorPage() {
         <div className="h-44 overflow-y-auto bg-ink-950 border border-line p-3 space-y-1.5 font-num text-caption">
           {metrics?.recentErrors && metrics.recentErrors.length > 0 ? (
             metrics.recentErrors.map((err, i) => (
-              <div key={i} className="flex items-center justify-between gap-3 border-b border-line/60 pb-1.5">
+              <div key={i} className="flex items-center justify-between gap-3 border-b border-line pb-1.5">
                 <span className="text-crimson-400">
                   [{err.code}] {err.message}
                 </span>

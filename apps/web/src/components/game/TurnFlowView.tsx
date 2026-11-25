@@ -74,7 +74,7 @@ export const TurnFlowView: React.FC<TurnFlowViewProps> = React.memo(({
                   ? isMyTurn
                     ? 'border-line-strong border-l-teal-400 bg-ink-800 text-fg'
                     : 'border-line-strong border-l-crimson-500 bg-ink-800 text-fg'
-                  : 'border-line/50 border-l-transparent bg-ink-950/50 text-fg-muted'
+                  : 'border-line border-l-transparent bg-ink-950/50 text-fg-muted'
               }`}
             >
               <div className="flex items-center justify-between">
