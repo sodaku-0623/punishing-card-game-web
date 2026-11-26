@@ -1,4 +1,5 @@
 import { CardInstance, CardModifier } from '@zhanshuang/shared';
+import { extractCoreCardNumber } from '@zhanshuang/game-rules';
 import { addCardModifier, nextEffectTimestamp } from '../continuous-effects.js';
 import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
 import { resolveCustomChoice, startCustomHandler } from './custom-handlers.js';
@@ -52,6 +53,26 @@ export class DslStepRunner {
         case 'PEEK_TOP': {
           const targetPlayer = this.host.resolveSide(playerId, step.side ?? 'SELF');
           vars[step.saveToVar] = this.host.peekTop(targetPlayer, step.count);
+          break;
+        }
+
+        case 'PEEK_ZONE': {
+          const targetPlayer = this.host.resolveSide(playerId, step.side ?? 'SELF');
+          const allowFaceDownSignalOrb = (step.side ?? 'SELF') === 'SELF';
+          const peeked = this.host
+            .zone(targetPlayer, step.zone)
+            .filter(
+              (c) =>
+                !step.filter ||
+                this.host.evaluator.matchesFilter(c, step.filter, sourceId, {
+                  allowFaceDownSignalOrb,
+                })
+            )
+            .map((c) => c.instanceId);
+          vars[step.saveToVar] = peeked;
+          if ((step.side ?? 'SELF') === 'SELF') {
+            vars.__peekedIds = Array.from(new Set([...(vars.__peekedIds ?? []), ...peeked]));
+          }
           break;
         }
 
@@ -170,6 +191,18 @@ export class DslStepRunner {
           const max = step.max ?? 1;
           const min = Math.min(step.min ?? 1, eligibleCount);
           const effectType = step.choiceEffectType ?? `DSL_CHOOSE_ROLES_${cardNumber}`;
+          const filterRules =
+            step.uniqueNames ||
+            step.uniqueCardNumbers ||
+            step.distinctAttributes ||
+            step.maxTotalCost !== undefined
+              ? {
+                  ...(step.uniqueNames ? { uniqueNames: true } : {}),
+                  ...(step.uniqueCardNumbers ? { uniqueCardNumbers: true } : {}),
+                  ...(step.distinctAttributes ? { distinctAttributes: true } : {}),
+                  ...(step.maxTotalCost !== undefined ? { maxTotalCost: step.maxTotalCost } : {}),
+                }
+              : undefined;
           this.host.enqueueDslChoice(
             {
               id: this.host.choiceId(effectType),
@@ -197,9 +230,12 @@ export class DslStepRunner {
                 kind: 'SAVE_CHOICE',
                 saveToVar: step.saveToVar,
                 uniqueNames: step.uniqueNames,
+                uniqueCardNumbers: step.uniqueCardNumbers,
+                distinctAttributes: step.distinctAttributes,
                 maxTotalCost: step.maxTotalCost,
               },
-            }
+            },
+            filterRules ? { filterRules } : undefined
           );
           return;
         }
@@ -374,9 +410,21 @@ export class DslStepRunner {
           const cards = ids
             .map((id) => this.host.ctx.state.cards[id])
             .filter((c): c is CardInstance => !!c);
+          const isPrivatePeek =
+            cards.length > 0 &&
+            cards.some(
+              (c) =>
+                c.zone === 'DECK' ||
+                ((c.zone === 'SIGNAL_ORB' || c.zone === 'COST') && !c.isFaceUp)
+            );
           const isEligible = (c: CardInstance) => {
             if (step.requireEmptySlot && !this.host.hasEmptySlot(playerId)) return false;
-            return !step.filter || this.host.evaluator.matchesFilter(c, step.filter, sourceId);
+            return (
+              !step.filter ||
+              this.host.evaluator.matchesFilter(c, step.filter, sourceId, {
+                allowFaceDownSignalOrb: isPrivatePeek && c.controllerPlayerId === playerId,
+              })
+            );
           };
           const eligibleCount = cards.filter(isEligible).length;
           if (!step.alwaysShow && (cards.length === 0 || eligibleCount === 0)) {
@@ -390,7 +438,6 @@ export class DslStepRunner {
           const min = Math.min(step.min ?? 1, max);
           const effectType = step.choiceEffectType ?? `DSL_CHOOSE_VAR_${cardNumber}`;
           const prompt = this.host.evaluator.formatPrompt(step.prompt, playerId);
-          const isPrivatePeek = cards.length > 0 && cards.every((c) => c.zone === 'DECK');
           this.host.enqueueDslChoice(
             {
               id: this.host.choiceId(effectType),
@@ -804,139 +851,88 @@ export class DslStepRunner {
             sourceId,
             vars
           );
-          const moved: string[] = [];
-          const ownersToShuffle = new Set<string>();
-          for (const id of targets) {
-            const card = this.host.ctx.state.cards[id];
-            if (!card) continue;
-            if (step.toZone === 'BATTLEFIELD') {
+          if (step.chooseOrder) {
+            const candidateIds = targets.filter((id) => {
+              const card = this.host.ctx.state.cards[id];
+              if (!card) return false;
               if (
-                this.host.bringToField(
+                step.target.kind === 'REST_OF_VAR' &&
+                card.zone !== 'PROCESSING' &&
+                card.zone !== 'DECK'
+              ) {
+                return false;
+              }
+              return true;
+            });
+            if (candidateIds.length >= 2) {
+              const cards = candidateIds
+                .map((id) => this.host.ctx.state.cards[id])
+                .filter((c): c is CardInstance => Boolean(c));
+              const isAllPrivate =
+                cards.length > 0 &&
+                cards.some(
+                  (c) =>
+                    c.zone === 'DECK' ||
+                    ((c.zone === 'SIGNAL_ORB' || c.zone === 'COST') && !c.isFaceUp)
+                );
+              const peekedSet = new Set(vars.__peekedIds ?? []);
+              const defaultOrderPrompt =
+                step.toZone === 'DECK_BOTTOM'
+                  ? `请按顺序依次点选全部 ${candidateIds.length} 张牌置入牌组底（先选者靠上、后选者在最底）：`
+                  : step.toZone === 'DECK_TOP'
+                    ? `请按顺序依次点选全部 ${candidateIds.length} 张牌置入牌组顶（先选者靠下、后选者在最顶）：`
+                    : step.toZone === 'SIGNAL_ORB_BOTTOM'
+                      ? `请按顺序依次点选全部 ${candidateIds.length} 张牌放置到信号球区最下方（先选者靠上、后选者在最下方）：`
+                      : `请按顺序依次点选全部 ${candidateIds.length} 张牌放置到信号球区（先选者靠下、后选者在最上方）：`;
+              const effectType = step.orderChoiceEffectType ?? `DSL_ORDER_MOVE_${cardNumber}`;
+              this.host.enqueueDslChoice(
+                {
+                  id: this.host.choiceId(effectType),
                   playerId,
-                  id,
-                  step.triggerEntry !== false,
-                  Boolean(step.enterTapped),
-                  Boolean(step.loseAbilities),
-                  cardNumber
-                )
-              ) {
-                moved.push(id);
-              }
-            } else if (step.toZone === 'DECK_BOTTOM') {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              if (this.host.ctx.zoneMgr.moveCardToBottomOfDeck(id)) {
-                moved.push(id);
-              }
-            } else if (step.toZone === 'DECK_TOP') {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              if (this.host.ctx.zoneMgr.moveCardToTopOfDeck(id)) {
-                moved.push(id);
-              }
-            } else if (step.toZone === 'DECK_SHUFFLE') {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              if (this.host.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false })) {
-                ownersToShuffle.add(card.ownerPlayerId);
-                moved.push(id);
-              }
-            } else if (step.toZone === 'SIGNAL_ORB_BOTTOM') {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              if (
-                this.host.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', {
-                  isFaceUp: step.isFaceUp ?? true,
-                  toBottom: true,
-                })
-              ) {
-                moved.push(id);
-              }
-            } else if (step.toZone === 'COST') {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'GRAVEYARD' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              if (
-                this.host.ctx.zoneMgr.moveCard(id, 'COST', {
-                  isFaceUp: step.isFaceUp ?? false,
-                  isReady: step.isReady ?? true,
-                })
-              ) {
-                this.host.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
-                moved.push(id);
-              }
-            } else if (step.toZone === 'UNDERNEATH') {
-              if (!step.underneathHost) continue;
-              const hostId = this.host.evaluator.resolveTargetIds(
-                step.underneathHost,
-                playerId,
-                sourceId,
-                vars
-              )[0];
-              if (!hostId) continue;
-              if (
-                this.host.ctx.fieldMgr.placeCardUnderneath(id, hostId, {
-                  includeUnderneath: step.includeUnderneath,
-                  actorPlayerId: playerId,
-                })
-              ) {
-                moved.push(id);
-              }
-            } else {
-              if (
-                step.target.kind === 'REST_OF_VAR' &&
-                card.zone !== 'PROCESSING' &&
-                card.zone !== 'DECK'
-              ) {
-                continue;
-              }
-              const ok =
-                step.toZone === 'GRAVEYARD'
-                  ? this.host.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
-                      isFaceUp: step.isFaceUp ?? true,
-                      sentByEffectOrCost: step.sentByEffectOrCost ?? card.zone === 'BATTLEFIELD',
-                      countAsDeckToGy:
-                        card.zone === 'DECK' ||
-                        (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'),
-                    })
-                  : this.host.ctx.zoneMgr.moveCard(id, step.toZone, {
-                      isFaceUp: step.isFaceUp ?? true,
-                      ...(step.isReady !== undefined ? { isReady: step.isReady } : {}),
-                    });
-              if (ok) {
-                moved.push(id);
-              }
+                  choiceType: 'SELECT_CARDS',
+                  prompt: step.orderPrompt
+                    ? this.host.evaluator.formatPrompt(step.orderPrompt, playerId, {
+                        count: candidateIds.length,
+                      })
+                    : defaultOrderPrompt,
+                  options: cards.map((c, idx) =>
+                    !c.isFaceUp &&
+                    (c.zone === 'SIGNAL_ORB' || c.zone === 'COST') &&
+                    !peekedSet.has(c.instanceId)
+                      ? {
+                          id: c.instanceId,
+                          label:
+                            c.zone === 'SIGNAL_ORB'
+                              ? `背面信号球 #${idx + 1}`
+                              : `背面暗费 #${idx + 1}`,
+                        }
+                      : this.host.effects.createGeneralCardChoiceOption(c)
+                  ),
+                  effectType,
+                  sourceCardInstanceId: sourceId,
+                  minSelections: candidateIds.length,
+                  maxSelections: candidateIds.length,
+                },
+                {
+                  cardNumber,
+                  sourceCardInstanceId: sourceId,
+                  playerId,
+                  vars,
+                  remainingSteps: queue,
+                  pendingAction: {
+                    kind: 'ORDER_MOVE_CARDS',
+                    moveStep: step,
+                    candidateIds,
+                  },
+                },
+                isAllPrivate ? undefined : { revealed: candidateIds }
+              );
+              return;
             }
           }
-          for (const ownerId of ownersToShuffle) {
-            this.host.ctx.zoneMgr.shuffleDeck(ownerId);
+          if (this.executeMoveCardsStep(step, targets, cardNumber, playerId, sourceId, vars, queue)) {
+            return;
           }
-          if (step.saveMovedToVar) vars[step.saveMovedToVar] = moved;
           break;
         }
 
@@ -1008,15 +1004,53 @@ export class DslStepRunner {
         }
 
         case 'DESTROY_ROLES': {
+          const isResumedRest =
+            step.target.kind === 'VAR' && step.target.varName === '__pendingReplaceRest';
           const targets = this.host.evaluator.resolveTargetIds(
             step.target,
             playerId,
             sourceId,
             vars
           );
-          const destroyed: string[] = [];
-          for (const id of targets) {
-            if (this.host.destroy(id)) destroyed.push(id);
+          if (isResumedRest) {
+            delete vars.__pendingReplaceRest;
+          }
+          const destroyed: string[] =
+            isResumedRest && vars.__pendingReplaceAccum ? [...vars.__pendingReplaceAccum] : [];
+          if (isResumedRest) {
+            delete vars.__pendingReplaceAccum;
+          }
+          for (let i = 0; i < targets.length; i++) {
+            const id = targets[i]!;
+            const prevPendingId = this.host.ctx.state.currentPendingChoice?.id;
+            const prevQueueLen = this.host.ctx.state.pendingChoiceQueue?.length ?? 0;
+            const prevEventCount = this.host.ctx.events.length;
+            if (this.host.destroy(id)) {
+              destroyed.push(id);
+            }
+            if (this.didCreatePendingChoice(prevPendingId, prevQueueLen)) {
+              const remainingTargets = targets.slice(i + 1);
+              if (remainingTargets.length > 0 || queue.length > 0 || Boolean(step.saveDestroyedToVar)) {
+                const resumeQueue: EffectStep[] = [...queue];
+                if (remainingTargets.length > 0) {
+                  vars.__pendingReplaceRest = remainingTargets;
+                  resumeQueue.unshift({
+                    ...step,
+                    target: { kind: 'VAR', varName: '__pendingReplaceRest' },
+                  });
+                }
+                vars.__pendingReplaceVerify = [
+                  'DESTROY',
+                  id,
+                  step.saveDestroyedToVar ?? '',
+                  String(prevEventCount),
+                ];
+                vars.__pendingReplacePartial = [...destroyed];
+                if (step.saveDestroyedToVar) vars[step.saveDestroyedToVar] = [...destroyed];
+                this.pushContinuation(cardNumber, sourceId, playerId, vars, resumeQueue);
+                return;
+              }
+            }
           }
           if (step.saveDestroyedToVar) vars[step.saveDestroyedToVar] = destroyed;
           break;
@@ -1236,13 +1270,40 @@ export class DslStepRunner {
         }
 
         case 'REGISTER_REPLACEMENT': {
+          const untilTurn = this.host.evaluator.resolveUntilTurn(step.duration, turn);
+          const expiresAtCombatEnd = step.duration === 'END_OF_COMBAT' ? true : undefined;
+          const commonFields = {
+            action: step.action,
+            once: step.once,
+            untilTurn,
+            ...(expiresAtCombatEnd ? { expiresAtCombatEnd } : {}),
+            ...(step.destroyReason ? { destroyReason: step.destroyReason } : {}),
+            ...(step.fromZone ? { fromZone: step.fromZone } : {}),
+            ...(step.toZone ? { toZone: step.toZone } : {}),
+            ...(step.label ? { label: step.label } : {}),
+            source: cardNumber,
+          };
+          if (step.eventType === 'DEAL_DAMAGE') {
+            const controllerPlayerId = this.host.resolveSide(playerId, step.targetSide ?? 'SELF');
+            const sourceCardInstanceId = step.target
+              ? this.host.evaluator.resolveTargetIds(step.target, playerId, sourceId, vars)[0]
+              : undefined;
+            if (step.target && !sourceCardInstanceId) break;
+            this.host.ctx.replacementEngine?.addActiveReplacement({
+              eventType: step.eventType,
+              controllerPlayerId,
+              ...(sourceCardInstanceId ? { sourceCardInstanceId } : {}),
+              ...commonFields,
+            });
+            break;
+          }
+          if (!step.target) break;
           const targets = this.host.evaluator.resolveTargetIds(
             step.target,
             playerId,
             sourceId,
             vars
           );
-          const untilTurn = this.host.evaluator.resolveUntilTurn(step.duration, turn);
           for (const id of targets) {
             const card = this.host.ctx.state.cards[id];
             if (!card) continue;
@@ -1250,10 +1311,7 @@ export class DslStepRunner {
               eventType: step.eventType,
               targetCardInstanceId: id,
               controllerPlayerId: card.controllerPlayerId,
-              action: step.action,
-              once: step.once,
-              untilTurn,
-              source: cardNumber,
+              ...commonFields,
             });
           }
           break;
@@ -1597,7 +1655,10 @@ export class DslStepRunner {
           }
         }
         if (pending.uniqueCardNumbers && selected.length > 1) {
-          const nums = selected.map((id) => this.host.ctx.state.cards[id]?.cardNumber ?? id);
+          const nums = selected.map((id) => {
+            const card = this.host.ctx.state.cards[id];
+            return card ? extractCoreCardNumber(card.cardNumber) : id;
+          });
           if (new Set(nums).size !== nums.length) {
             return { success: false, error: '所选卡牌的卡牌编号必须各不相同' };
           }
@@ -1622,6 +1683,32 @@ export class DslStepRunner {
           if (!card || card.zone !== pending.zone) continue;
           delete this.host.ctx.state.cards[id];
           this.host.ctx.state.cards[id] = card;
+        }
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+        return { success: true };
+      }
+
+      case 'ORDER_MOVE_CARDS': {
+        const candidateSet = new Set(pending.candidateIds);
+        if (
+          selected.length !== pending.candidateIds.length ||
+          new Set(selected).size !== selected.length ||
+          selected.some((id) => !candidateSet.has(id))
+        ) {
+          return { success: false, error: '请选择全部待排序卡牌的完整排列' };
+        }
+        if (
+          this.executeMoveCardsStep(
+            pending.moveStep,
+            selected,
+            cardNumber,
+            playerId,
+            sourceCardInstanceId,
+            vars,
+            remaining
+          )
+        ) {
+          return { success: true };
         }
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
@@ -1682,5 +1769,228 @@ export class DslStepRunner {
         return resolveCustomChoice(this.host.makeCustomRuntime(), action, pending.customFrame);
       }
     }
+  }
+
+  private didCreatePendingChoice(prevPendingId: string | undefined, prevQueueLen: number): boolean {
+    const state = this.host.ctx.state;
+    return (
+      (prevPendingId === undefined && Boolean(state.currentPendingChoice)) ||
+      (state.pendingChoiceQueue?.length ?? 0) > prevQueueLen
+    );
+  }
+
+  private pushContinuation(
+    cardNumber: string,
+    sourceId: string,
+    playerId: string,
+    vars: Record<string, string[]>,
+    queue: EffectStep[]
+  ): void {
+    this.host.ctx.state.pendingDslContinuations ??= [];
+    this.host.ctx.state.pendingDslContinuations.push({
+      cardNumber,
+      sourceCardInstanceId: sourceId,
+      playerId,
+      vars: { ...vars },
+      remainingSteps: [...queue],
+    });
+  }
+
+  private executeMoveCardsStep(
+    step: Extract<EffectStep, { op: 'MOVE_CARDS' }>,
+    targets: string[],
+    cardNumber: string,
+    playerId: string,
+    sourceId: string,
+    vars: Record<string, string[]>,
+    queue: EffectStep[]
+  ): boolean {
+    const isResumedRest =
+      step.target.kind === 'VAR' && step.target.varName === '__pendingReplaceRest';
+    if (isResumedRest) {
+      delete vars.__pendingReplaceRest;
+    }
+    const moved: string[] =
+      isResumedRest && vars.__pendingReplaceAccum ? [...vars.__pendingReplaceAccum] : [];
+    if (isResumedRest) {
+      delete vars.__pendingReplaceAccum;
+    }
+    const ownersToShuffle = new Set<string>();
+    const expectedZone =
+      step.toZone === 'DECK_BOTTOM' ||
+      step.toZone === 'DECK_TOP' ||
+      step.toZone === 'DECK_SHUFFLE'
+        ? 'DECK'
+        : step.toZone === 'SIGNAL_ORB_BOTTOM'
+          ? 'SIGNAL_ORB'
+          : step.toZone;
+
+    for (let i = 0; i < targets.length; i++) {
+      const id = targets[i]!;
+      const card = this.host.ctx.state.cards[id];
+      if (!card) continue;
+      const fromZone = card.zone;
+      const prevPendingId = this.host.ctx.state.currentPendingChoice?.id;
+      const prevQueueLen = this.host.ctx.state.pendingChoiceQueue?.length ?? 0;
+
+      if (step.toZone === 'BATTLEFIELD') {
+        if (
+          this.host.bringToField(
+            playerId,
+            id,
+            step.triggerEntry !== false,
+            Boolean(step.enterTapped),
+            Boolean(step.loseAbilities),
+            cardNumber
+          )
+        ) {
+          moved.push(id);
+        }
+      } else if (step.toZone === 'DECK_BOTTOM') {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        if (this.host.ctx.zoneMgr.moveCardToBottomOfDeck(id)) {
+          moved.push(id);
+        }
+      } else if (step.toZone === 'DECK_TOP') {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        if (this.host.ctx.zoneMgr.moveCardToTopOfDeck(id)) {
+          moved.push(id);
+        }
+      } else if (step.toZone === 'DECK_SHUFFLE') {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        if (this.host.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false })) {
+          ownersToShuffle.add(card.ownerPlayerId);
+          moved.push(id);
+        }
+      } else if (step.toZone === 'SIGNAL_ORB_BOTTOM') {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        if (
+          this.host.ctx.zoneMgr.moveCard(id, 'SIGNAL_ORB', {
+            isFaceUp: step.isFaceUp ?? true,
+            toBottom: true,
+          })
+        ) {
+          moved.push(id);
+        }
+      } else if (step.toZone === 'COST') {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'GRAVEYARD' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        if (
+          this.host.ctx.zoneMgr.moveCard(id, 'COST', {
+            isFaceUp: step.isFaceUp ?? false,
+            isReady: step.isReady ?? true,
+          })
+        ) {
+          this.host.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
+          moved.push(id);
+        }
+      } else if (step.toZone === 'UNDERNEATH') {
+        if (!step.underneathHost) continue;
+        const hostId = this.host.evaluator.resolveTargetIds(
+          step.underneathHost,
+          playerId,
+          sourceId,
+          vars
+        )[0];
+        if (!hostId) continue;
+        if (
+          this.host.ctx.fieldMgr.placeCardUnderneath(id, hostId, {
+            includeUnderneath: step.includeUnderneath,
+            actorPlayerId: playerId,
+          })
+        ) {
+          moved.push(id);
+        }
+      } else {
+        if (
+          step.target.kind === 'REST_OF_VAR' &&
+          card.zone !== 'PROCESSING' &&
+          card.zone !== 'DECK'
+        ) {
+          continue;
+        }
+        const ok =
+          step.toZone === 'GRAVEYARD'
+            ? this.host.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
+                isFaceUp: step.isFaceUp ?? true,
+                sentByEffectOrCost: step.sentByEffectOrCost ?? card.zone === 'BATTLEFIELD',
+                countAsDeckToGy:
+                  card.zone === 'DECK' ||
+                  (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'),
+              })
+            : this.host.ctx.zoneMgr.moveCard(id, step.toZone, {
+                isFaceUp: step.isFaceUp ?? true,
+                ...(step.isReady !== undefined ? { isReady: step.isReady } : {}),
+              });
+        if (ok) {
+          moved.push(id);
+        }
+      }
+
+      if (this.didCreatePendingChoice(prevPendingId, prevQueueLen)) {
+        const remainingTargets = targets.slice(i + 1);
+        if (remainingTargets.length > 0 || queue.length > 0 || Boolean(step.saveMovedToVar)) {
+          const resumeQueue: EffectStep[] = [...queue];
+          if (remainingTargets.length > 0) {
+            vars.__pendingReplaceRest = remainingTargets;
+            resumeQueue.unshift({
+              ...step,
+              chooseOrder: false,
+              target: { kind: 'VAR', varName: '__pendingReplaceRest' },
+            });
+          }
+          vars.__pendingReplaceVerify = [
+            'MOVE',
+            id,
+            step.saveMovedToVar ?? '',
+            expectedZone,
+            fromZone,
+            step.toZone === 'DECK_SHUFFLE' ? 'SHUFFLE' : '',
+          ];
+          vars.__pendingReplacePartial = [...moved];
+          if (step.saveMovedToVar) vars[step.saveMovedToVar] = [...moved];
+          for (const ownerId of ownersToShuffle) {
+            this.host.ctx.zoneMgr.shuffleDeck(ownerId);
+          }
+          this.pushContinuation(cardNumber, sourceId, playerId, vars, resumeQueue);
+          return true;
+        }
+      }
+    }
+    for (const ownerId of ownersToShuffle) {
+      this.host.ctx.zoneMgr.shuffleDeck(ownerId);
+    }
+    if (step.saveMovedToVar) vars[step.saveMovedToVar] = moved;
+    return false;
   }
 }

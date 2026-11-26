@@ -58,6 +58,8 @@ export interface ActiveReplacementEffect {
   eventType: ReplacementEventType;
   /** 仅作用于指定卡牌实例；为空时作用于 controllerPlayerId 操控的任意卡牌 */
   targetCardInstanceId?: string;
+  /** 仅作用于 DEAL_DAMAGE：限定伤害来源卡牌实例 */
+  sourceCardInstanceId?: string;
   controllerPlayerId: string;
   /** 限定破坏原因 (如仅限 BATTLE 战斗破坏) */
   destroyReason?: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
@@ -73,6 +75,8 @@ export interface ActiveReplacementEffect {
   once?: boolean;
   /** 有效截止回合 (undefined 表示持续到卡牌离场或本局结束) */
   untilTurn?: number;
+  /** 为 true 时在攻击结束 endCombat() 时自动清理 */
+  expiresAtCombatEnd?: boolean;
   source?: string;
   label?: string;
 }
@@ -406,6 +410,13 @@ export interface CombatState {
   dealtPlayerDamage?: boolean;
   /** 7.5.1.d / 7.6.1.f 攻击结束时触发是否已发射 (供 endCombat 挂起恢复) */
   attackEndTriggersEmitted?: boolean;
+  /** 7.6.1.b 战斗破坏被可选置换挂起时暂存的比拼上下文，待决策解决后再结算 BATTLE_COMPARED 与 END */
+  pendingBattleCompare?: {
+    attackerCardId: string;
+    attackerPP: number;
+    defenderCardId: string;
+    defenderPP: number;
+  };
   freeTimingPassCount: number; // 双方连续Pass计数 (用于推动时点结束)
 }
 

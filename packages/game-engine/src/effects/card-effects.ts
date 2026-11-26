@@ -42,6 +42,9 @@ export class CardEffectEngine {
     if (ctx.continuousEffects) {
       this.presets.registerStaticEffects(ctx.continuousEffects);
     }
+    if (ctx.replacementEngine) {
+      this.presets.registerReplacements(ctx.replacementEngine);
+    }
     if (ctx.triggerMgr) {
       this.presets.registerTriggers(ctx.triggerMgr);
       ctx.triggerMgr.registerTrigger({
