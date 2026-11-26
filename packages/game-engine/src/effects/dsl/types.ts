@@ -2,6 +2,7 @@ import type {
   CardType,
   ElementAttribute,
   ProhibitionFlag,
+  ReplacementEventType,
   SignalOrbColor,
   TriggerEventType,
   ZoneId,
@@ -83,6 +84,18 @@ export interface CardFilter {
   hasUnderneathOrEquipMatching?: CardFilter;
   /** true = 仅浮空模式 (处理区浮空卡)，false = 非浮空模式 */
   isAirborne?: boolean;
+  /** true = 仅正在进行本次攻击的角色，false = 非攻击中角色 */
+  isAttacking?: boolean;
+  /** true = 仅本次攻击中被选为目标的角色，false = 非被攻击目标角色 */
+  isBeingAttacked?: boolean;
+  /** true = 仅当前处于本次攻击战斗中 (攻击或被攻击) 的角色，false = 非战斗中角色 */
+  isInCombat?: boolean;
+  /** true = 仅升变出场的卡牌，false = 非升变出场的卡牌 */
+  wasAscendedPlay?: boolean;
+  /** 限制卡牌进入当前区域前的来源区域 */
+  enteredFromZones?: ZoneId[];
+  /** true = 仅以浮空模式角色为对象升变出场的角色 */
+  ascendedFromAirborne?: boolean;
   /** 限制卡牌当前所在区域 (如 Q&A·7 BP01-056 结算时确认仍在墓地) */
   inZone?: ZoneId;
   excludeSelf?: boolean;
@@ -95,10 +108,10 @@ export type NumberExpr =
   | number
   | { kind: 'EROSION_MULT'; side: PlayerSide; multiplier: number }
   | { kind: 'ROLE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
-  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number; uniqueNames?: boolean; filter?: CardFilter }
-  | { kind: 'SUM_UNDERNEATH_COUNT'; side: PlayerSide; roleFilter?: CardFilter; filter?: CardFilter; uniqueNames?: boolean; multiplier?: number }
+  | { kind: 'UNDERNEATH_COUNT_MULT'; multiplier: number; uniqueNames?: boolean; uniqueCardNumbers?: boolean; filter?: CardFilter }
+  | { kind: 'SUM_UNDERNEATH_COUNT'; side: PlayerSide; roleFilter?: CardFilter; filter?: CardFilter; uniqueNames?: boolean; uniqueCardNumbers?: boolean; multiplier?: number }
   | { kind: 'ORB_ZONE_COUNT_MULT'; side: PlayerSide; filter?: CardFilter; multiplier: number }
-  | { kind: 'ZONE_COUNT_MULT'; side: PlayerSide; zone: ZoneId; filter?: CardFilter; uniqueNames?: boolean; multiplier: number }
+  | { kind: 'ZONE_COUNT_MULT'; side: PlayerSide; zone: ZoneId; filter?: CardFilter; uniqueNames?: boolean; uniqueCardNumbers?: boolean; multiplier: number }
   | { kind: 'VAR_COUNT_MULT'; varName: string; multiplier: number }
   | { kind: 'VAR_DISTINCT_COST_MULT'; varName: string; multiplier: number }
   | { kind: 'FLOOR_DIV'; expr: NumberExpr; divisor: number }
@@ -147,6 +160,7 @@ export type ConditionExpr =
   | { kind: 'VAR_HAS_DUPLICATE_COST'; varName: string }
   | { kind: 'HAS_ELIMINABLE_ORBS'; filter: OrbColorFilter; count: number }
   | { kind: 'IS_STANDALONE_EQUIPMENT' }
+  | { kind: 'PARTNER_FROM_ZONE'; zones: ZoneId[] }
   | { kind: 'ALL'; conditions: ConditionExpr[] }
   | { kind: 'ANY'; conditions: ConditionExpr[] }
   | { kind: 'NOT'; condition: ConditionExpr };
@@ -158,11 +172,25 @@ export type CardTargetRef =
   | { kind: 'SELF' }
   | { kind: 'SELF_UNDERNEATH'; filter?: CardFilter }
   | { kind: 'SELF_PARTNER' }
+  | { kind: 'EQUIPPED_HOST'; filter?: CardFilter }
   | { kind: 'ZONE_BOTTOM_CARD'; side: PlayerSide; zone: ZoneId }
+  | {
+      kind: 'ZONE_SLICE';
+      side: PlayerSide;
+      zone: 'DECK' | 'SIGNAL_ORB' | 'GRAVEYARD' | 'PROCESSING';
+      edge: 'TOP' | 'BOTTOM';
+      count: number;
+      filter?: CardFilter;
+    }
   | { kind: 'VAR'; varName: string }
   | { kind: 'REST_OF_VAR'; allVar: string; excludeVar: string }
-  | { kind: 'ALL_MATCHING_ROLES'; side: PlayerSide; filter?: CardFilter }
-  | { kind: 'ZONE_CARDS'; side: PlayerSide; zone: 'SIGNAL_ORB' | 'BATTLEFIELD'; filter?: CardFilter }
+  | { kind: 'ALL_MATCHING_ROLES'; side: PlayerSide | 'ANY'; filter?: CardFilter }
+  | {
+      kind: 'ZONE_CARDS';
+      side: PlayerSide;
+      zone: 'SIGNAL_ORB' | 'BATTLEFIELD' | 'GRAVEYARD' | 'HAND' | 'COST' | 'PROCESSING';
+      filter?: CardFilter;
+    }
   | { kind: 'HOST_UNDERNEATH_MATCHING'; side: PlayerSide; roleFilter?: CardFilter; cardFilter?: CardFilter }
   | { kind: 'TRIGGER_ATTACKER' }
   | { kind: 'TRIGGER_BLOCKER' }
@@ -268,6 +296,13 @@ export type EffectStep =
       saveToVar: string;
     }
   | {
+      op: 'PEEK_ZONE';
+      side?: PlayerSide;
+      zone: 'SIGNAL_ORB' | 'COST';
+      filter?: CardFilter;
+      saveToVar: string;
+    }
+  | {
       op: 'DISCARD_OPPONENT_RANDOM_HAND';
       count: number;
     }
@@ -292,6 +327,8 @@ export type EffectStep =
       min?: number;
       max?: number;
       uniqueNames?: boolean;
+      uniqueCardNumbers?: boolean;
+      distinctAttributes?: boolean;
       maxTotalCost?: number;
       saveToVar: string;
       choiceEffectType?: string;
@@ -466,6 +503,10 @@ export type EffectStep =
       sentByEffectOrCost?: boolean;
       /** 保存实际完成移动/出场的卡牌 ID (供后续 8.6.4「若如此做」判定) */
       saveMovedToVar?: string;
+      /** true 且待移动目标 >= 2 张时，由操作玩家选择入区排列顺序 */
+      chooseOrder?: boolean;
+      orderPrompt?: string;
+      orderChoiceEffectType?: string;
     }
   | {
       op: 'ASCEND_FROM_VAR';
@@ -553,10 +594,16 @@ export type EffectStep =
   | {
       op: 'REGISTER_REPLACEMENT';
       eventType: 'DESTROY_ROLE' | 'MOVE_CARD' | 'DEAL_DAMAGE';
-      target: CardTargetRef;
+      target?: CardTargetRef;
+      targetSide?: PlayerSide;
+      destroyReason?: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+      fromZone?: ZoneId;
+      toZone?: ZoneId;
+      label?: string;
       action:
         | { kind: 'PREVENT' }
-        | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean };
+        | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean }
+        | { kind: 'MODIFY_DAMAGE'; delta?: number; setAmount?: number; maxAmount?: number };
       duration: ModifierDuration;
       once?: boolean;
     }
@@ -745,12 +792,14 @@ export type DeclarativeTriggerMatcher =
       requiredHostTrait?: string;
       requiredHostName?: string;
       onlyOpponentTurn?: boolean;
+      fromZones?: ZoneId[];
     }
   | {
       /** 8.13 该牌通过协战获得搭档时触发 (搭配 PARTNER_GAINED) */
       kind: 'SELF_GAINED_PARTNER';
       requiredPartnerTrait?: string;
       requiredPartnerName?: string;
+      fromZones?: ZoneId[];
     }
   | {
       /** 该牌离开战场时触发 (搭配 CARD_LEFT_FIELD，支持检查离场前是否装备特定特征装备) */
@@ -861,6 +910,53 @@ export interface DeclarativeEntrySpec {
 }
 
 /**
+ * 8.10 声明式置换效果代价描述
+ */
+export type DeclarativeReplacementCost =
+  | {
+      kind: 'SEND_ZONE_CARD_TO_GY';
+      zone: 'HAND' | 'BATTLEFIELD' | 'SIGNAL_ORB' | 'COST';
+      filter: CardFilter;
+      count: number;
+      excludeEventCard?: boolean;
+      selfOnly?: boolean;
+      sentByEffectOrCost?: boolean;
+    }
+  | {
+      kind: 'SEND_SELF_ATTACHED_EQUIPS_TO_GY';
+      requiredTraits: string[];
+    };
+
+/**
+ * 8.10 声明式卡牌级置换效果规则描述 (自动注册至 ReplacementEngine)
+ */
+export interface DeclarativeReplacementSpec {
+  id: string;
+  label: string;
+  eventTypes: ReplacementEventType[];
+  sourceZones?: ZoneId[];
+  subjectScope: 'SELF' | 'FRIENDLY_CARD';
+  eventCardFilter?: CardFilter;
+  destroyReason?: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+  fromZone?: ZoneId;
+  toZone?: ZoneId;
+  onlyLeaveBattlefield?: boolean;
+  isOrphanCleanup?: boolean;
+  orphanHostName?: string;
+  oncePerTurn?: boolean;
+  optional?: boolean;
+  confirmPrompt?: string;
+  choiceEffectType?: string;
+  replaceOptionLabel?: string;
+  declineOptionLabel?: string;
+  cost?: DeclarativeReplacementCost;
+  action:
+    | { kind: 'PREVENT' }
+    | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean }
+    | { kind: 'MODIFY_DAMAGE'; delta?: number; setAmount?: number; maxAmount?: number };
+}
+
+/**
  * 单张卡牌的声明式效果完整描述 (docs/future-work.md §3)
  */
 export interface CardEffectSpec {
@@ -905,6 +1001,8 @@ export interface CardEffectSpec {
   triggers?: DeclarativeTriggerSpec[];
   /** 【永】持续效果列表 */
   staticEffects?: DeclarativeStaticEffectSpec[];
+  /** 8.10 声明式置换效果列表 */
+  replacements?: DeclarativeReplacementSpec[];
   /** 【永】该角色在场时对我方手牌使用的费用修正 (如 BP01-077 首张《荣光护盾》变1费、BP01-015 首张装备-1费、BP03-073 首张<艺术协会>战术牌-1费) */
   fieldCardCostRule?: {
     targetName?: string;

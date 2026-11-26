@@ -7,6 +7,8 @@ import type {
   CardTargetRef,
   CompareOp,
   ConditionExpr,
+  DeclarativeReplacementCost,
+  DeclarativeReplacementSpec,
   DeclarativeStaticEffectSpec,
   DeclarativeTriggerMatcher,
   DeclarativeTriggerSpec,
@@ -83,6 +85,23 @@ const VALID_MOVE_ZONES = new Set([
   'BATTLEFIELD',
 ]);
 const VALID_ZONES = new Set(['DECK', 'HAND', 'BATTLEFIELD', 'COST', 'SIGNAL_ORB', 'GRAVEYARD', 'PROCESSING']);
+const VALID_ZONE_CARDS_TARGET_ZONES = new Set([
+  'SIGNAL_ORB',
+  'BATTLEFIELD',
+  'GRAVEYARD',
+  'HAND',
+  'COST',
+  'PROCESSING',
+]);
+const VALID_ZONE_SLICE_ZONES = new Set(['DECK', 'SIGNAL_ORB', 'GRAVEYARD', 'PROCESSING']);
+const VALID_ORDERED_MOVE_DESTINATIONS = new Set([
+  'DECK_BOTTOM',
+  'DECK_TOP',
+  'SIGNAL_ORB',
+  'SIGNAL_ORB_BOTTOM',
+]);
+const VALID_REPLACEMENT_COST_ZONES = new Set(['HAND', 'BATTLEFIELD', 'SIGNAL_ORB', 'COST']);
+const VALID_DESTROY_REASONS = new Set(['BATTLE', 'EFFECT', 'PP_ZERO']);
 const VALID_PLAY_FROM_ZONES = new Set(['HAND', 'GRAVEYARD', 'UNDERNEATH']);
 const VALID_PLAY_SACRIFICE_ZONES = new Set(['HAND', 'BATTLEFIELD']);
 const VALID_FIELD_IGNORE_ATTR_ZONES = new Set(['BATTLEFIELD', 'COST']);
@@ -289,6 +308,36 @@ function validateFilter(filter: CardFilter | undefined, path: string): void {
   if (filter.inZone !== undefined) {
     assert(VALID_ZONES.has(filter.inZone), `${path}.inZone 非法: ${String(filter.inZone)}`);
   }
+  if (filter.enteredFromZones !== undefined) {
+    assert(
+      Array.isArray(filter.enteredFromZones) && filter.enteredFromZones.length > 0,
+      `${path}.enteredFromZones 不能为空数组`
+    );
+    filter.enteredFromZones.forEach((z, i) =>
+      assert(VALID_ZONES.has(z), `${path}.enteredFromZones[${i}] 非法区域: ${String(z)}`)
+    );
+  }
+  if (filter.isAirborne !== undefined) {
+    assert(typeof filter.isAirborne === 'boolean', `${path}.isAirborne 必须是布尔值`);
+  }
+  if (filter.isAttacking !== undefined) {
+    assert(typeof filter.isAttacking === 'boolean', `${path}.isAttacking 必须是布尔值`);
+  }
+  if (filter.isBeingAttacked !== undefined) {
+    assert(typeof filter.isBeingAttacked === 'boolean', `${path}.isBeingAttacked 必须是布尔值`);
+  }
+  if (filter.isInCombat !== undefined) {
+    assert(typeof filter.isInCombat === 'boolean', `${path}.isInCombat 必须是布尔值`);
+  }
+  if (filter.wasAscendedPlay !== undefined) {
+    assert(typeof filter.wasAscendedPlay === 'boolean', `${path}.wasAscendedPlay 必须是布尔值`);
+  }
+  if (filter.ascendedFromAirborne !== undefined) {
+    assert(
+      typeof filter.ascendedFromAirborne === 'boolean',
+      `${path}.ascendedFromAirborne 必须是布尔值`
+    );
+  }
   if (filter.anyTraits !== undefined) {
     assert(Array.isArray(filter.anyTraits) && filter.anyTraits.length > 0, `${path}.anyTraits 不能为空数组`);
   }
@@ -357,10 +406,16 @@ function validateNumberExpr(
       return;
     case 'UNDERNEATH_COUNT_MULT':
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
+      if (expr.uniqueCardNumbers !== undefined) {
+        assert(typeof expr.uniqueCardNumbers === 'boolean', `${path}.uniqueCardNumbers 必须是布尔值`);
+      }
       validateFilter(expr.filter, `${path}.filter`);
       return;
     case 'SUM_UNDERNEATH_COUNT':
       assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
+      if (expr.uniqueCardNumbers !== undefined) {
+        assert(typeof expr.uniqueCardNumbers === 'boolean', `${path}.uniqueCardNumbers 必须是布尔值`);
+      }
       validateFilter(expr.roleFilter, `${path}.roleFilter`);
       validateFilter(expr.filter, `${path}.filter`);
       if (expr.multiplier !== undefined) assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
@@ -373,6 +428,9 @@ function validateNumberExpr(
     case 'ZONE_COUNT_MULT':
       assert(VALID_SIDES.has(expr.side), `${path}.side 非法: ${String(expr.side)}`);
       assert(VALID_ZONES.has(expr.zone), `${path}.zone 非法: ${String(expr.zone)}`);
+      if (expr.uniqueCardNumbers !== undefined) {
+        assert(typeof expr.uniqueCardNumbers === 'boolean', `${path}.uniqueCardNumbers 必须是布尔值`);
+      }
       assert(Number.isFinite(expr.multiplier), `${path}.multiplier 必须是有限数字`);
       validateFilter(expr.filter, `${path}.filter`);
       return;
@@ -519,6 +577,12 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       return;
     case 'IS_STANDALONE_EQUIPMENT':
       return;
+    case 'PARTNER_FROM_ZONE':
+      assert(Array.isArray(cond.zones) && cond.zones.length > 0, `${path}.zones 不能为空`);
+      cond.zones.forEach((z, i) =>
+        assert(VALID_ZONES.has(z), `${path}.zones[${i}] 非法元素: ${String(z)}`)
+      );
+      return;
     case 'ALL':
     case 'ANY':
       assert(Array.isArray(cond.conditions) && cond.conditions.length > 0, `${path}.conditions 不能为空`);
@@ -545,9 +609,19 @@ function validateTarget(target: CardTargetRef, definedVars: ReadonlySet<string>,
     case 'SELF_UNDERNEATH':
       validateFilter(target.filter, `${path}.filter`);
       return;
+    case 'EQUIPPED_HOST':
+      validateFilter(target.filter, `${path}.filter`);
+      return;
     case 'ZONE_BOTTOM_CARD':
       assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
       assert(VALID_ZONES.has(target.zone), `${path}.zone 非法`);
+      return;
+    case 'ZONE_SLICE':
+      assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
+      assert(VALID_ZONE_SLICE_ZONES.has(target.zone), `${path}.zone 非法: ${String(target.zone)}`);
+      assert(target.edge === 'TOP' || target.edge === 'BOTTOM', `${path}.edge 非法: ${String(target.edge)}`);
+      assertPositiveInt(target.count, `${path}.count`);
+      validateFilter(target.filter, `${path}.filter`);
       return;
     case 'HOST_UNDERNEATH_MATCHING':
       assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
@@ -562,12 +636,18 @@ function validateTarget(target: CardTargetRef, definedVars: ReadonlySet<string>,
       assert(definedVars.has(target.excludeVar), `${path} 引用了未定义变量 excludeVar "${target.excludeVar}"`);
       return;
     case 'ALL_MATCHING_ROLES':
-      assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
+      assert(
+        VALID_SIDES.has(target.side as PlayerSide) || target.side === 'ANY',
+        `${path}.side 非法`
+      );
       validateFilter(target.filter, `${path}.filter`);
       return;
     case 'ZONE_CARDS':
       assert(VALID_SIDES.has(target.side), `${path}.side 非法`);
-      assert(target.zone === 'SIGNAL_ORB' || target.zone === 'BATTLEFIELD', `${path}.zone 非法: ${String(target.zone)}`);
+      assert(
+        VALID_ZONE_CARDS_TARGET_ZONES.has(target.zone),
+        `${path}.zone 非法: ${String(target.zone)}`
+      );
       validateFilter(target.filter, `${path}.filter`);
       return;
     default:
@@ -650,6 +730,16 @@ function validateSteps(
         assert(typeof step.saveToVar === 'string' && step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
         vars.add(step.saveToVar);
         break;
+      case 'PEEK_ZONE':
+        if (step.side !== undefined) assert(VALID_SIDES.has(step.side), `${sp}.side 非法`);
+        assert(
+          step.zone === 'SIGNAL_ORB' || step.zone === 'COST',
+          `${sp}.zone 仅支持 SIGNAL_ORB 或 COST，收到 ${String(step.zone)}`
+        );
+        validateFilter(step.filter, `${sp}.filter`);
+        assert(typeof step.saveToVar === 'string' && step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
+        vars.add(step.saveToVar);
+        break;
       case 'DISCARD_OPPONENT_RANDOM_HAND':
         assertPositiveInt(step.count, `${sp}.count`);
         break;
@@ -668,6 +758,15 @@ function validateSteps(
         assertPositiveInt(max, `${sp}.max`);
         assert(min <= max, `${sp}.min (${min}) 不能大于 max (${max})`);
         if (step.maxTotalCost !== undefined) assertNonNegativeInt(step.maxTotalCost, `${sp}.maxTotalCost`);
+        if (step.uniqueNames !== undefined) {
+          assert(typeof step.uniqueNames === 'boolean', `${sp}.uniqueNames 必须是布尔值`);
+        }
+        if (step.uniqueCardNumbers !== undefined) {
+          assert(typeof step.uniqueCardNumbers === 'boolean', `${sp}.uniqueCardNumbers 必须是布尔值`);
+        }
+        if (step.distinctAttributes !== undefined) {
+          assert(typeof step.distinctAttributes === 'boolean', `${sp}.distinctAttributes 必须是布尔值`);
+        }
         validateFilter(step.filter, `${sp}.filter`);
         validateFilter(step.eligibilityFilter, `${sp}.eligibilityFilter`);
         assert(step.saveToVar.length > 0, `${sp}.saveToVar 不能为空`);
@@ -690,6 +789,15 @@ function validateSteps(
         assertPositiveInt(max, `${sp}.max`);
         assert(min <= max, `${sp}.min (${min}) 不能大于 max (${max})`);
         if (step.maxTotalCost !== undefined) assertNonNegativeInt(step.maxTotalCost, `${sp}.maxTotalCost`);
+        if (step.uniqueNames !== undefined) {
+          assert(typeof step.uniqueNames === 'boolean', `${sp}.uniqueNames 必须是布尔值`);
+        }
+        if (step.uniqueCardNumbers !== undefined) {
+          assert(typeof step.uniqueCardNumbers === 'boolean', `${sp}.uniqueCardNumbers 必须是布尔值`);
+        }
+        if (step.distinctAttributes !== undefined) {
+          assert(typeof step.distinctAttributes === 'boolean', `${sp}.distinctAttributes 必须是布尔值`);
+        }
         if (step.dynamicMin !== undefined) validateNumberExpr(step.dynamicMin, `${sp}.dynamicMin`, vars);
         if (step.dynamicMax !== undefined) validateNumberExpr(step.dynamicMax, `${sp}.dynamicMax`, vars);
         validateFilter(step.hostFilter, `${sp}.hostFilter`);
@@ -707,6 +815,15 @@ function validateSteps(
         assertPositiveInt(max, `${sp}.max`);
         assert(min <= max, `${sp}.min (${min}) 不能大于 max (${max})`);
         if (step.maxTotalCost !== undefined) assertNonNegativeInt(step.maxTotalCost, `${sp}.maxTotalCost`);
+        if (step.uniqueNames !== undefined) {
+          assert(typeof step.uniqueNames === 'boolean', `${sp}.uniqueNames 必须是布尔值`);
+        }
+        if (step.uniqueCardNumbers !== undefined) {
+          assert(typeof step.uniqueCardNumbers === 'boolean', `${sp}.uniqueCardNumbers 必须是布尔值`);
+        }
+        if (step.distinctAttributes !== undefined) {
+          assert(typeof step.distinctAttributes === 'boolean', `${sp}.distinctAttributes 必须是布尔值`);
+        }
         validateFilter(step.filter, `${sp}.filter`);
         if (step.distinctTraits !== undefined) {
           assert(
@@ -795,6 +912,27 @@ function validateSteps(
           assert(step.underneathHost !== undefined, `${sp} toZone=UNDERNEATH 必须指定 underneathHost`);
           validateTarget(step.underneathHost, vars, `${sp}.underneathHost`);
         }
+        if (step.chooseOrder !== undefined) {
+          assert(typeof step.chooseOrder === 'boolean', `${sp}.chooseOrder 必须是布尔值`);
+          if (step.chooseOrder) {
+            assert(
+              VALID_ORDERED_MOVE_DESTINATIONS.has(step.toZone),
+              `${sp}.chooseOrder=true 时 toZone 仅支持 DECK_BOTTOM / DECK_TOP / SIGNAL_ORB / SIGNAL_ORB_BOTTOM，收到 ${String(step.toZone)}`
+            );
+          }
+        }
+        if (step.orderPrompt !== undefined) {
+          assert(
+            typeof step.orderPrompt === 'string' && step.orderPrompt.length > 0,
+            `${sp}.orderPrompt 必须是非空字符串`
+          );
+        }
+        if (step.orderChoiceEffectType !== undefined) {
+          assert(
+            typeof step.orderChoiceEffectType === 'string' && step.orderChoiceEffectType.length > 0,
+            `${sp}.orderChoiceEffectType 必须是非空字符串`
+          );
+        }
         if (step.saveMovedToVar) vars.add(step.saveMovedToVar);
         break;
       case 'ASCEND_FROM_VAR':
@@ -863,15 +1001,46 @@ function validateSteps(
         break;
       case 'REGISTER_REPLACEMENT':
         assert(VALID_REPLACEMENT_EVENTS.has(step.eventType), `${sp}.eventType 非法: ${String(step.eventType)}`);
-        validateTarget(step.target, vars, `${sp}.target`);
-        assert(
-          step.action && (step.action.kind === 'PREVENT' || step.action.kind === 'REDIRECT_ZONE'),
-          `${sp}.action.kind 非法`
-        );
-        if (step.action.kind === 'REDIRECT_ZONE') {
-          assert(VALID_ZONES.has(step.action.zone), `${sp}.action.zone 非法: ${String(step.action.zone)}`);
+        if (step.eventType !== 'DEAL_DAMAGE') {
+          assert(step.target !== undefined, `${sp} eventType=${step.eventType} 时必须指定 target`);
+        }
+        if (step.target !== undefined) {
+          validateTarget(step.target, vars, `${sp}.target`);
+        }
+        if (step.targetSide !== undefined) {
+          assert(VALID_SIDES.has(step.targetSide), `${sp}.targetSide 非法: ${String(step.targetSide)}`);
+        }
+        if (step.destroyReason !== undefined) {
+          assert(
+            VALID_DESTROY_REASONS.has(step.destroyReason),
+            `${sp}.destroyReason 非法: ${String(step.destroyReason)}`
+          );
+        }
+        if (step.fromZone !== undefined) {
+          assert(VALID_ZONES.has(step.fromZone), `${sp}.fromZone 非法: ${String(step.fromZone)}`);
+        }
+        if (step.toZone !== undefined) {
+          assert(VALID_ZONES.has(step.toZone), `${sp}.toZone 非法: ${String(step.toZone)}`);
+        }
+        if (step.label !== undefined) {
+          assert(typeof step.label === 'string' && step.label.length > 0, `${sp}.label 不能为空`);
+        }
+        validateReplacementAction(step.action, `${sp}.action`);
+        if (step.eventType === 'DEAL_DAMAGE') {
+          assert(
+            step.action.kind !== 'REDIRECT_ZONE',
+            `${sp} eventType=DEAL_DAMAGE 不支持 REDIRECT_ZONE 置换动作`
+          );
+        } else {
+          assert(
+            step.action.kind !== 'MODIFY_DAMAGE',
+            `${sp} eventType=${step.eventType} 不支持 MODIFY_DAMAGE 置换动作`
+          );
         }
         assert(VALID_DURATIONS.has(step.duration), `${sp}.duration 非法`);
+        if (step.once !== undefined) {
+          assert(typeof step.once === 'boolean', `${sp}.once 必须是布尔值`);
+        }
         break;
       case 'MODIFY_STATS': {
         validateTarget(step.target, vars, `${sp}.target`);
@@ -965,6 +1134,199 @@ function validateSteps(
   return vars;
 }
 
+function validateReplacementAction(
+  action: DeclarativeReplacementSpec['action'],
+  path: string
+): void {
+  assert(
+    action &&
+      (action.kind === 'PREVENT' ||
+        action.kind === 'REDIRECT_ZONE' ||
+        action.kind === 'MODIFY_DAMAGE'),
+    `${path}.kind 非法`
+  );
+  if (action.kind === 'REDIRECT_ZONE') {
+    assert(VALID_ZONES.has(action.zone), `${path}.zone 非法: ${String(action.zone)}`);
+    if (action.isFaceUp !== undefined) {
+      assert(typeof action.isFaceUp === 'boolean', `${path}.isFaceUp 必须是布尔值`);
+    }
+    if (action.isReady !== undefined) {
+      assert(typeof action.isReady === 'boolean', `${path}.isReady 必须是布尔值`);
+    }
+    if (action.toBottom !== undefined) {
+      assert(typeof action.toBottom === 'boolean', `${path}.toBottom 必须是布尔值`);
+    }
+  } else if (action.kind === 'MODIFY_DAMAGE') {
+    assert(
+      action.delta !== undefined ||
+        action.setAmount !== undefined ||
+        action.maxAmount !== undefined,
+      `${path} MODIFY_DAMAGE 至少须指定 delta / setAmount / maxAmount 之一`
+    );
+    if (action.delta !== undefined) {
+      assert(
+        typeof action.delta === 'number' && Number.isInteger(action.delta),
+        `${path}.delta 必须是整数，收到 ${String(action.delta)}`
+      );
+    }
+    if (action.setAmount !== undefined) {
+      assertNonNegativeInt(action.setAmount, `${path}.setAmount`);
+    }
+    if (action.maxAmount !== undefined) {
+      assertNonNegativeInt(action.maxAmount, `${path}.maxAmount`);
+    }
+  }
+}
+
+function validateReplacementCost(cost: DeclarativeReplacementCost | undefined, path: string): void {
+  if (!cost) return;
+  assert(typeof cost === 'object' && cost !== null, `${path} 必须是置换代价对象`);
+  switch (cost.kind) {
+    case 'SEND_ZONE_CARD_TO_GY':
+      assert(
+        VALID_REPLACEMENT_COST_ZONES.has(cost.zone),
+        `${path}.zone 非法: ${String(cost.zone)}`
+      );
+      validateFilter(cost.filter, `${path}.filter`);
+      assertPositiveInt(cost.count, `${path}.count`);
+      if (cost.excludeEventCard !== undefined) {
+        assert(typeof cost.excludeEventCard === 'boolean', `${path}.excludeEventCard 必须是布尔值`);
+      }
+      if (cost.selfOnly !== undefined) {
+        assert(typeof cost.selfOnly === 'boolean', `${path}.selfOnly 必须是布尔值`);
+      }
+      if (cost.sentByEffectOrCost !== undefined) {
+        assert(
+          typeof cost.sentByEffectOrCost === 'boolean',
+          `${path}.sentByEffectOrCost 必须是布尔值`
+        );
+      }
+      return;
+    case 'SEND_SELF_ATTACHED_EQUIPS_TO_GY':
+      assertNonEmptyStringArray(cost.requiredTraits, `${path}.requiredTraits`);
+      return;
+    default:
+      throw new Error(
+        `卡牌声明式效果校验失败：${path} 未知的置换代价类型 ${(cost as { kind?: unknown }).kind}`
+      );
+  }
+}
+
+function validateReplacementSpec(repl: DeclarativeReplacementSpec, path: string): void {
+  assert(typeof repl.id === 'string' && repl.id.length > 0, `${path}.id 不能为空`);
+  assert(typeof repl.label === 'string' && repl.label.length > 0, `${path}.label 不能为空`);
+  assert(
+    Array.isArray(repl.eventTypes) && repl.eventTypes.length > 0,
+    `${path}.eventTypes 不能为空数组`
+  );
+  repl.eventTypes.forEach((ev, i) =>
+    assert(VALID_REPLACEMENT_EVENTS.has(ev), `${path}.eventTypes[${i}] 非法: ${String(ev)}`)
+  );
+  assert(
+    repl.subjectScope === 'SELF' || repl.subjectScope === 'FRIENDLY_CARD',
+    `${path}.subjectScope 非法: ${String(repl.subjectScope)}`
+  );
+  if (repl.sourceZones !== undefined) {
+    assert(
+      Array.isArray(repl.sourceZones) && repl.sourceZones.length > 0,
+      `${path}.sourceZones 不能为空数组`
+    );
+    repl.sourceZones.forEach((z, i) =>
+      assert(VALID_ZONES.has(z), `${path}.sourceZones[${i}] 非法区域: ${String(z)}`)
+    );
+  }
+  validateFilter(repl.eventCardFilter, `${path}.eventCardFilter`);
+  if (repl.destroyReason !== undefined) {
+    assert(
+      VALID_DESTROY_REASONS.has(repl.destroyReason),
+      `${path}.destroyReason 非法: ${String(repl.destroyReason)}`
+    );
+  }
+  if (repl.fromZone !== undefined) {
+    assert(VALID_ZONES.has(repl.fromZone), `${path}.fromZone 非法: ${String(repl.fromZone)}`);
+  }
+  if (repl.toZone !== undefined) {
+    assert(VALID_ZONES.has(repl.toZone), `${path}.toZone 非法: ${String(repl.toZone)}`);
+  }
+  if (repl.onlyLeaveBattlefield !== undefined) {
+    assert(
+      typeof repl.onlyLeaveBattlefield === 'boolean',
+      `${path}.onlyLeaveBattlefield 必须是布尔值`
+    );
+  }
+  if (repl.isOrphanCleanup !== undefined) {
+    assert(typeof repl.isOrphanCleanup === 'boolean', `${path}.isOrphanCleanup 必须是布尔值`);
+  }
+  if (repl.orphanHostName !== undefined) {
+    assert(
+      typeof repl.orphanHostName === 'string' && repl.orphanHostName.length > 0,
+      `${path}.orphanHostName 不能为空`
+    );
+  }
+  if (repl.oncePerTurn !== undefined) {
+    assert(typeof repl.oncePerTurn === 'boolean', `${path}.oncePerTurn 必须是布尔值`);
+  }
+  if (repl.optional !== undefined) {
+    assert(typeof repl.optional === 'boolean', `${path}.optional 必须是布尔值`);
+  }
+  if (repl.confirmPrompt !== undefined) {
+    assert(
+      typeof repl.confirmPrompt === 'string' && repl.confirmPrompt.length > 0,
+      `${path}.confirmPrompt 不能为空`
+    );
+  }
+  if (repl.choiceEffectType !== undefined) {
+    assert(
+      typeof repl.choiceEffectType === 'string' && repl.choiceEffectType.length > 0,
+      `${path}.choiceEffectType 不能为空`
+    );
+  }
+  if (repl.replaceOptionLabel !== undefined) {
+    assert(
+      typeof repl.replaceOptionLabel === 'string' && repl.replaceOptionLabel.length > 0,
+      `${path}.replaceOptionLabel 不能为空`
+    );
+  }
+  if (repl.declineOptionLabel !== undefined) {
+    assert(
+      typeof repl.declineOptionLabel === 'string' && repl.declineOptionLabel.length > 0,
+      `${path}.declineOptionLabel 不能为空`
+    );
+  }
+  validateReplacementCost(repl.cost, `${path}.cost`);
+  validateReplacementAction(repl.action, `${path}.action`);
+  if (
+    repl.onlyLeaveBattlefield ||
+    repl.fromZone !== undefined ||
+    repl.toZone !== undefined ||
+    repl.isOrphanCleanup !== undefined ||
+    repl.orphanHostName !== undefined
+  ) {
+    assert(
+      repl.eventTypes.includes('MOVE_CARD'),
+      `${path} 配置了离场/区域移动限定字段时 eventTypes 必须包含 MOVE_CARD`
+    );
+  }
+  if (repl.destroyReason !== undefined) {
+    assert(
+      repl.eventTypes.includes('DESTROY_ROLE'),
+      `${path} 配置了 destroyReason 时 eventTypes 必须包含 DESTROY_ROLE`
+    );
+  }
+  if (repl.action.kind === 'MODIFY_DAMAGE') {
+    assert(
+      repl.eventTypes.every((ev) => ev === 'DEAL_DAMAGE'),
+      `${path} action=MODIFY_DAMAGE 时 eventTypes 仅能包含 DEAL_DAMAGE`
+    );
+  }
+  if (repl.action.kind === 'REDIRECT_ZONE') {
+    assert(
+      !repl.eventTypes.includes('DEAL_DAMAGE'),
+      `${path} action=REDIRECT_ZONE 不支持 DEAL_DAMAGE`
+    );
+  }
+}
+
 function validateTriggerMatcher(matcher: DeclarativeTriggerMatcher, path: string): void {
   assert(matcher && VALID_TRIGGER_MATCHERS.has(matcher.kind), `${path}.kind 非法`);
   switch (matcher.kind) {
@@ -1006,6 +1368,18 @@ function validateTriggerMatcher(matcher: DeclarativeTriggerMatcher, path: string
       break;
     case 'SELF_IN_GRAVEYARD_ON_FRIENDLY_ROLE_ATTACKED':
       validateFilter(matcher.targetFilter, `${path}.targetFilter`);
+      break;
+    case 'SELF_BECAME_PARTNER':
+    case 'SELF_GAINED_PARTNER':
+      if (matcher.fromZones !== undefined) {
+        assert(
+          Array.isArray(matcher.fromZones) && matcher.fromZones.length > 0,
+          `${path}.fromZones 不能为空数组`
+        );
+        matcher.fromZones.forEach((z, i) =>
+          assert(VALID_ZONES.has(z), `${path}.fromZones[${i}] 非法区域: ${String(z)}`)
+        );
+      }
       break;
     default:
       break;
@@ -1210,6 +1584,12 @@ function validateCardEffectSpecInternal(
       validateStaticEffect(s, `${spec.cardNumber}.staticEffects[${i}]`, grantedTriggerRefs)
     );
   }
+  if (spec.replacements) {
+    assert(Array.isArray(spec.replacements), `${spec.cardNumber}.replacements 必须是数组`);
+    spec.replacements.forEach((r, i) =>
+      validateReplacementSpec(r, `${spec.cardNumber}.replacements[${i}]`)
+    );
+  }
   if (spec.fieldCardCostRule) {
     const rule = spec.fieldCardCostRule;
     if (rule.setCost !== undefined) assertNonNegativeInt(rule.setCost, `${spec.cardNumber}.fieldCardCostRule.setCost`);
@@ -1293,6 +1673,7 @@ export function validateCardEffectRegistry(
   const map = new Map<string, CardEffectSpec>();
   const triggerIds = new Set<string>();
   const staticIds = new Set<string>();
+  const replacementIds = new Set<string>();
   const grantedTriggerRefs: GrantedTriggerRef[] = [];
 
   for (const spec of specs) {
@@ -1307,6 +1688,10 @@ export function validateCardEffectRegistry(
     for (const s of spec.staticEffects ?? []) {
       assert(!staticIds.has(s.id), `重复注册了静态效果 ID: ${s.id}`);
       staticIds.add(s.id);
+    }
+    for (const r of spec.replacements ?? []) {
+      assert(!replacementIds.has(r.id), `重复注册了置换效果 ID: ${r.id}`);
+      replacementIds.add(r.id);
     }
   }
 

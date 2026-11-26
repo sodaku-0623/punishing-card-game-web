@@ -1,6 +1,7 @@
 import { CardVersionData, GameAction, PendingChoice } from '@zhanshuang/shared';
 import type { CardEffectContext, CardEffectEngine } from './card-effects.js';
 import type { ContinuousEffectEngine } from './continuous-effects.js';
+import type { ReplacementEngine } from './replacement-engine.js';
 import type { TriggerManager } from '../priority/trigger-system.js';
 import { DeclarativeEffectInterpreter, STARTER_DECK_SPEC_MAP } from './dsl/index.js';
 import { nextChoiceId } from '../state/pending-choice.js';
@@ -111,6 +112,15 @@ export class PresetCardEffects {
    */
   registerStaticEffects(continuousEffects: ContinuousEffectEngine): void {
     this.interpreter.registerStaticEffects(continuousEffects);
+  }
+
+  /**
+   * 8.10 向置换引擎注册所有声明式置换规则
+   */
+  registerReplacements(replacementEngine: ReplacementEngine): void {
+    (this.interpreter as { registerReplacements?: (engine: ReplacementEngine) => void }).registerReplacements?.(
+      replacementEngine
+    );
   }
 
   /**

@@ -32,6 +32,9 @@ export interface ReplacementMoveEvent {
   isPlacingUnderneath?: boolean;
   underneathHostId?: string;
   includeUnderneath?: boolean;
+  skipLeftFieldTrigger?: boolean;
+  sentByEffectOrCost?: boolean;
+  countAsDeckToGy?: boolean;
 }
 
 export interface ReplacementDamageEvent {
@@ -48,13 +51,14 @@ export type ReplacementEvent =
 
 export type ReplacementOutcome =
   | { kind: 'NONE' }
-  | { kind: 'PREVENT' }
+  | { kind: 'PREVENT'; pendingChoice?: boolean }
   | {
       kind: 'REDIRECT_ZONE';
       zone: ZoneId;
       isFaceUp?: boolean;
       isReady?: boolean;
       toBottom?: boolean;
+      pendingChoice?: boolean;
     }
   | { kind: 'MODIFY_DAMAGE'; newAmount: number };
 
@@ -65,9 +69,31 @@ export interface ReplacementRuleContext {
   hasLostAbilities: (cardInstanceId: string) => boolean;
   hasCardName: (cardInstanceId: string, name: string) => boolean;
   hasTrait?: (cardInstanceId: string, trait: string) => boolean;
+  getEffectiveCardCost?: (cardInstanceId: string) => number;
   sendCardToGraveyard?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
   getMaxCostZoneCapacity?: (playerId: string) => number;
   enqueueChoice?: (choice: PendingChoice) => void;
+}
+
+export interface OptionalReplacementDecisionParams {
+  ruleId: string;
+  label: string;
+  controllerPlayerId: string;
+  subjectCardId: string;
+  event: ReplacementDestroyEvent | ReplacementMoveEvent;
+  appliedIds?: Set<string>;
+  prompt?: string;
+  choiceEffectType?: string; // 默认 'OPTIONAL_REPLACEMENT_DECISION'
+  sacrificeCandidates?: string[];
+  sacrificeCount?: number;
+  fixedSacrificeIds?: string[];
+  detachFromSubject?: boolean;
+  oncePerTurnUsageKey?: string;
+  action:
+    | { kind: 'PREVENT' }
+    | { kind: 'REDIRECT_ZONE'; zone: ZoneId; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean };
+  replaceOptionLabel?: string;
+  declineOptionLabel?: string;
 }
 
 /**
@@ -129,6 +155,7 @@ export class ReplacementEngine {
   private rules: ReplacementRule[] = [];
   private sendCardToGraveyardCallback?: (cardInstanceId: string, sentByEffectOrCost?: boolean) => void;
   private maxCostCapProvider?: (playerId: string) => number;
+  private effectiveCostProvider?: (cardInstanceId: string) => number;
   private choiceEnqueuer?: (choice: PendingChoice) => void;
 
   constructor(
@@ -152,6 +179,10 @@ export class ReplacementEngine {
 
   setMaxCostCapacityProvider(provider: (playerId: string) => number): void {
     this.maxCostCapProvider = provider;
+  }
+
+  setEffectiveCardCostProvider(provider: (cardInstanceId: string) => number): void {
+    this.effectiveCostProvider = provider;
   }
 
   setChoiceEnqueuer(enqueuer: (choice: PendingChoice) => void): void {
@@ -184,6 +215,13 @@ export class ReplacementEngine {
     const remaining = this.state.activeReplacements.filter(
       (r) => r.untilTurn === undefined || r.untilTurn > turnNumber
     );
+    this.state.activeReplacements = remaining.length > 0 ? remaining : undefined;
+  }
+
+  /** 7.5.1.d / 7.6.1.f 攻击结束时清理 expiresAtCombatEnd 标志的活动置换效果 */
+  clearCombatReplacements(): void {
+    if (!this.state.activeReplacements?.length) return;
+    const remaining = this.state.activeReplacements.filter((r) => r.expiresAtCombatEnd !== true);
     this.state.activeReplacements = remaining.length > 0 ? remaining : undefined;
   }
 
@@ -268,11 +306,22 @@ export class ReplacementEngine {
       } else {
         const outcome = chosenCandidate.rule.apply(event, ctx, appliedIds);
         if (outcome?.kind === 'PREVENT') {
-          return { replaced: true, prevented: true, appliedIds };
+          return {
+            replaced: true,
+            prevented: true,
+            ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+            appliedIds,
+          };
         }
         if (outcome?.kind === 'REDIRECT_ZONE') {
           const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, outcome);
-          return { replaced: true, prevented: true, redirect: adjusted, appliedIds };
+          return {
+            replaced: true,
+            prevented: true,
+            ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+            redirect: adjusted,
+            appliedIds,
+          };
         }
       }
     }
@@ -286,11 +335,22 @@ export class ReplacementEngine {
       if (!outcome || outcome.kind === 'NONE') continue;
       appliedIds.add(rule.id);
       if (outcome.kind === 'PREVENT') {
-        return { replaced: true, prevented: true, appliedIds };
+        return {
+          replaced: true,
+          prevented: true,
+          ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+          appliedIds,
+        };
       }
       if (outcome.kind === 'REDIRECT_ZONE') {
         const adjusted = this.applyCostZoneCapRule(card.controllerPlayerId, outcome);
-        return { replaced: true, prevented: true, redirect: adjusted, appliedIds };
+        return {
+          replaced: true,
+          prevented: true,
+          ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+          redirect: adjusted,
+          appliedIds,
+        };
       }
     }
 
@@ -358,6 +418,9 @@ export class ReplacementEngine {
         isPlacingUnderneath: currentPlacingUnderneath,
         underneathHostId: options?.underneathHostId,
         includeUnderneath: options?.includeUnderneath,
+        skipLeftFieldTrigger: options?.skipLeftFieldTrigger,
+        sentByEffectOrCost: options?.sentByEffectOrCost,
+        countAsDeckToGy: options?.countAsDeckToGy,
       };
 
       const candidates = this.collectMatchingCandidates(event, ctx, appliedIds);
@@ -429,9 +492,27 @@ export class ReplacementEngine {
         } else {
           const outcome = chosen.rule.apply(event, ctx, appliedIds);
           if (outcome?.kind === 'PREVENT') {
-            return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
+            return {
+              replaced: true,
+              prevented: true,
+              ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+              toZone: fromZone,
+              appliedIds,
+            };
           }
           if (outcome?.kind === 'REDIRECT_ZONE') {
+            if (outcome.pendingChoice) {
+              return {
+                replaced: true,
+                prevented: true,
+                pendingChoice: true,
+                toZone: outcome.zone,
+                isFaceUp: outcome.isFaceUp,
+                isReady: outcome.isReady,
+                toBottom: outcome.toBottom,
+                appliedIds,
+              };
+            }
             currentToZone = outcome.zone;
             currentFaceUp = outcome.isFaceUp;
             currentReady = outcome.isReady;
@@ -454,9 +535,27 @@ export class ReplacementEngine {
         replaced = true;
         matchedLegacyRule = true;
         if (outcome.kind === 'PREVENT') {
-          return { replaced: true, prevented: true, toZone: fromZone, appliedIds };
+          return {
+            replaced: true,
+            prevented: true,
+            ...(outcome.pendingChoice ? { pendingChoice: true } : {}),
+            toZone: fromZone,
+            appliedIds,
+          };
         }
         if (outcome.kind === 'REDIRECT_ZONE') {
+          if (outcome.pendingChoice) {
+            return {
+              replaced: true,
+              prevented: true,
+              pendingChoice: true,
+              toZone: outcome.zone,
+              isFaceUp: outcome.isFaceUp,
+              isReady: outcome.isReady,
+              toBottom: outcome.toBottom,
+              appliedIds,
+            };
+          }
           currentToZone = outcome.zone;
           currentFaceUp = outcome.isFaceUp;
           currentReady = outcome.isReady;
@@ -626,6 +725,7 @@ export class ReplacementEngine {
       if (item.toZone && item.toZone !== event.toZone) return false;
     } else if (event.type === 'DEAL_DAMAGE') {
       if (item.controllerPlayerId !== event.defenderPlayerId) return false;
+      if (item.sourceCardInstanceId && item.sourceCardInstanceId !== event.sourceCardId) return false;
     }
     return true;
   }
@@ -712,10 +812,170 @@ export class ReplacementEngine {
       hasLostAbilities: this.hasLostAbilities,
       hasCardName: this.hasCardName,
       hasTrait: this.hasTraitProvider,
+      getEffectiveCardCost: this.effectiveCostProvider,
       sendCardToGraveyard: this.sendCardToGraveyardCallback,
       getMaxCostZoneCapacity: this.maxCostCapProvider,
       enqueueChoice: this.choiceEnqueuer,
     };
+  }
+
+  /**
+   * 8.10 通用可选置换决策原语：
+   * - 存在多个可选代价卡牌 (sacrificeCandidates.length > sacrificeCount) 时挂起 SELECT_CARDS (0 张表示放弃)
+   * - 否则挂起 SELECT_OPTION ('replace' / 'decline' 或 'leave')
+   * - 无 enqueueChoice 回调时（独立引擎单元测试回退）直接支付代价并执行置换结果
+   */
+  enqueueOptionalReplacementDecision(
+    params: OptionalReplacementDecisionParams,
+    ctx: ReplacementRuleContext
+  ): ReplacementOutcome {
+    const sacrificeCount = params.sacrificeCount ?? 0;
+    const candidates = params.sacrificeCandidates ?? [];
+    const seq = nextEffectTimestamp(ctx.state);
+
+    const originalEvent =
+      params.event.type === 'DESTROY_ROLE'
+        ? {
+            type: 'DESTROY_ROLE' as const,
+            cardInstanceId: params.event.cardInstanceId,
+            reason: params.event.reason,
+            attackerCardId: params.event.attackerCardId,
+            combatCannotDealDamage: Boolean(ctx.state.currentCombat?.cannotDealDamage),
+          }
+        : {
+            type: 'MOVE_CARD' as const,
+            cardInstanceId: params.event.cardInstanceId,
+            fromZone: params.event.fromZone,
+            toZone: params.event.toZone,
+            isFaceUp: params.event.isFaceUp,
+            isReady: params.event.isReady,
+            toBottom: params.event.toBottom,
+            isOrphanCleanup: params.event.isOrphanCleanup,
+            orphanHostCardId: params.event.orphanHostCardId,
+            isPlacingUnderneath: params.event.isPlacingUnderneath,
+            underneathHostId: params.event.underneathHostId,
+            includeUnderneath: params.event.includeUnderneath,
+            skipLeftFieldTrigger: params.event.skipLeftFieldTrigger,
+            sentByEffectOrCost: params.event.sentByEffectOrCost,
+            countAsDeckToGy: params.event.countAsDeckToGy,
+          };
+
+    if (ctx.enqueueChoice) {
+      const effectType = params.choiceEffectType ?? 'OPTIONAL_REPLACEMENT_DECISION';
+
+      // 情形 A：多张可选代价卡牌，由玩家直接选择代价卡牌（选 0 张表示放弃置换）
+      if (candidates.length > 0 && sacrificeCount > 0 && candidates.length > sacrificeCount) {
+        const firstCard = ctx.state.cards[candidates[0]!];
+        ctx.enqueueChoice({
+          id: `choice-repl-opt-${ctx.state.turnNumber}-${seq}`,
+          playerId: params.controllerPlayerId,
+          choiceType: 'SELECT_CARDS',
+          prompt:
+            params.prompt ??
+            `${params.label}：请选择 ${sacrificeCount} 张卡牌作为置换代价（选 0 张放弃置换）`,
+          options: candidates.map((cid) => {
+            const c = ctx.state.cards[cid];
+            const def = c
+              ? ctx.cardDb.getCard(c.cardNumber) || (c.cardId ? ctx.cardDb.getCard(c.cardId) : undefined)
+              : undefined;
+            return {
+              id: cid,
+              label: `${def?.name ?? c?.cardNumber ?? cid}${c ? ` (${c.cardNumber})` : ''}`,
+              payload: c ? { cardInstanceId: cid, cardNumber: c.cardNumber, zone: c.zone } : undefined,
+            };
+          }),
+          effectType,
+          sourceCardInstanceId: params.subjectCardId,
+          minSelections: 0,
+          maxSelections: sacrificeCount,
+          metadata: {
+            ruleId: params.ruleId,
+            subjectCardId: params.subjectCardId,
+            appliedIds: Array.from(params.appliedIds ?? []),
+            originalEvent,
+            costZone: firstCard?.zone,
+            sacrificeCandidates: candidates,
+            sacrificeCount,
+            detachFromSubject: params.detachFromSubject,
+            oncePerTurnUsageKey: params.oncePerTurnUsageKey,
+            action: params.action,
+          },
+        });
+        return { kind: 'PREVENT', pendingChoice: true };
+      }
+
+      // 情形 B：固定代价、唯一候选或零选牌代价 -> SELECT_OPTION
+      const fixedIds =
+        params.fixedSacrificeIds ??
+        (candidates.length > 0
+          ? candidates.slice(0, sacrificeCount > 0 ? sacrificeCount : candidates.length)
+          : []);
+      const declineId = effectType === 'BP01_017_OPTIONAL_LEAVE_REPLACEMENT' ? 'leave' : 'decline';
+      ctx.enqueueChoice({
+        id: `choice-repl-opt-${ctx.state.turnNumber}-${seq}`,
+        playerId: params.controllerPlayerId,
+        choiceType: 'SELECT_OPTION',
+        prompt: params.prompt ?? `${params.label}：是否发动该置换效果？`,
+        options: [
+          { id: 'replace', label: params.replaceOptionLabel ?? '发动置换效果 (8.10)' },
+          { id: declineId, label: params.declineOptionLabel ?? '不发动置换，按原事件结算' },
+        ],
+        effectType,
+        sourceCardInstanceId: params.subjectCardId,
+        minSelections: 1,
+        maxSelections: 1,
+        metadata: {
+          ruleId: params.ruleId,
+          subjectCardId: params.subjectCardId,
+          appliedIds: Array.from(params.appliedIds ?? []),
+          originalEvent,
+          fixedSacrificeIds: fixedIds,
+          detachFromSubject: params.detachFromSubject,
+          oncePerTurnUsageKey: params.oncePerTurnUsageKey,
+          action: params.action,
+        },
+      });
+      return { kind: 'PREVENT', pendingChoice: true };
+    }
+
+    // 无决策回调时（独立引擎单元测试回退）直接执行代价支付与置换结果
+    if (params.oncePerTurnUsageKey) {
+      const player = ctx.state.players[params.controllerPlayerId];
+      if (player) {
+        player.turnAbilityUsage[params.oncePerTurnUsageKey] =
+          (player.turnAbilityUsage[params.oncePerTurnUsageKey] ?? 0) + 1;
+      }
+    }
+    const sacIds =
+      params.fixedSacrificeIds ??
+      (candidates.length > 0
+        ? candidates.slice(0, sacrificeCount > 0 ? sacrificeCount : candidates.length)
+        : []);
+    if (params.detachFromSubject && sacIds.length > 0) {
+      const subject = ctx.state.cards[params.subjectCardId];
+      if (subject) {
+        const sacSet = new Set(sacIds);
+        const eqIds: string[] = [];
+        if (subject.attachedEquipmentId) eqIds.push(subject.attachedEquipmentId);
+        if (subject.extraAttachedEquipmentIds?.length) eqIds.push(...subject.extraAttachedEquipmentIds);
+        const remain = eqIds.filter((id) => !sacSet.has(id));
+        subject.attachedEquipmentId = remain[0];
+        subject.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;
+      }
+    }
+    for (const sacId of sacIds) {
+      if (ctx.sendCardToGraveyard) {
+        ctx.sendCardToGraveyard(sacId, true);
+      } else {
+        const sac = ctx.state.cards[sacId];
+        if (sac) {
+          sac.zone = 'GRAVEYARD';
+          sac.slotIndex = undefined;
+          sac.isFaceUp = true;
+        }
+      }
+    }
+    return params.action;
   }
 
   private findBP01017Swords(
@@ -755,17 +1015,18 @@ export class ReplacementEngine {
     return { card, smallId, largeId };
   }
 
-  private findBP02013Saver(
+  private findBP02013Savers(
     event: ReplacementEvent,
     ctx: ReplacementRuleContext
-  ): CardInstance | undefined {
-    if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
+  ): CardInstance[] {
+    if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return [];
     const dying = ctx.state.cards[event.cardInstanceId];
-    if (!dying || dying.zone !== 'BATTLEFIELD') return undefined;
+    if (!dying || dying.zone !== 'BATTLEFIELD') return [];
     const dyingDef =
       ctx.cardDb.getCard(dying.cardNumber) || (dying.cardId ? ctx.cardDb.getCard(dying.cardId) : undefined);
-    if (!dyingDef || dyingDef.cardType !== 'ROLE' || dyingDef.attribute !== 'FIRE' || dyingDef.cost > 6) {
-      return undefined;
+    const dyingCost = ctx.getEffectiveCardCost ? ctx.getEffectiveCardCost(dying.instanceId) : dyingDef?.cost;
+    if (!dyingDef || dyingDef.cardType !== 'ROLE' || dyingDef.attribute !== 'FIRE' || (dyingCost ?? 99) > 6) {
+      return [];
     }
     const fieldCards = ctx.getZoneCards(event.controllerPlayerId, 'BATTLEFIELD').filter((c) => {
       if (c.cardNumber !== 'BP02-013' || ctx.hasLostAbilities(c.instanceId)) return false;
@@ -773,13 +1034,13 @@ export class ReplacementEngine {
       return slots.some((s) => s.roleCardId === c.instanceId);
     });
     // Q&A·5：BP02-013 自身因战斗被破坏时不能将自身送墓代替，必须牺牲我方场上另一张《丽芙·极昼》
-    return fieldCards.find((c) => c.instanceId !== event.cardInstanceId);
+    return fieldCards.filter((c) => c.instanceId !== event.cardInstanceId);
   }
 
-  private findBP02049Wanshiming(
+  private findBP02049Wanshimings(
     event: ReplacementEvent,
     ctx: ReplacementRuleContext
-  ): { card: CardInstance; usageKey: string; handWanshiming: CardInstance } | undefined {
+  ): { card: CardInstance; usageKey: string; handWanshimings: CardInstance[] } | undefined {
     if (event.type !== 'DESTROY_ROLE' || event.reason !== 'BATTLE') return undefined;
     const card = ctx.state.cards[event.cardInstanceId];
     if (!card || card.cardNumber !== 'BP02-049' || card.zone !== 'BATTLEFIELD') return undefined;
@@ -789,13 +1050,13 @@ export class ReplacementEngine {
     const usageKey = `${card.instanceId}:BP02-049_BATTLE_SAVE`;
     if ((player.turnAbilityUsage[usageKey] ?? 0) > 0) return undefined;
 
-    const handWanshiming = ctx.getZoneCards(card.controllerPlayerId, 'HAND').find((h) => {
+    const handWanshimings = ctx.getZoneCards(card.controllerPlayerId, 'HAND').filter((h) => {
       if (ctx.hasTrait) return ctx.hasTrait(h.instanceId, '万世铭');
       const hDef = ctx.cardDb.getCard(h.cardNumber) || (h.cardId ? ctx.cardDb.getCard(h.cardId) : undefined);
       return Boolean(hDef?.traits?.includes('万世铭'));
     });
-    if (!handWanshiming) return undefined;
-    return { card, usageKey, handWanshiming };
+    if (handWanshimings.length === 0) return undefined;
+    return { card, usageKey, handWanshimings };
   }
 
   private registerBuiltinReplacements(): void {
@@ -855,7 +1116,7 @@ export class ReplacementEngine {
               appliedIds: Array.from(appliedIds ?? []),
             },
           });
-          return { kind: 'PREVENT' };
+          return { kind: 'PREVENT', pendingChoice: true };
         }
 
         // 无决策回调时（独立引擎单元测试回退）直接执行置换
@@ -919,18 +1180,32 @@ export class ReplacementEngine {
       id: 'builtin:BP02-013_BATTLE_SAVE',
       label: '【丽芙·极昼】将战场《丽芙·极昼》置墓，改为不破坏',
       eventTypes: ['DESTROY_ROLE'],
-      matches: (event, ctx) => Boolean(this.findBP02013Saver(event, ctx)),
-      apply: (event, ctx) => {
-        const saver = this.findBP02013Saver(event, ctx);
-        if (!saver) return undefined;
-        if (ctx.sendCardToGraveyard) {
-          ctx.sendCardToGraveyard(saver.instanceId, true);
-        } else {
-          saver.zone = 'GRAVEYARD';
-          saver.slotIndex = undefined;
-          saver.isFaceUp = true;
-        }
-        return { kind: 'PREVENT' };
+      matches: (event, ctx) => this.findBP02013Savers(event, ctx).length > 0,
+      apply: (event, ctx, appliedIds) => {
+        if (event.type !== 'DESTROY_ROLE') return undefined;
+        const savers = this.findBP02013Savers(event, ctx);
+        if (savers.length === 0) return undefined;
+        const dying = ctx.state.cards[event.cardInstanceId];
+        const dyingDef = dying
+          ? ctx.cardDb.getCard(dying.cardNumber) || (dying.cardId ? ctx.cardDb.getCard(dying.cardId) : undefined)
+          : undefined;
+        return this.enqueueOptionalReplacementDecision(
+          {
+            ruleId: 'builtin:BP02-013_BATTLE_SAVE',
+            label: '【丽芙·极昼】将战场《丽芙·极昼》置墓，改为不破坏',
+            controllerPlayerId: event.controllerPlayerId,
+            subjectCardId: event.cardInstanceId,
+            event,
+            appliedIds,
+            prompt: `【丽芙·极昼】「${dyingDef?.name ?? dying?.cardNumber ?? '火属性角色'}」即将因战斗被破坏，是否将我方战场上 1 张其他《丽芙·极昼》放置到墓地，改为不破坏？`,
+            sacrificeCandidates: savers.map((s) => s.instanceId),
+            sacrificeCount: 1,
+            action: { kind: 'PREVENT' },
+            replaceOptionLabel: '将战场《丽芙·极昼》置墓，改为不破坏 (8.10 置换)',
+            declineOptionLabel: '不发动置换，让该角色被破坏',
+          },
+          ctx
+        );
       },
     });
 
@@ -939,21 +1214,30 @@ export class ReplacementEngine {
       id: 'builtin:BP02-049_BATTLE_SAVE',
       label: '【曲·启明】将手牌 1 张<万世铭>置墓，改为不破坏',
       eventTypes: ['DESTROY_ROLE'],
-      matches: (event, ctx) => Boolean(this.findBP02049Wanshiming(event, ctx)),
-      apply: (event, ctx) => {
-        const found = this.findBP02049Wanshiming(event, ctx);
+      matches: (event, ctx) => Boolean(this.findBP02049Wanshimings(event, ctx)),
+      apply: (event, ctx, appliedIds) => {
+        if (event.type !== 'DESTROY_ROLE') return undefined;
+        const found = this.findBP02049Wanshimings(event, ctx);
         if (!found) return undefined;
-        const { card, usageKey, handWanshiming } = found;
-        const player = ctx.state.players[card.controllerPlayerId];
-        if (!player) return undefined;
-        player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
-        if (ctx.sendCardToGraveyard) {
-          ctx.sendCardToGraveyard(handWanshiming.instanceId, true);
-        } else {
-          handWanshiming.zone = 'GRAVEYARD';
-          handWanshiming.isFaceUp = true;
-        }
-        return { kind: 'PREVENT' };
+        const { card, usageKey, handWanshimings } = found;
+        return this.enqueueOptionalReplacementDecision(
+          {
+            ruleId: 'builtin:BP02-049_BATTLE_SAVE',
+            label: '【曲·启明】将手牌 1 张<万世铭>置墓，改为不破坏',
+            controllerPlayerId: card.controllerPlayerId,
+            subjectCardId: card.instanceId,
+            event,
+            appliedIds,
+            prompt: '【曲·启明】即将因战斗被破坏，是否将手牌 1 张<万世铭>放置到墓地，改为不破坏？（【回合1】）',
+            sacrificeCandidates: handWanshimings.map((h) => h.instanceId),
+            sacrificeCount: 1,
+            oncePerTurnUsageKey: usageKey,
+            action: { kind: 'PREVENT' },
+            replaceOptionLabel: '将手牌 1 张<万世铭>置墓，改为不破坏 (8.10 置换)',
+            declineOptionLabel: '不发动置换，让该角色被破坏',
+          },
+          ctx
+        );
       },
     });
   }

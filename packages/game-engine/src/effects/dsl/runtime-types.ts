@@ -71,6 +71,11 @@ export type DslPendingAction =
       requireEmptySlotCount?: boolean;
     }
   | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' }
+  | {
+      kind: 'ORDER_MOVE_CARDS';
+      moveStep: Extract<EffectStep, { op: 'MOVE_CARDS' }>;
+      candidateIds: string[];
+    }
   | { kind: 'PLACE_ORB_AT_POSITION'; cardInstanceId: string }
   | { kind: 'WANSHIMING_REVEAL_TO_COST'; revealVar: string }
   | {

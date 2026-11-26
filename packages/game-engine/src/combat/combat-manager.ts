@@ -595,6 +595,9 @@ export class CombatManager {
    */
   private resolveCharacterBattleStep(): void {
     const combat = this.state.currentCombat!;
+    if (combat.pendingBattleCompare) {
+      return;
+    }
     const defenderCardId = combat.blockerCardId ?? combat.targetCardId;
     const attackerOnField = this.fieldMgr.isSlotRole(this.state.activePlayerId, combat.attackerCardId);
     const defenderOnField = !!defenderCardId && this.fieldMgr.isSlotRole(this.state.nonActivePlayerId, defenderCardId);
@@ -612,6 +615,15 @@ export class CombatManager {
           'BATTLE',
           combat.attackerCardId
         );
+        if (intercept?.pendingChoice) {
+          combat.pendingBattleCompare = {
+            attackerCardId: combat.attackerCardId,
+            attackerPP,
+            defenderCardId,
+            defenderPP,
+          };
+          return;
+        }
         if (intercept?.replaced) {
           // 8.10.1.a 战斗破坏被置换：视为未破坏，不发射 CARD_DESTROYED 也不触发【贯通】(Q&A·2 BP01-017/BP02-013)
           if (intercept.redirect) {
@@ -693,13 +705,14 @@ export class CombatManager {
       return false;
     }
 
-    // 清理持续至「那次攻击结束为止」的持续效果 (如 BP03-054 艾拉·万华【瞬时】)
+    // 清理持续至「那次攻击结束为止」的持续效果与状态置换效果 (如 BP03-054 艾拉·万华【瞬时】/ PR-018 / PR-021)
     for (const card of Object.values(this.state.cards)) {
       if (card.modifiers?.some((m) => m.id?.startsWith('combat-'))) {
         const remaining = card.modifiers.filter((m) => !m.id?.startsWith('combat-'));
         card.modifiers = remaining.length > 0 ? remaining : undefined;
       }
     }
+    this.replacementEngine?.clearCombatReplacements();
 
     this.state.currentCombat = undefined;
     this.state.phase = 'MAIN_PHASE';

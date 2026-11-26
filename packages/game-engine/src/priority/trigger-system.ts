@@ -36,6 +36,10 @@ export interface CardTriggerSnapshot {
   hasAttachedEquipment?: boolean;
   attachedEquipmentTraits?: string[];
   grantedTriggerEntries?: Array<{ triggerId: string; grantKey: string }>;
+  isAirborne?: boolean;
+  wasAscendedPlay?: boolean;
+  enteredFromZone?: ZoneId;
+  ascendedFromAirborne?: boolean;
 }
 
 export interface TriggerEvent {
@@ -216,6 +220,10 @@ export class TriggerManager {
       effectivePP: card.zone === 'BATTLEFIELD' ? evalStats.pp : def?.basePP,
       effectiveDP: card.zone === 'BATTLEFIELD' ? evalStats.dp : def?.baseDP,
       abilitiesLost: evalStats.abilitiesLost,
+      ...(card.isAirborne ? { isAirborne: true } : {}),
+      ...(card.wasAscendedPlay ? { wasAscendedPlay: true } : {}),
+      ...(card.enteredFromZone ? { enteredFromZone: card.enteredFromZone } : {}),
+      ...(card.ascendedFromAirborne ? { ascendedFromAirborne: true } : {}),
       ...(attachedEqIds.length > 0 ? { hasAttachedEquipment: true } : {}),
       ...(eqTraitsSet.size > 0 ? { attachedEquipmentTraits: Array.from(eqTraitsSet) } : {}),
       ...(evalStats.grantedTriggerEntries && evalStats.grantedTriggerEntries.length > 0

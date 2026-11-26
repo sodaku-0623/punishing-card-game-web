@@ -1,9 +1,17 @@
-import { CardInstance } from '@zhanshuang/shared';
+import { CardInstance, ZoneId } from '@zhanshuang/shared';
+import type { CardEffectContext } from '../card-effects.js';
 import { ContinuousEffectEngine, expandBaseTraits } from '../continuous-effects.js';
+import type {
+  ReplacementEngine,
+  ReplacementEvent,
+  ReplacementOutcome,
+  ReplacementRuleContext,
+} from '../replacement-engine.js';
 import type { TriggerManager } from '../../priority/trigger-system.js';
 import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
+import type { DslEvaluator } from './evaluator.js';
 import type { DslInterpreterHost } from './runtime-types.js';
-import type { CardFilter } from './types.js';
+import type { CardEffectSpec, CardFilter, DeclarativeReplacementSpec } from './types.js';
 
 /**
  * 8.5 / 8.7 向 TriggerManager 注册统一【出】登场能力 (`CARD_ENTERED_FIELD`) 与所有声明式【自】自动能力
@@ -829,6 +837,12 @@ export function registerDeclarativeTriggers(
               const partner = state.cards[partnerId];
               if (!hostCard || !partner || partner.cardNumber !== spec.cardNumber) return [];
               if (
+                trig.matcher.fromZones &&
+                (!event.fromZone || !trig.matcher.fromZones.includes(event.fromZone))
+              ) {
+                return [];
+              }
+              if (
                 trig.matcher.onlyOpponentTurn &&
                 state.activePlayerId === partner.controllerPlayerId
               ) {
@@ -846,7 +860,15 @@ export function registerDeclarativeTriggers(
               ) {
                 return [];
               }
-              if (!condOk(partner.controllerPlayerId, partner.instanceId)) return [];
+              if (
+                !condOk(
+                  partner.controllerPlayerId,
+                  partner.instanceId,
+                  event.fromZone ? { __partnerFromZone: [event.fromZone] } : {}
+                )
+              ) {
+                return [];
+              }
               return [
                 {
                   sourceCardInstanceId: partner.instanceId,
@@ -856,6 +878,7 @@ export function registerDeclarativeTriggers(
                   triggerContext: {
                     hostCardId: hostCard.instanceId,
                     partnerCardId: partner.instanceId,
+                    ...(event.fromZone ? { partnerFromZone: event.fromZone } : {}),
                   },
                 },
               ];
@@ -867,6 +890,12 @@ export function registerDeclarativeTriggers(
               const hostCard = state.cards[hostId];
               const partner = state.cards[partnerId];
               if (!hostCard || !partner || hostCard.cardNumber !== spec.cardNumber) return [];
+              if (
+                trig.matcher.fromZones &&
+                (!event.fromZone || !trig.matcher.fromZones.includes(event.fromZone))
+              ) {
+                return [];
+              }
               if (
                 trig.matcher.requiredPartnerTrait &&
                 !host.hasTrait(partner, trig.matcher.requiredPartnerTrait)
@@ -882,7 +911,15 @@ export function registerDeclarativeTriggers(
               ) {
                 return [];
               }
-              if (!condOk(hostCard.controllerPlayerId, hostCard.instanceId)) return [];
+              if (
+                !condOk(
+                  hostCard.controllerPlayerId,
+                  hostCard.instanceId,
+                  event.fromZone ? { __partnerFromZone: [event.fromZone] } : {}
+                )
+              ) {
+                return [];
+              }
               return [
                 {
                   sourceCardInstanceId: hostCard.instanceId,
@@ -1313,6 +1350,370 @@ export function registerDeclarativeStaticEffects(
           },
         });
       }
+    }
+  }
+}
+
+interface ResolvedReplacementMatch {
+  src: CardInstance;
+  subjectCardId: string;
+  oncePerTurnUsageKey?: string;
+  sacrificeCandidates?: string[];
+  sacrificeCount?: number;
+  fixedSacrificeIds?: string[];
+  detachFromSubject: boolean;
+}
+
+function collectUnderneathIdSet(
+  state: CardEffectContext['state'],
+  playerId: string
+): Set<string> {
+  const hidden = new Set<string>();
+  for (const slot of state.battlefields[playerId] ?? []) {
+    for (const hid of [slot.roleCardId, slot.assistCardId, slot.standaloneEquipmentId]) {
+      if (!hid) continue;
+      const hostCard = state.cards[hid];
+      for (const uid of hostCard?.underneathCardIds ?? []) {
+        hidden.add(uid);
+      }
+    }
+  }
+  return hidden;
+}
+
+function collectActiveBattlefieldCards(
+  state: CardEffectContext['state'],
+  playerId: string
+): CardInstance[] {
+  const result: CardInstance[] = [];
+  const seen = new Set<string>();
+  const pushCard = (id: string | undefined) => {
+    if (!id || seen.has(id)) return;
+    const c = state.cards[id];
+    if (c && c.zone === 'BATTLEFIELD') {
+      seen.add(id);
+      result.push(c);
+    }
+  };
+  for (const slot of state.battlefields[playerId] ?? []) {
+    pushCard(slot.roleCardId);
+    pushCard(slot.assistCardId);
+    pushCard(slot.standaloneEquipmentId);
+    if (slot.roleCardId) {
+      const role = state.cards[slot.roleCardId];
+      for (const eqId of getAttachedEquipmentIds(role)) {
+        pushCard(eqId);
+      }
+    }
+  }
+  return result;
+}
+
+function resolveDeclarativeReplacementMatch(
+  spec: CardEffectSpec,
+  repl: DeclarativeReplacementSpec,
+  event: ReplacementEvent,
+  rCtx: ReplacementRuleContext,
+  evaluator: DslEvaluator
+): ResolvedReplacementMatch | undefined {
+  const hasTraitSafe = (id: string, trait: string): boolean => {
+    if (rCtx.hasTrait) return rCtx.hasTrait(id, trait);
+    const c = rCtx.state.cards[id];
+    const d = c
+      ? rCtx.cardDb.getCard(c.cardNumber) ||
+        (c.cardId ? rCtx.cardDb.getCard(c.cardId) : undefined)
+      : undefined;
+    return expandBaseTraits(d?.traits).has(trait);
+  };
+  const matchFilter = (card: CardInstance, filter: CardFilter, srcId?: string): boolean =>
+    evaluator.matchesFilterSafe(
+      card,
+      filter,
+      hasTraitSafe,
+      srcId,
+      (id, name) => rCtx.hasCardName(id, name),
+      false
+    );
+
+  let eventCardId: string | undefined;
+  let eventControllerId: string;
+
+  if (event.type === 'DESTROY_ROLE') {
+    if (repl.destroyReason && event.reason !== repl.destroyReason) return undefined;
+    const eventCard = rCtx.state.cards[event.cardInstanceId];
+    if (!eventCard) return undefined;
+    if (repl.eventCardFilter && !matchFilter(eventCard, repl.eventCardFilter)) return undefined;
+    eventCardId = event.cardInstanceId;
+    eventControllerId = event.controllerPlayerId;
+  } else if (event.type === 'MOVE_CARD') {
+    if (repl.fromZone && event.fromZone !== repl.fromZone) return undefined;
+    if (repl.toZone && event.toZone !== repl.toZone) return undefined;
+    if (repl.onlyLeaveBattlefield) {
+      if (
+        event.fromZone !== 'BATTLEFIELD' ||
+        (event.toZone === 'BATTLEFIELD' && !event.isPlacingUnderneath) ||
+        (repl.isOrphanCleanup !== true && event.isOrphanCleanup)
+      ) {
+        return undefined;
+      }
+    }
+    if (
+      repl.isOrphanCleanup !== undefined &&
+      Boolean(event.isOrphanCleanup) !== repl.isOrphanCleanup
+    ) {
+      return undefined;
+    }
+    if (repl.orphanHostName) {
+      if (
+        !event.orphanHostCardId ||
+        !rCtx.hasCardName(event.orphanHostCardId, repl.orphanHostName)
+      ) {
+        return undefined;
+      }
+    }
+    const eventCard = rCtx.state.cards[event.cardInstanceId];
+    if (!eventCard) return undefined;
+    if (repl.eventCardFilter && !matchFilter(eventCard, repl.eventCardFilter)) return undefined;
+    eventCardId = event.cardInstanceId;
+    eventControllerId = event.controllerPlayerId;
+  } else {
+    if (repl.eventCardFilter) {
+      const dmgSrc = event.sourceCardId ? rCtx.state.cards[event.sourceCardId] : undefined;
+      if (!dmgSrc || !matchFilter(dmgSrc, repl.eventCardFilter)) return undefined;
+    }
+    eventCardId = event.sourceCardId;
+    eventControllerId = event.defenderPlayerId;
+  }
+
+  const sourceZones: ZoneId[] = repl.sourceZones ?? ['BATTLEFIELD'];
+  const sourceCandidates: CardInstance[] = [];
+  const seenSourceIds = new Set<string>();
+
+  if (repl.subjectScope === 'SELF') {
+    if (event.type === 'DEAL_DAMAGE') {
+      const dmgSrc = event.sourceCardId ? rCtx.state.cards[event.sourceCardId] : undefined;
+      if (dmgSrc && dmgSrc.cardNumber === spec.cardNumber && sourceZones.includes(dmgSrc.zone)) {
+        sourceCandidates.push(dmgSrc);
+      }
+    } else {
+      const eventCard = rCtx.state.cards[event.cardInstanceId];
+      if (
+        eventCard &&
+        eventCard.cardNumber === spec.cardNumber &&
+        sourceZones.includes(eventCard.zone)
+      ) {
+        const buriedInBattlefield =
+          eventCard.zone === 'BATTLEFIELD' &&
+          !(event.type === 'MOVE_CARD' && event.isOrphanCleanup) &&
+          collectUnderneathIdSet(rCtx.state, eventCard.controllerPlayerId).has(
+            eventCard.instanceId
+          );
+        if (!buriedInBattlefield) {
+          sourceCandidates.push(eventCard);
+        }
+      }
+    }
+  } else {
+    for (const z of sourceZones) {
+      const zoneCards =
+        z === 'BATTLEFIELD'
+          ? collectActiveBattlefieldCards(rCtx.state, eventControllerId)
+          : rCtx.getZoneCards(eventControllerId, z);
+      for (const c of zoneCards) {
+        if (c.cardNumber === spec.cardNumber && !seenSourceIds.has(c.instanceId)) {
+          seenSourceIds.add(c.instanceId);
+          sourceCandidates.push(c);
+        }
+      }
+    }
+  }
+
+  for (const src of sourceCandidates) {
+    if (rCtx.hasLostAbilities(src.instanceId)) continue;
+    const oncePerTurnUsageKey = repl.oncePerTurn
+      ? `${src.instanceId}:repl:${repl.id}`
+      : undefined;
+    if (oncePerTurnUsageKey) {
+      const player = rCtx.state.players[src.controllerPlayerId];
+      if (!player || (player.turnAbilityUsage[oncePerTurnUsageKey] ?? 0) > 0) continue;
+    }
+
+    const subjectCardId = eventCardId ?? src.instanceId;
+    if (!repl.cost) {
+      return {
+        src,
+        subjectCardId,
+        oncePerTurnUsageKey,
+        detachFromSubject: false,
+      };
+    }
+
+    if (repl.cost.kind === 'SEND_SELF_ATTACHED_EQUIPS_TO_GY') {
+      const eqIds = getAttachedEquipmentIds(src);
+      if (eqIds.length < repl.cost.requiredTraits.length) continue;
+      const usedEqIds: string[] = [];
+      let allMatched = true;
+      for (const reqTrait of repl.cost.requiredTraits) {
+        const matchEqId = eqIds.find(
+          (eid) => !usedEqIds.includes(eid) && hasTraitSafe(eid, reqTrait)
+        );
+        if (!matchEqId) {
+          allMatched = false;
+          break;
+        }
+        usedEqIds.push(matchEqId);
+      }
+      if (!allMatched) continue;
+      return {
+        src,
+        subjectCardId,
+        oncePerTurnUsageKey,
+        fixedSacrificeIds: usedEqIds,
+        detachFromSubject: true,
+      };
+    }
+
+    // SEND_ZONE_CARD_TO_GY
+    const cost = repl.cost;
+    const underSet =
+      cost.zone === 'BATTLEFIELD'
+        ? collectUnderneathIdSet(rCtx.state, src.controllerPlayerId)
+        : undefined;
+    let sacrificeCandidates: string[];
+    if (cost.selfOnly) {
+      const selfOk =
+        src.zone === cost.zone &&
+        !underSet?.has(src.instanceId) &&
+        !(cost.excludeEventCard && eventCardId === src.instanceId) &&
+        matchFilter(src, cost.filter, src.instanceId);
+      sacrificeCandidates = selfOk ? [src.instanceId] : [];
+    } else {
+      sacrificeCandidates = rCtx
+        .getZoneCards(src.controllerPlayerId, cost.zone)
+        .filter((c) => {
+          if (underSet?.has(c.instanceId)) return false;
+          if (cost.excludeEventCard && eventCardId && c.instanceId === eventCardId) return false;
+          return matchFilter(c, cost.filter, src.instanceId);
+        })
+        .map((c) => c.instanceId);
+    }
+    if (sacrificeCandidates.length < cost.count) continue;
+    return {
+      src,
+      subjectCardId,
+      oncePerTurnUsageKey,
+      sacrificeCandidates,
+      sacrificeCount: cost.count,
+      detachFromSubject: false,
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * 8.10 向 ReplacementEngine 注册所有声明式卡牌置换规则 (`CardEffectSpec.replacements`)
+ */
+export function registerDeclarativeReplacements(
+  replacementEngine: ReplacementEngine,
+  _ctx: CardEffectContext,
+  specs: ReadonlyMap<string, CardEffectSpec> | Iterable<CardEffectSpec>,
+  evaluator: DslEvaluator
+): void {
+  const specIter: Iterable<CardEffectSpec> =
+    specs instanceof Map ||
+    typeof (specs as ReadonlyMap<string, CardEffectSpec>).get === 'function'
+      ? (specs as ReadonlyMap<string, CardEffectSpec>).values()
+      : (specs as Iterable<CardEffectSpec>);
+  for (const spec of specIter) {
+    for (const repl of spec.replacements ?? []) {
+      const ruleId = `dsl:repl:${spec.cardNumber}:${repl.id}`;
+      replacementEngine.registerRule({
+        id: ruleId,
+        label: repl.label,
+        eventTypes: repl.eventTypes,
+        matches: (event, rCtx) =>
+          Boolean(resolveDeclarativeReplacementMatch(spec, repl, event, rCtx, evaluator)),
+        apply: (event, rCtx, appliedIds): ReplacementOutcome | undefined => {
+          const match = resolveDeclarativeReplacementMatch(spec, repl, event, rCtx, evaluator);
+          if (!match) return undefined;
+
+          if (
+            repl.optional &&
+            (event.type === 'DESTROY_ROLE' || event.type === 'MOVE_CARD') &&
+            (repl.action.kind === 'PREVENT' || repl.action.kind === 'REDIRECT_ZONE')
+          ) {
+            return replacementEngine.enqueueOptionalReplacementDecision(
+              {
+                ruleId,
+                label: repl.label,
+                controllerPlayerId: match.src.controllerPlayerId,
+                subjectCardId: match.subjectCardId,
+                event,
+                appliedIds,
+                prompt: repl.confirmPrompt,
+                choiceEffectType: repl.choiceEffectType,
+                sacrificeCandidates: match.sacrificeCandidates,
+                sacrificeCount: match.sacrificeCount,
+                fixedSacrificeIds: match.fixedSacrificeIds,
+                detachFromSubject: repl.cost?.kind === 'SEND_SELF_ATTACHED_EQUIPS_TO_GY',
+                oncePerTurnUsageKey: match.oncePerTurnUsageKey,
+                action: repl.action,
+                replaceOptionLabel: repl.replaceOptionLabel,
+                declineOptionLabel: repl.declineOptionLabel,
+              },
+              rCtx
+            );
+          }
+
+          if (match.oncePerTurnUsageKey) {
+            const player = rCtx.state.players[match.src.controllerPlayerId];
+            if (player) {
+              player.turnAbilityUsage[match.oncePerTurnUsageKey] =
+                (player.turnAbilityUsage[match.oncePerTurnUsageKey] ?? 0) + 1;
+            }
+          }
+
+          const sacIds =
+            match.fixedSacrificeIds ??
+            (match.sacrificeCandidates && match.sacrificeCount
+              ? match.sacrificeCandidates.slice(0, match.sacrificeCount)
+              : []);
+          if (match.detachFromSubject && sacIds.length > 0) {
+            const sacSet = new Set(sacIds);
+            const eqIds = getAttachedEquipmentIds(match.src);
+            const remain = eqIds.filter((id) => !sacSet.has(id));
+            match.src.attachedEquipmentId = remain[0];
+            match.src.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;
+          }
+          const sentByEffectOrCost =
+            repl.cost?.kind === 'SEND_ZONE_CARD_TO_GY'
+              ? (repl.cost.sentByEffectOrCost ?? true)
+              : true;
+          for (const sacId of sacIds) {
+            if (rCtx.sendCardToGraveyard) {
+              rCtx.sendCardToGraveyard(sacId, sentByEffectOrCost);
+            } else {
+              const sac = rCtx.state.cards[sacId];
+              if (sac) {
+                sac.zone = 'GRAVEYARD';
+                sac.slotIndex = undefined;
+                sac.isFaceUp = true;
+              }
+            }
+          }
+
+          if (repl.action.kind === 'MODIFY_DAMAGE') {
+            if (event.type !== 'DEAL_DAMAGE') return undefined;
+            let next = event.amount;
+            if (repl.action.setAmount !== undefined) next = repl.action.setAmount;
+            if (repl.action.delta !== undefined) next += repl.action.delta;
+            if (repl.action.maxAmount !== undefined) next = Math.min(next, repl.action.maxAmount);
+            return { kind: 'MODIFY_DAMAGE', newAmount: Math.max(0, next) };
+          }
+          return repl.action;
+        },
+      });
     }
   }
 }

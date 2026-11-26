@@ -12,6 +12,7 @@ import {
   normalizeCardName,
 } from '../continuous-effects.js';
 import type { TriggerManager } from '../../priority/trigger-system.js';
+import type { ReplacementEngine } from '../replacement-engine.js';
 import { nextChoiceId } from '../../state/pending-choice.js';
 import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
 import { DslCostHandler, isCostPendingAction } from './cost-handler.js';
@@ -26,6 +27,7 @@ import type {
 } from './runtime-types.js';
 import { DslStepRunner } from './step-runner.js';
 import {
+  registerDeclarativeReplacements,
   registerDeclarativeStaticEffects,
   registerDeclarativeTriggers,
 } from './trigger-adapter.js';
@@ -175,7 +177,13 @@ export class DeclarativeEffectInterpreter {
     const result = new Set<UsableActivationZone>();
     const card = this.ctx.state.cards[cardId];
     if (!card || card.controllerPlayerId !== playerId) return result;
-    if (this.ctx.fieldMgr.isTopLevelFieldCard(playerId, cardId)) {
+    const isAttachedEquip =
+      card.zone === 'BATTLEFIELD' &&
+      this.ctx.fieldMgr.getSlots(playerId).some((s) => {
+        const host = s.roleCardId ? this.ctx.state.cards[s.roleCardId] : undefined;
+        return Boolean(host && getAttachedEquipmentIds(host).includes(cardId));
+      });
+    if (this.ctx.fieldMgr.isTopLevelFieldCard(playerId, cardId) || isAttachedEquip) {
       result.add('BATTLEFIELD');
     } else if (card.zone === 'HAND' || card.zone === 'GRAVEYARD') {
       result.add(card.zone);
@@ -459,14 +467,48 @@ export class DeclarativeEffectInterpreter {
   }
 
   /**
-   * 8.5.3 从挂起的充能/伤害序列恢复尚未执行完的 DSL 后续步骤帧
+   * 8.5.3 从挂起的充能/伤害或可选置换队列恢复尚未执行完的 DSL 后续步骤帧
    */
   resumeContinuation(frame: PendingDslContinuation): void {
+    const vars: Record<string, string[]> = { ...frame.vars };
+    const verify = vars.__pendingReplaceVerify;
+    if (verify && verify.length >= 4) {
+      delete vars.__pendingReplaceVerify;
+      const partial = [...(vars.__pendingReplacePartial ?? [])];
+      delete vars.__pendingReplacePartial;
+      const [kind, targetId, saveVar, extraA, extraB, extraC] = verify;
+      let succeeded = false;
+      if (kind === 'DESTROY' && targetId) {
+        const prevEventIdx = Number(extraA ?? '0');
+        succeeded = this.ctx.events
+          .slice(Number.isFinite(prevEventIdx) ? prevEventIdx : 0)
+          .some((e) => e.type === 'CARD_DESTROYED' && e.cardInstanceId === targetId);
+      } else if (kind === 'MOVE' && targetId) {
+        const expectedZone = extraA ?? '';
+        const fromZone = extraB ?? '';
+        const card = this.ctx.state.cards[targetId];
+        if (card) {
+          succeeded =
+            card.zone === expectedZone ||
+            (expectedZone === 'COST' && fromZone !== 'COST' && card.zone !== fromZone);
+          if (succeeded && expectedZone === 'DECK' && extraC === 'SHUFFLE') {
+            this.ctx.zoneMgr.shuffleDeck(card.ownerPlayerId);
+          }
+        }
+      }
+      const updated = succeeded && targetId ? [...partial, targetId] : partial;
+      if (saveVar) {
+        vars[saveVar] = updated;
+      }
+      if (vars.__pendingReplaceRest?.length) {
+        vars.__pendingReplaceAccum = updated;
+      }
+    }
     this.stepRunner.runSteps(
       frame.cardNumber,
       frame.sourceCardInstanceId,
       frame.playerId,
-      { ...frame.vars },
+      vars,
       [...(frame.remainingSteps as EffectStep[])]
     );
   }
@@ -639,6 +681,13 @@ export class DeclarativeEffectInterpreter {
    */
   registerStaticEffects(continuousEffects: ContinuousEffectEngine): void {
     registerDeclarativeStaticEffects(this.host, continuousEffects);
+  }
+
+  /**
+   * 8.10 向 ReplacementEngine 注册所有声明式卡牌置换规则 (`CardEffectSpec.replacements`)
+   */
+  registerReplacements(replacementEngine: ReplacementEngine): void {
+    registerDeclarativeReplacements(replacementEngine, this.host.ctx, this.registry, this.evaluator);
   }
 
   /**

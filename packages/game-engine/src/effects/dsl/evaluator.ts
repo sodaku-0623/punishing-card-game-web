@@ -6,6 +6,7 @@ import {
   SignalOrbColor,
   ZoneId,
 } from '@zhanshuang/shared';
+import { extractCoreCardNumber } from '@zhanshuang/game-rules';
 import type { CardEffectContext } from '../card-effects.js';
 import {
   expandBaseTraits,
@@ -31,6 +32,23 @@ export interface OrbSlotInfo {
   colors: string[];
   orbValue: number;
   cannotEliminate: boolean;
+}
+
+/**
+ * 截取区域顶部或底部固定 N 张卡牌：
+ * - DECK：index 0 为牌组顶，length - 1 为牌组底
+ * - 非牌组 (SIGNAL_ORB / GRAVEYARD / PROCESSING 等)：index 0 为最下方，length - 1 为最上方
+ */
+export function sliceZoneEdge<T>(
+  list: readonly T[],
+  zone: ZoneId,
+  edge: 'TOP' | 'BOTTOM',
+  count: number
+): T[] {
+  if (count <= 0 || list.length === 0) return [];
+  const takeFromStart =
+    (zone === 'DECK' && edge === 'TOP') || (zone !== 'DECK' && edge === 'BOTTOM');
+  return takeFromStart ? list.slice(0, count) : list.slice(-count).reverse();
 }
 
 /**
@@ -85,6 +103,13 @@ export interface CardFilterView {
   readonly controllerPlayerId: string;
   readonly zone: ZoneId;
   readonly isReady: boolean;
+  readonly isAirborne: boolean;
+  readonly isAttacking: boolean;
+  readonly isBeingAttacked: boolean;
+  readonly isInCombat: boolean;
+  readonly wasAscendedPlay: boolean;
+  readonly enteredFromZone: ZoneId | undefined;
+  readonly ascendedFromAirborne: boolean;
   readonly hasEquipment: boolean;
   getEffectiveCardType(): CardType | undefined;
   hasTrait(trait: string): boolean;
@@ -124,11 +149,31 @@ export class DslEvaluator {
         const pid = sourceId ? this.host.ctx.state.cards[sourceId]?.partnerCardId : undefined;
         return pid ? [pid] : [];
       }
+      case 'EQUIPPED_HOST': {
+        if (!sourceId) return [];
+        const oppId = this.host.resolveSide(playerId, 'OPPONENT');
+        for (const pid of [playerId, oppId]) {
+          for (const host of this.host.fieldTopHosts(pid)) {
+            if (!getAttachedEquipmentIds(host).includes(sourceId)) continue;
+            if (target.filter && !this.matchesFilter(host, target.filter, sourceId)) {
+              return [];
+            }
+            return [host.instanceId];
+          }
+        }
+        return [];
+      }
       case 'ZONE_BOTTOM_CARD': {
         const sidePlayer = this.host.resolveSide(playerId, target.side);
         const list = this.host.zone(sidePlayer, target.zone);
-        const last = list.length > 0 ? list[list.length - 1] : undefined;
-        return last ? [last.instanceId] : [];
+        return sliceZoneEdge(list, target.zone, 'BOTTOM', 1).map((c) => c.instanceId);
+      }
+      case 'ZONE_SLICE': {
+        const sidePlayer = this.host.resolveSide(playerId, target.side);
+        const list = this.host.zone(sidePlayer, target.zone);
+        return sliceZoneEdge(list, target.zone, target.edge, target.count)
+          .filter((c) => !target.filter || this.matchesFilter(c, target.filter, sourceId))
+          .map((c) => c.instanceId);
       }
       case 'TRIGGER_ATTACKER':
         return vars.__triggerAttacker ?? [];
@@ -146,9 +191,14 @@ export class DslEvaluator {
         return all.filter((id) => !excluded.has(id));
       }
       case 'ALL_MATCHING_ROLES': {
-        const sidePlayer = this.host.resolveSide(playerId, target.side);
-        return this.host
-          .roles(sidePlayer)
+        const roles =
+          target.side === 'ANY'
+            ? [
+                ...this.host.roles(playerId),
+                ...this.host.roles(this.host.resolveSide(playerId, 'OPPONENT')),
+              ]
+            : this.host.roles(this.host.resolveSide(playerId, target.side));
+        return roles
           .filter((r) => !target.filter || this.matchesFilter(r, target.filter, sourceId))
           .map((r) => r.instanceId);
       }
@@ -215,6 +265,14 @@ export class DslEvaluator {
           const c = this.host.ctx.state.cards[id];
           return Boolean(c && (!expr.filter || checkFilter(c, expr.filter)));
         });
+        if (expr.uniqueCardNumbers) {
+          const nums = new Set<string>();
+          for (const id of ids) {
+            const c = this.host.ctx.state.cards[id];
+            if (c) nums.add(extractCoreCardNumber(c.cardNumber));
+          }
+          return nums.size * expr.multiplier;
+        }
         if (!expr.uniqueNames) return ids.length * expr.multiplier;
         const names = new Set<string>();
         for (const id of ids) {
@@ -230,13 +288,16 @@ export class DslEvaluator {
           (r) => !expr.roleFilter || checkFilter(r, expr.roleFilter)
         );
         const seenNames = new Set<string>();
+        const seenCardNumbers = new Set<string>();
         let total = 0;
         for (const h of hosts) {
           for (const uid of h.underneathCardIds ?? []) {
             const c = this.host.ctx.state.cards[uid];
             if (!c) continue;
             if (expr.filter && !checkFilter(c, expr.filter)) continue;
-            if (expr.uniqueNames) {
+            if (expr.uniqueCardNumbers) {
+              seenCardNumbers.add(extractCoreCardNumber(c.cardNumber));
+            } else if (expr.uniqueNames) {
               const name = this.host.def(c)?.name;
               if (name) seenNames.add(normalizeCardName(name));
             } else {
@@ -244,7 +305,11 @@ export class DslEvaluator {
             }
           }
         }
-        const count = expr.uniqueNames ? seenNames.size : total;
+        const count = expr.uniqueCardNumbers
+          ? seenCardNumbers.size
+          : expr.uniqueNames
+            ? seenNames.size
+            : total;
         return count * (expr.multiplier ?? 1);
       }
       case 'ORB_ZONE_COUNT_MULT': {
@@ -259,6 +324,13 @@ export class DslEvaluator {
         const matched = resolveZone(pid, expr.zone).filter(
           (c) => !expr.filter || checkFilter(c, expr.filter)
         );
+        if (expr.uniqueCardNumbers) {
+          const nums = new Set<string>();
+          for (const c of matched) {
+            nums.add(extractCoreCardNumber(c.cardNumber));
+          }
+          return nums.size * expr.multiplier;
+        }
         if (!expr.uniqueNames) return matched.length * expr.multiplier;
         const names = new Set<string>();
         for (const c of matched) {
@@ -563,6 +635,11 @@ export class DslEvaluator {
           (s) => s.standaloneEquipmentId === sourceId
         );
       }
+      case 'PARTNER_FROM_ZONE': {
+        if (inStaticEval) return false;
+        const fromZone = vars.__partnerFromZone?.[0] as ZoneId | undefined;
+        return Boolean(fromZone && cond.zones.includes(fromZone));
+      }
       case 'ALL':
         return cond.conditions.every((c) =>
           this.evalConditionWithResolvers(
@@ -653,7 +730,12 @@ export class DslEvaluator {
     );
   }
 
-  matchesFilter(card: CardInstance, filter: CardFilter, sourceId?: string): boolean {
+  matchesFilter(
+    card: CardInstance,
+    filter: CardFilter,
+    sourceId?: string,
+    options?: { allowFaceDownSignalOrb?: boolean }
+  ): boolean {
     return this.matchesFilterSafe(
       card,
       filter,
@@ -669,7 +751,8 @@ export class DslEvaluator {
           ? this.host.ctx.continuousEffects.hasCardName(id, name)
           : this.host.def(target)?.name === name;
       },
-      false
+      false,
+      options?.allowFaceDownSignalOrb ?? false
     );
   }
 
@@ -679,9 +762,16 @@ export class DslEvaluator {
     hasTraitFn: (cardInstanceId: string, trait: string) => boolean,
     sourceId?: string,
     hasNameFn?: (cardInstanceId: string, name: string) => boolean,
-    inStaticEval = false
+    inStaticEval = false,
+    allowFaceDownSignalOrb = false
   ): boolean {
-    const view = this.createLiveOrStaticView(card, hasTraitFn, hasNameFn, inStaticEval);
+    const view = this.createLiveOrStaticView(
+      card,
+      hasTraitFn,
+      hasNameFn,
+      inStaticEval,
+      allowFaceDownSignalOrb
+    );
     return this.matchesFilterWithView(view, filter, sourceId);
   }
 
@@ -705,10 +795,16 @@ export class DslEvaluator {
     card: CardInstance,
     hasTraitFn: (cardInstanceId: string, trait: string) => boolean,
     hasNameFn: ((cardInstanceId: string, name: string) => boolean) | undefined,
-    inStaticEval: boolean
+    inStaticEval: boolean,
+    allowFaceDownSignalOrb = false
   ): CardFilterView {
     const def = this.host.def(card);
     const continuousEffects = this.host.ctx.continuousEffects;
+    const combat = this.host.ctx.state.currentCombat;
+    const isAttacking = Boolean(combat && combat.attackerCardId === card.instanceId);
+    const isBeingAttacked = Boolean(
+      combat?.targetType === 'CHARACTER' && combat.targetCardId === card.instanceId
+    );
     return {
       mode: inStaticEval ? 'static' : 'live',
       card,
@@ -716,6 +812,13 @@ export class DslEvaluator {
       controllerPlayerId: card.controllerPlayerId,
       zone: card.zone,
       isReady: card.isReady,
+      isAirborne: Boolean(card.isAirborne),
+      isAttacking,
+      isBeingAttacked,
+      isInCombat: isAttacking || isBeingAttacked,
+      wasAscendedPlay: Boolean(card.wasAscendedPlay),
+      enteredFromZone: card.enteredFromZone,
+      ascendedFromAirborne: Boolean(card.ascendedFromAirborne),
       hasEquipment: getAttachedEquipmentIds(card).length > 0,
       getEffectiveCardType: () =>
         !inStaticEval && continuousEffects
@@ -772,8 +875,10 @@ export class DslEvaluator {
         return this.host.isOrb(card);
       },
       matchesOrbColor: (color) => {
-        // 背面信号球属于非公开信息，不得按印刷颜色匹配 (3.5.3 / 12)
-        if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp) return false;
+        // 背面信号球属于非公开信息，不得按印刷颜色匹配 (3.5.3 / 12)；仅操控方私密查看 (PEEK_ZONE) 时允许
+        if (card.zone === 'SIGNAL_ORB' && !card.isFaceUp) {
+          return allowFaceDownSignalOrb ? def?.signalOrb === color : false;
+        }
         if (inStaticEval) {
           return def?.signalOrb === color;
         }
@@ -805,6 +910,12 @@ export class DslEvaluator {
     const def = this.host.def(card);
     const continuousEffects = this.host.ctx.continuousEffects;
     const traitSet = expandBaseTraits(snapshot.traits);
+    const liveCard = this.host.ctx.state.cards[card.instanceId] ?? card;
+    const combat = this.host.ctx.state.currentCombat;
+    const isAttacking = Boolean(combat && combat.attackerCardId === card.instanceId);
+    const isBeingAttacked = Boolean(
+      combat?.targetType === 'CHARACTER' && combat.targetCardId === card.instanceId
+    );
     return {
       mode: 'snapshot',
       card,
@@ -812,6 +923,14 @@ export class DslEvaluator {
       controllerPlayerId: snapshot.controllerPlayerId,
       zone: snapshot.zone,
       isReady: snapshot.isReady,
+      isAirborne: snapshot.isAirborne ?? Boolean(liveCard.isAirborne),
+      isAttacking,
+      isBeingAttacked,
+      isInCombat: isAttacking || isBeingAttacked,
+      wasAscendedPlay: snapshot.wasAscendedPlay ?? Boolean(liveCard.wasAscendedPlay),
+      enteredFromZone: snapshot.enteredFromZone ?? liveCard.enteredFromZone,
+      ascendedFromAirborne:
+        snapshot.ascendedFromAirborne ?? Boolean(liveCard.ascendedFromAirborne),
       hasEquipment:
         snapshot.hasAttachedEquipment !== undefined
           ? snapshot.hasAttachedEquipment
@@ -903,7 +1022,31 @@ export class DslEvaluator {
     if (filter.isFaceUp !== undefined && card.isFaceUp !== filter.isFaceUp) return false;
     if (filter.isReady !== undefined && view.isReady !== filter.isReady) return false;
     if (filter.isFrozen !== undefined && Boolean(card.isFrozen) !== filter.isFrozen) return false;
-    if (filter.isAirborne !== undefined && Boolean(card.isAirborne) !== filter.isAirborne) {
+    if (filter.isAirborne !== undefined && view.isAirborne !== filter.isAirborne) {
+      return false;
+    }
+    if (filter.isAttacking !== undefined && view.isAttacking !== filter.isAttacking) {
+      return false;
+    }
+    if (filter.isBeingAttacked !== undefined && view.isBeingAttacked !== filter.isBeingAttacked) {
+      return false;
+    }
+    if (filter.isInCombat !== undefined && view.isInCombat !== filter.isInCombat) {
+      return false;
+    }
+    if (filter.wasAscendedPlay !== undefined && view.wasAscendedPlay !== filter.wasAscendedPlay) {
+      return false;
+    }
+    if (
+      filter.enteredFromZones !== undefined &&
+      (!view.enteredFromZone || !filter.enteredFromZones.includes(view.enteredFromZone))
+    ) {
+      return false;
+    }
+    if (
+      filter.ascendedFromAirborne !== undefined &&
+      view.ascendedFromAirborne !== filter.ascendedFromAirborne
+    ) {
       return false;
     }
     if (filter.hasAssistConfig !== undefined && Boolean(def?.assistConfig) !== filter.hasAssistConfig) {

@@ -135,6 +135,7 @@ export class GameEngine {
       (cardId, trait) => this.continuousEffects.hasTrait(cardId, trait)
     );
     this.replacementEngine.setMaxCostCapacityProvider((pid) => this.zoneMgr.getMaxCostZoneCapacity(pid));
+    this.replacementEngine.setEffectiveCardCostProvider((cid) => this.continuousEffects.getEffectiveCardCost(cid));
     this.zoneMgr.setReplacementEngine(this.replacementEngine);
     this.replacementEngine.setSendCardToGraveyardHandler((cid, sentByEffectOrCost) => {
       this.zoneMgr.moveCard(cid, 'GRAVEYARD', { isFaceUp: true, sentByEffectOrCost });
@@ -1822,48 +1823,19 @@ export class GameEngine {
           });
         }
       } else if (meta.eventKind === 'DESTROY_ROLE' && meta.cardInstanceId && meta.reason) {
+        let destroyedDefenderCardId: string | undefined;
         const card = this.state.cards[meta.cardInstanceId];
         if (card && card.zone === 'BATTLEFIELD') {
-          const intercept = this.replacementEngine.interceptDestroyRole(
-            card.instanceId,
+          destroyedDefenderCardId = this.replayDestroyRoleAfterReplacement(
+            card,
             meta.reason,
             meta.attackerCardId,
             applied,
-            { preferredReplacementId: chosenId }
+            chosenId
           );
-          if (intercept.replaced) {
-            if (intercept.redirect) {
-              this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
-                isFaceUp: intercept.redirect.isFaceUp,
-                isReady: intercept.redirect.isReady,
-                toBottom: intercept.redirect.toBottom,
-                appliedReplacementIds: intercept.appliedIds,
-              });
-            }
-          } else {
-            const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
-            const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
-              isFaceUp: true,
-              appliedReplacementIds: intercept.appliedIds,
-            });
-            if (moved) {
-              this.events.push({
-                type: 'CARD_DESTROYED',
-                cardInstanceId: card.instanceId,
-                reason: meta.reason,
-              });
-              this.triggerMgr.emit({
-                type: 'CARD_DESTROYED',
-                playerId: card.controllerPlayerId,
-                cardInstanceId: card.instanceId,
-                targetCardId: meta.attackerCardId,
-                fromZone: 'BATTLEFIELD',
-                toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
-                destroyReason: meta.reason,
-                subjectSnapshot: snapshot,
-              });
-            }
-          }
+        }
+        if (!this.state.currentPendingChoice) {
+          this.finalizePendingBattleCompare(destroyedDefenderCardId);
         }
       } else if (meta.eventKind === 'DEAL_DAMAGE' && meta.defenderPlayerId && meta.amount !== undefined) {
         if (meta.applyMode === 'COMBAT_DAMAGE') {
@@ -1925,6 +1897,7 @@ export class GameEngine {
       this.state.currentPendingChoice = undefined;
       const picked = action.selectedIds[0];
       const card = meta.cardInstanceId ? this.state.cards[meta.cardInstanceId] : undefined;
+      let destroyedDefenderCardId: string | undefined;
       if (card && card.zone === 'BATTLEFIELD') {
         if (picked === 'replace' && meta.smallId && meta.largeId) {
           const eqIds = getAttachedEquipmentIds(card);
@@ -1941,45 +1914,12 @@ export class GameEngine {
             'builtin:BP01-017_LEAVE_REPLACEMENT',
           ]);
           if (meta.originalEvent.type === 'DESTROY_ROLE') {
-            const intercept = this.replacementEngine.interceptDestroyRole(
-              card.instanceId,
+            destroyedDefenderCardId = this.replayDestroyRoleAfterReplacement(
+              card,
               meta.originalEvent.reason,
               meta.originalEvent.attackerCardId,
               skipSelf
             );
-            if (intercept.replaced) {
-              if (intercept.redirect) {
-                this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
-                  isFaceUp: intercept.redirect.isFaceUp,
-                  isReady: intercept.redirect.isReady,
-                  toBottom: intercept.redirect.toBottom,
-                  appliedReplacementIds: intercept.appliedIds,
-                });
-              }
-            } else {
-              const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
-              const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
-                isFaceUp: true,
-                appliedReplacementIds: intercept.appliedIds,
-              });
-              if (moved) {
-                this.events.push({
-                  type: 'CARD_DESTROYED',
-                  cardInstanceId: card.instanceId,
-                  reason: meta.originalEvent.reason,
-                });
-                this.triggerMgr.emit({
-                  type: 'CARD_DESTROYED',
-                  playerId: card.controllerPlayerId,
-                  cardInstanceId: card.instanceId,
-                  targetCardId: meta.originalEvent.attackerCardId,
-                  fromZone: 'BATTLEFIELD',
-                  toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
-                  destroyReason: meta.originalEvent.reason,
-                  subjectSnapshot: snapshot,
-                });
-              }
-            }
           } else if (meta.originalEvent.isPlacingUnderneath && meta.originalEvent.underneathHostId) {
             this.fieldMgr.placeCardUnderneath(card.instanceId, meta.originalEvent.underneathHostId, {
               includeUnderneath: meta.originalEvent.includeUnderneath,
@@ -1995,6 +1935,188 @@ export class GameEngine {
             });
           }
         }
+      }
+      if (meta.originalEvent?.type === 'DESTROY_ROLE' && !this.state.currentPendingChoice) {
+        this.finalizePendingBattleCompare(destroyedDefenderCardId);
+      }
+      if (!this.state.currentPendingChoice) {
+        advancePendingChoice(this.state);
+      }
+      return { success: true };
+    }
+
+    // 8.10 通用可选置换决策解析（支持 SELECT_OPTION 与多选代价 SELECT_CARDS）
+    if (choice.effectType === 'OPTIONAL_REPLACEMENT_DECISION') {
+      const meta = (choice.metadata ?? {}) as {
+        ruleId?: string;
+        subjectCardId?: string;
+        appliedIds?: string[];
+        originalEvent?:
+          | {
+              type: 'DESTROY_ROLE';
+              cardInstanceId?: string;
+              reason: 'BATTLE' | 'EFFECT' | 'PP_ZERO';
+              attackerCardId?: string;
+              combatCannotDealDamage?: boolean;
+            }
+          | {
+              type: 'MOVE_CARD';
+              cardInstanceId?: string;
+              fromZone?: CardInstance['zone'];
+              toZone: CardInstance['zone'];
+              isFaceUp?: boolean;
+              isReady?: boolean;
+              toBottom?: boolean;
+              isOrphanCleanup?: boolean;
+              orphanHostCardId?: string;
+              isPlacingUnderneath?: boolean;
+              underneathHostId?: string;
+              includeUnderneath?: boolean;
+              skipLeftFieldTrigger?: boolean;
+              sentByEffectOrCost?: boolean;
+              countAsDeckToGy?: boolean;
+            };
+        costZone?: CardInstance['zone'];
+        sacrificeCandidates?: string[];
+        sacrificeCount?: number;
+        fixedSacrificeIds?: string[];
+        detachFromSubject?: boolean;
+        oncePerTurnUsageKey?: string;
+        action?:
+          | { kind: 'PREVENT' }
+          | { kind: 'REDIRECT_ZONE'; zone: CardInstance['zone']; isFaceUp?: boolean; isReady?: boolean; toBottom?: boolean };
+      };
+
+      const costCount = meta.sacrificeCount ?? 1;
+      if (choice.choiceType === 'SELECT_CARDS') {
+        if (action.selectedIds.length !== 0 && action.selectedIds.length !== costCount) {
+          return {
+            success: false,
+            error: `请选择 ${costCount} 张卡牌作为置换代价，或选择 0 张放弃置换`,
+          };
+        }
+        if (action.selectedIds.length > 0 && meta.sacrificeCandidates) {
+          const allowed = new Set(meta.sacrificeCandidates);
+          for (const sid of action.selectedIds) {
+            if (!allowed.has(sid)) {
+              return { success: false, error: '所选代价卡牌不在可选范围内' };
+            }
+          }
+        }
+      }
+
+      this.state.currentPendingChoice = undefined;
+      const targetCardId = meta.originalEvent?.cardInstanceId ?? meta.subjectCardId;
+      const isReplace =
+        choice.choiceType === 'SELECT_CARDS'
+          ? action.selectedIds.length === costCount && action.selectedIds.length > 0
+          : action.selectedIds[0] === 'replace';
+      const skipSelf = new Set<string>([
+        ...(meta.appliedIds ?? []),
+        ...(meta.ruleId ? [meta.ruleId] : []),
+      ]);
+      let destroyedDefenderCardId: string | undefined;
+
+      if (isReplace) {
+        const sacrificeIds =
+          choice.choiceType === 'SELECT_CARDS'
+            ? action.selectedIds
+            : (meta.fixedSacrificeIds ?? []);
+
+        if (meta.detachFromSubject && meta.subjectCardId && sacrificeIds.length > 0) {
+          const subject = this.state.cards[meta.subjectCardId];
+          if (subject) {
+            const sacSet = new Set(sacrificeIds);
+            const remain = getAttachedEquipmentIds(subject).filter((id) => !sacSet.has(id));
+            subject.attachedEquipmentId = remain[0];
+            subject.extraAttachedEquipmentIds = remain.length > 1 ? remain.slice(1) : undefined;
+          }
+        }
+
+        for (const sacId of sacrificeIds) {
+          this.zoneMgr.moveCard(sacId, 'GRAVEYARD', {
+            isFaceUp: true,
+            sentByEffectOrCost: true,
+          });
+        }
+
+        if (meta.oncePerTurnUsageKey) {
+          const controller = this.state.players[choice.playerId];
+          if (controller) {
+            controller.turnAbilityUsage[meta.oncePerTurnUsageKey] =
+              (controller.turnAbilityUsage[meta.oncePerTurnUsageKey] ?? 0) + 1;
+          }
+        }
+
+        if (meta.action?.kind === 'REDIRECT_ZONE' && targetCardId) {
+          const targetCard = this.state.cards[targetCardId];
+          let destZone = meta.action.zone;
+          let destFaceUp = meta.action.isFaceUp;
+          let destReady = meta.action.isReady;
+          let destBottom = meta.action.toBottom;
+          if (
+            targetCard &&
+            destZone === 'COST' &&
+            targetCard.zone !== 'COST' &&
+            this.zoneMgr.getCardsInZone(targetCard.controllerPlayerId, 'COST').length >=
+              this.zoneMgr.getMaxCostZoneCapacity(targetCard.controllerPlayerId)
+          ) {
+            destZone = 'GRAVEYARD';
+            destFaceUp = true;
+            destReady = true;
+            destBottom = false;
+          }
+          this.zoneMgr.moveCard(targetCardId, destZone, {
+            isFaceUp: destFaceUp,
+            isReady: destReady,
+            toBottom: destBottom,
+            appliedReplacementIds: skipSelf,
+          });
+        }
+      } else if (meta.originalEvent && targetCardId) {
+        const card = this.state.cards[targetCardId];
+        if (card) {
+          if (meta.originalEvent.type === 'DESTROY_ROLE' && card.zone === 'BATTLEFIELD') {
+            destroyedDefenderCardId = this.replayDestroyRoleAfterReplacement(
+              card,
+              meta.originalEvent.reason,
+              meta.originalEvent.attackerCardId,
+              skipSelf
+            );
+          } else if (meta.originalEvent.type === 'MOVE_CARD') {
+            if (meta.originalEvent.isPlacingUnderneath && meta.originalEvent.underneathHostId) {
+              this.fieldMgr.placeCardUnderneath(card.instanceId, meta.originalEvent.underneathHostId, {
+                includeUnderneath: meta.originalEvent.includeUnderneath,
+                appliedReplacementIds: skipSelf,
+              });
+            } else {
+              this.zoneMgr.moveCard(card.instanceId, meta.originalEvent.toZone, {
+                isFaceUp: meta.originalEvent.isFaceUp,
+                isReady: meta.originalEvent.isReady,
+                toBottom: meta.originalEvent.toBottom,
+                isOrphanCleanup: meta.originalEvent.isOrphanCleanup,
+                orphanHostCardId: meta.originalEvent.orphanHostCardId,
+                skipLeftFieldTrigger: meta.originalEvent.skipLeftFieldTrigger,
+                sentByEffectOrCost: meta.originalEvent.sentByEffectOrCost,
+                countAsDeckToGy: meta.originalEvent.countAsDeckToGy,
+                appliedReplacementIds: skipSelf,
+              });
+            }
+            if (
+              this.state.currentCombat?.pendingBattleCompare?.defenderCardId === card.instanceId &&
+              card.zone === 'GRAVEYARD'
+            ) {
+              destroyedDefenderCardId = card.instanceId;
+            }
+          }
+        }
+      }
+
+      if (
+        (meta.originalEvent?.type === 'DESTROY_ROLE' || this.state.currentCombat?.pendingBattleCompare) &&
+        !this.state.currentPendingChoice
+      ) {
+        this.finalizePendingBattleCompare(destroyedDefenderCardId);
       }
       if (!this.state.currentPendingChoice) {
         advancePendingChoice(this.state);
@@ -2445,6 +2567,78 @@ export class GameEngine {
 
   private getOpponentId(playerId: string): string {
     return playerId === this.state.activePlayerId ? this.state.nonActivePlayerId : this.state.activePlayerId;
+  }
+
+  /**
+   * 8.10 置换决策结算完毕后重放角色破坏（排除已拒绝或已处理的置换 ID）
+   */
+  private replayDestroyRoleAfterReplacement(
+    card: CardInstance,
+    reason: 'BATTLE' | 'EFFECT' | 'PP_ZERO',
+    attackerCardId: string | undefined,
+    appliedIds: Set<string>,
+    preferredReplacementId?: string
+  ): string | undefined {
+    const intercept = this.replacementEngine.interceptDestroyRole(
+      card.instanceId,
+      reason,
+      attackerCardId,
+      appliedIds,
+      preferredReplacementId ? { preferredReplacementId } : undefined
+    );
+    if (intercept.replaced) {
+      if (!intercept.pendingChoice && intercept.redirect) {
+        this.zoneMgr.moveCard(card.instanceId, intercept.redirect.zone, {
+          isFaceUp: intercept.redirect.isFaceUp,
+          isReady: intercept.redirect.isReady,
+          toBottom: intercept.redirect.toBottom,
+          appliedReplacementIds: intercept.appliedIds,
+        });
+      }
+      return undefined;
+    }
+    const snapshot = this.triggerMgr.snapshotCard(card.instanceId);
+    const moved = this.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
+      isFaceUp: true,
+      appliedReplacementIds: intercept.appliedIds,
+    });
+    if (!moved) return undefined;
+    this.events.push({
+      type: 'CARD_DESTROYED',
+      cardInstanceId: card.instanceId,
+      reason,
+    });
+    this.triggerMgr.emit({
+      type: 'CARD_DESTROYED',
+      playerId: card.controllerPlayerId,
+      cardInstanceId: card.instanceId,
+      targetCardId: attackerCardId,
+      fromZone: 'BATTLEFIELD',
+      toZone: this.state.cards[card.instanceId]?.zone ?? 'GRAVEYARD',
+      destroyReason: reason,
+      subjectSnapshot: snapshot,
+    });
+    return card.instanceId;
+  }
+
+  /**
+   * 7.6.1.b~d 战斗破坏遭遇可选置换挂起后，于置换解决且无新挂起时补发 BATTLE_COMPARED 并推进到 END 与检查时机
+   */
+  private finalizePendingBattleCompare(destroyedDefenderCardId?: string): void {
+    const combat = this.state.currentCombat;
+    const pending = combat?.pendingBattleCompare;
+    if (!combat || !pending || this.state.currentPendingChoice) return;
+    combat.pendingBattleCompare = undefined;
+    this.events.push({
+      type: 'BATTLE_COMPARED',
+      attackerCardId: pending.attackerCardId,
+      attackerPP: pending.attackerPP,
+      defenderCardId: pending.defenderCardId,
+      defenderPP: pending.defenderPP,
+      destroyedDefenderCardId,
+    });
+    combat.step = 'END';
+    this.checkTimingMgr.resolveCheckTiming();
   }
 
   /**
