@@ -112,7 +112,7 @@
 
 > 全部 490 张卡已完成声明式注册，后续按卡包专项 PR 逐一清零审计发现的结算偏差、剩余受限点与过时注释，同步补全缺失原语与单元测试：
 
-- [ ] **DSL 基础设施精简与校验加固**（1 个 PR）：抽出单一参数化条件/筛选求值器消除 `evalCondition`/`evalStaticCondition` 漂移；补齐 `getEquipmentGrantedActivates` 宿主 `CANNOT_GAIN_ABILITIES` 检查、`sharedTurnKey` 玩家隔离与 `validator.ts` 遗漏校验（含 `entry/entries`、`activate/activates` 互斥）；清理 `card-effects.ts` 1,500+ 行不可达死代码，并将 4,445 行 `interpreter.ts` 拆分为 `evaluator.ts`、`cost-handler.ts`、`step-runner.ts`、`trigger-adapter.ts`。
+- [x] **DSL 基础设施精简与校验加固**（Stage 4A 已完成）：抽出单一参数化条件/筛选求值器消除 `evalCondition`/`evalStaticCondition` 漂移，并将 4,445 行 `interpreter.ts` 拆分为 `runtime-types.ts`、`evaluator.ts`、`cost-handler.ts`、`step-runner.ts`、`trigger-adapter.ts`；补齐 `validator.ts` 枚举/边界/互斥/`grantedTriggerIds` 交叉校验（全表 490 卡 0 错误 + 负例单测 `stage4a-dsl-infra-and-cleanup.test.ts`）；清理 `card-effects.ts` 1,500+ 行不可达死代码；修复 `eliminatedOrbsByKareninaCountThisTurn` 按次累计、`REDIRECT_ATTACK` 目标合法性校验、`DETACH_AND_MOVE_PARTNER` 移动前快照与 `EQUIPPED_ROLE_ATTACKING` 宿主 `CANNOT_GAIN_ABILITIES` 拦截（含 `sharedTurnKey` 玩家隔离与 `getEquipmentGrantedActivates` 校验）。
 - [ ] **补全缺失通用原语**：`isAirborne`、`isAttacking`、`isBeingAttacked`、`fromZone`（成为搭档来源判断）、`wasAscendedPlay`（真升变判断）、`distinctCardNumbers`（不同编号多选）、`PEEK_TOP`（私密查看，不走 `REVEAL_TOP`）、顶部固定截取（替代 `BP03-013/014/016` 全区选）、信号球第 0 位/底位精准选择、`SELF_UNDERNEATH` / `EQUIPPED_HOST` / `ZONE_CARDS('GRAVEYARD')` 批量全选、多张置底重排、可挂起通用 `REPLACEMENT` 原语（服务 `BP01-017`/`BP02-013`/`BP02-049`/`PR-018`/`PR-021`）。
 - [ ] **分包精准度清零（每包 1 个专项 PR + 补齐单测覆盖率至 100%）**：
   1. `ST01~ST06 & BP01`：收尾 `BP01-037` 可选 1 球或 3 球及非 DSL 公开/伤害充能、`BP01-058` 双【出】自选顺序、`ST03-003` 代价校验、`ST03-008`、`ST05-008/010`、`BP01-051`、`BP01-061` 等；
