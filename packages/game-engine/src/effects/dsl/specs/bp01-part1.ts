@@ -1,50 +1,5 @@
 import { CardType } from '@zhanshuang/shared';
-import type { CardEffectSpec, EffectStep } from '../types.js';
-
-const BP01_040_STACK_PAWA_STEPS: EffectStep[] = [
-  {
-    op: 'DISCARD_COST_STEP',
-    count: 1,
-    optional: false,
-    prompt: '【七实·遥星之座】【起】【回合1】请选择1张手牌丢弃作为代价，将墓地1张《帕瓦》置入该牌下方',
-    choiceEffectType: 'PRESET_BP01_040_DISCARD',
-    onPaid: [
-      { op: 'MARK_TURN_ABILITY_USED', abilityKey: 'BP01_040_STACK' },
-      {
-        op: 'CHOOSE_ZONE_CARDS',
-        side: 'SELF',
-        zone: 'GRAVEYARD',
-        prompt: '【七实·遥星之座】选择我方墓地1张《帕瓦》，放置到该牌下方',
-        filter: { exactName: '帕瓦' },
-        min: 1,
-        max: 1,
-        saveToVar: 'pawa',
-        choiceEffectType: 'PRESET_BP01_040_PICK_PAWA',
-      },
-      {
-        op: 'MOVE_CARDS',
-        target: { kind: 'VAR', varName: 'pawa' },
-        toZone: 'UNDERNEATH',
-        underneathHost: { kind: 'SELF' },
-      },
-    ],
-  },
-];
-
-const BP01_040_GAME1_DAMAGE_STEPS: EffectStep[] = [
-  {
-    op: 'ELIMINATE_ORB_COST',
-    filter: 'YELLOW',
-    count: 2,
-    optional: false,
-    prompt: '【七实·遥星之座】【起】【游戏1】消除【2黄色信号球】，给予对方1点伤害',
-    choiceEffectType: 'PRESET_BP01_040_ORB_COST',
-    onPaid: [
-      { op: 'MARK_GAME_ABILITY_USED', abilityKey: 'BP01-040-DAMAGE' },
-      { op: 'DEAL_DAMAGE', side: 'OPPONENT', amount: 1 },
-    ],
-  },
-];
+import type { CardEffectSpec } from '../types.js';
 
 function makePawaStackActivate(orbCount: 1 | 2): NonNullable<CardEffectSpec['activate']> {
   // Q&A·2 (BP01-052)：战场没有《七实·遥星之座》时仍可发动其【起】支付消球代价（执行不可能的部分不执行）
@@ -134,6 +89,7 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
       ],
     },
@@ -347,6 +303,7 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
             target: { kind: 'VAR', varName: 'target' },
             pp: 2000,
             charge: 1,
+            chargeIsAbility: true,
             duration: 'END_OF_NEXT_TURN',
           },
         ],
@@ -385,48 +342,56 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
     name: '罗兰·戏炎',
     // 【出】：将我方信号球区的牌按任意顺序排列。
     // 【出】消除2同色信号球：若我方侵蚀计数为4及以上，选择我方战场1张《露娜·银冕》，直到回合结束为止，其获得【贯通】。
-    entry: {
-      steps: [
-        {
-          op: 'REORDER_ZONE',
-          zone: 'SIGNAL_ORB',
-          prompt: '【罗兰·戏炎】【出】请依次点击重新排列我方信号球区（共 {orbCount} 张）',
-          choiceEffectType: 'PRESET_BP01_010_REORDER',
+    entries: [
+      {
+        id: 'reorder_orbs',
+        label: '【出1】：将我方信号球区的牌按任意顺序排列',
+        steps: [
+          {
+            op: 'REORDER_ZONE',
+            zone: 'SIGNAL_ORB',
+            prompt: '【罗兰·戏炎】【出】请依次点击重新排列我方信号球区（共 {orbCount} 张）',
+            choiceEffectType: 'PRESET_BP01_010_REORDER',
+          },
+        ],
+      },
+      {
+        id: 'grant_pierce',
+        label: '【出2】消除2同色信号球：若我方侵蚀>=4，使我方1张《露娜·银冕》获得【贯通】',
+        cost: {
+          kind: 'ELIMINATE_ORBS',
+          filter: 'SAME',
+          count: 2,
+          optional: true,
+          prompt: '【罗兰·戏炎】【出】是否消除2同色信号球？（若我方侵蚀计数为4及以上，使我方战场1张《露娜·银冕》直到回合结束获得【贯通】）',
+          choiceEffectType: 'PRESET_BP01_010_ORB_COST',
         },
-        {
-          op: 'IF',
-          condition: { kind: 'EROSION_COMPARE', side: 'SELF', op: '>=', value: 4 },
-          then: [
-            {
-              op: 'ELIMINATE_ORB_COST',
-              filter: 'SAME',
-              count: 2,
-              optional: true,
-              prompt: '【罗兰·戏炎】【出】是否消除2同色信号球，使我方战场1张《露娜·银冕》直到回合结束获得【贯通】？',
-              choiceEffectType: 'PRESET_BP01_010_ORB_COST',
-              onPaid: [
-                {
-                  op: 'CHOOSE_ROLES',
-                  side: 'SELF',
-                  prompt: '【罗兰·戏炎】【出】选择我方战场1张《露娜·银冕》，直到回合结束获得【贯通】',
-                  filter: { exactName: '露娜·银冕' },
-                  min: 1,
-                  max: 1,
-                  saveToVar: 'luna',
-                  choiceEffectType: 'PRESET_BP01_010_LUNA',
-                },
-                {
-                  op: 'MODIFY_STATS',
-                  target: { kind: 'VAR', varName: 'luna' },
-                  keywords: ['贯通'],
-                  duration: 'END_OF_TURN',
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    },
+        steps: [
+          {
+            op: 'IF',
+            condition: { kind: 'EROSION_COMPARE', side: 'SELF', op: '>=', value: 4 },
+            then: [
+              {
+                op: 'CHOOSE_ROLES',
+                side: 'SELF',
+                prompt: '【罗兰·戏炎】【出】选择我方战场1张《露娜·银冕》，直到回合结束获得【贯通】',
+                filter: { exactName: '露娜·银冕' },
+                min: 1,
+                max: 1,
+                saveToVar: 'luna',
+                choiceEffectType: 'PRESET_BP01_010_LUNA',
+              },
+              {
+                op: 'MODIFY_STATS',
+                target: { kind: 'VAR', varName: 'luna' },
+                keywords: ['贯通'],
+                duration: 'END_OF_TURN',
+              },
+            ],
+          },
+        ],
+      },
+    ],
   },
   {
     cardNumber: 'BP01-011',
@@ -531,64 +496,63 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
         unblockableMaxPP: 5000,
       },
     ],
-    activate: {
-      condition: {
-        kind: 'ANY',
-        conditions: [
-          { kind: 'TURN_ABILITY_UNUSED', abilityKey: 'BP01_040_STACK' },
+    activates: [
+      {
+        id: 'mode_stack',
+        label: '【起1】【回合1】丢弃1张手牌：墓地1张<帕瓦>置入下方',
+        oncePerTurn: true,
+        cost: {
+          kind: 'DISCARD_HAND',
+          count: 1,
+          optional: false,
+          prompt: '【七实·遥星之座】【起】【回合1】请选择1张手牌丢弃作为代价，将墓地1张《帕瓦》置入该牌下方',
+          choiceEffectType: 'BP01_040_DISCARD',
+        },
+        steps: [
           {
-            kind: 'ALL',
-            conditions: [
-              { kind: 'SELF_UNDERNEATH_COUNT', op: '>=', value: 7 },
-              { kind: 'GAME_ABILITY_UNUSED', abilityKey: 'BP01-040-DAMAGE' },
-            ],
+            op: 'CHOOSE_ZONE_CARDS',
+            side: 'SELF',
+            zone: 'GRAVEYARD',
+            prompt: '【七实·遥星之座】选择我方墓地1张《帕瓦》，放置到该牌下方',
+            filter: { exactName: '帕瓦' },
+            min: 1,
+            max: 1,
+            saveToVar: 'pawa',
+            choiceEffectType: 'PRESET_BP01_040_PICK_PAWA',
+          },
+          {
+            op: 'MOVE_CARDS',
+            target: { kind: 'VAR', varName: 'pawa' },
+            toZone: 'UNDERNEATH',
+            underneathHost: { kind: 'SELF' },
           },
         ],
       },
-      conditionError: '【七实·遥星之座】当前没有可发动的起动能力',
-      steps: [
-        {
-          op: 'IF',
-          condition: {
-            kind: 'ALL',
-            conditions: [
-              { kind: 'TURN_ABILITY_UNUSED', abilityKey: 'BP01_040_STACK' },
-              { kind: 'SELF_UNDERNEATH_COUNT', op: '>=', value: 7 },
-              { kind: 'GAME_ABILITY_UNUSED', abilityKey: 'BP01-040-DAMAGE' },
-            ],
-          },
-          then: [
-            {
-              op: 'CHOOSE_MODE',
-              prompt: '【七实·遥星之座】选择要发动的起动能力',
-              min: 1,
-              max: 1,
-              choiceEffectType: 'PRESET_BP01_040_MODE',
-              modes: [
-                {
-                  id: 'mode_stack',
-                  label: '【回合1】丢弃1张手牌：将墓地1张《帕瓦》置入该牌下方',
-                  steps: BP01_040_STACK_PAWA_STEPS,
-                },
-                {
-                  id: 'mode_damage',
-                  label: '【游戏1】消除【2黄色信号球】：给予对方1点伤害',
-                  steps: BP01_040_GAME1_DAMAGE_STEPS,
-                },
-              ],
-            },
-          ],
-          else: [
-            {
-              op: 'IF',
-              condition: { kind: 'TURN_ABILITY_UNUSED', abilityKey: 'BP01_040_STACK' },
-              then: BP01_040_STACK_PAWA_STEPS,
-              else: BP01_040_GAME1_DAMAGE_STEPS,
-            },
+      {
+        id: 'mode_damage',
+        label: '【起2】【游戏1】7张及以上 消除2黄球：给予对方1点伤害',
+        condition: {
+          kind: 'ALL',
+          conditions: [
+            { kind: 'SELF_UNDERNEATH_COUNT', op: '>=', value: 7 },
+            { kind: 'GAME_ABILITY_UNUSED', abilityKey: 'BP01-040-DAMAGE' },
           ],
         },
-      ],
-    },
+        conditionError: '【七实·遥星之座】需要下方存在7张及以上卡牌且本局尚未发动过【游戏1】能力',
+        cost: {
+          kind: 'ELIMINATE_ORBS',
+          filter: 'YELLOW',
+          count: 2,
+          optional: false,
+          prompt: '【七实·遥星之座】【起】【游戏1】消除【2黄色信号球】，给予对方1点伤害',
+          choiceEffectType: 'BP01_040_ORB',
+        },
+        steps: [
+          { op: 'MARK_GAME_ABILITY_USED', abilityKey: 'BP01-040-DAMAGE' },
+          { op: 'DEAL_DAMAGE', side: 'OPPONENT', amount: 1 },
+        ],
+      },
+    ],
   },
   {
     cardNumber: 'BP01-041',
@@ -728,6 +692,7 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
       ],
     },
@@ -779,10 +744,11 @@ export const BP01_PART1_EFFECT_SPECS: readonly CardEffectSpec[] = [
     activate: makePawaStackActivate(2),
     staticEffects: [
       {
-        id: 'BP01_051_UNDER_NANAMI_DP',
+        id: 'static:BP01-051:nanami_base_dp',
         scope: 'UNDERNEATH_HOST',
-        targetFilter: { exactName: '七实·遥星之座', maxBaseDP: 1 },
-        dp: 1,
+        targetFilter: { exactName: '七实·遥星之座' },
+        baseDPDelta: 1,
+        maxCurrentBaseDP: 1,
       },
     ],
   },

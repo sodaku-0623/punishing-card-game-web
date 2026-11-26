@@ -192,6 +192,7 @@ export const ST05_EFFECT_SPECS: readonly CardEffectSpec[] = [
                 op: 'MOVE_CARDS',
                 target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
                 toZone: 'DECK_BOTTOM',
+                chooseOrder: true,
               },
             ],
           },
@@ -305,7 +306,7 @@ export const ST05_EFFECT_SPECS: readonly CardEffectSpec[] = [
         abilityId: 'ST05_008_EQUIP_ATTACK',
         eventType: 'ATTACK_DECLARED',
         oncePerTurn: true,
-        matcher: { kind: 'EQUIPPED_ROLE_ATTACKING', requiredHostName: '比安卡·晖暮' },
+        matcher: { kind: 'EQUIPPED_ROLE_ATTACKING', requiredHostName: '比安卡·晖暮', ownedByEquipment: true },
         label: '【奥罗拉】【自】装备的《比安卡·晖暮》攻击时可将手牌1张暗属性牌放到信号球区最下方并抽1张',
         steps: [
           {
@@ -416,7 +417,7 @@ export const ST05_EFFECT_SPECS: readonly CardEffectSpec[] = [
           {
             op: 'CHOOSE_MODE',
             prompt: '【晦明戒律】信号球区最下方牌费用为奇数，可选择最多2项',
-            min: 1,
+            min: 0,
             max: 2,
             choiceEffectType: 'PRESET_ST05_010_MODE',
             modes: [

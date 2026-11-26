@@ -140,11 +140,13 @@ describe('ST01 灰鸦小队', () => {
     expect(choose(engine, [expensive.instanceId]).success).toBe(false);
     expect(choose(engine, [cheap.instanceId]).success).toBe(true);
 
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_ST01-001');
+    const orderIds = state.currentPendingChoice!.options.map((o) => o.id).reverse();
+    expect(choose(engine, orderIds).success).toBe(true);
+
     expect(at(engine, cheap).zone).toBe('BATTLEFIELD');
     const deck = zone(engine, 'p1', 'DECK');
-    expect(deck.slice(-4).map((c) => c.instanceId).sort()).toEqual(
-      top.filter((c) => c !== cheap).map((c) => c.instanceId).sort()
-    );
+    expect(deck.slice(-4).map((c) => c.instanceId)).toEqual(orderIds);
   });
 
   it('ST01-001【出】不支付丢弃代价时不公开任何牌', () => {
@@ -285,12 +287,13 @@ describe('ST01 灰鸦小队', () => {
     // <灰鸦小队>战术牌不是角色，不能选择
     expect(choose(engine, [crowTactic.instanceId]).success).toBe(false);
     expect(choose(engine, [role.instanceId]).success).toBe(true);
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_ST01-010');
+    const orderIds = state.currentPendingChoice!.options.map((o) => o.id).reverse();
+    expect(choose(engine, orderIds).success).toBe(true);
     expect(at(engine, role).zone).toBe('HAND');
     expect(at(engine, tactic).zone).toBe('GRAVEYARD');
     expect(zone(engine, 'p1', 'PROCESSING')).toHaveLength(0);
-    expect(zone(engine, 'p1', 'DECK').slice(-4).map((c) => c.instanceId).sort()).toEqual(
-      top.slice(0, 4).map((c) => c.instanceId).sort()
-    );
+    expect(zone(engine, 'p1', 'DECK').slice(-4).map((c) => c.instanceId)).toEqual(orderIds);
   });
 
   it('ST01-010：公开的牌中没有<灰鸦小队>角色时，确认后全部置于牌组底', () => {
@@ -299,7 +302,11 @@ describe('ST01 灰鸦小队', () => {
     play(engine, toHand(engine, 'p1', 'ST01-010'));
     expect(state.currentPendingChoice?.minSelections).toBe(0);
     expect(choose(engine, []).success).toBe(true);
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_ST01-010');
+    const orderIds = state.currentPendingChoice!.options.map((o) => o.id).reverse();
+    expect(choose(engine, orderIds).success).toBe(true);
     expect(top.every((c) => at(engine, c).zone === 'DECK')).toBe(true);
+    expect(zone(engine, 'p1', 'DECK').slice(-5).map((c) => c.instanceId)).toEqual(orderIds);
     expect(zone(engine, 'p1', 'PROCESSING')).toHaveLength(0);
   });
 
@@ -644,6 +651,15 @@ describe('预组效果的通用约束', () => {
     const choice = restored.getState().currentPendingChoice!;
     const res = restored.dispatchAction({ type: 'SELECT_CHOICE_OPTION', playerId: 'p1', pendingChoiceId: choice.id, selectedIds: [top[4]!.instanceId] });
     expect(res.success).toBe(true);
+    const orderChoice = restored.getState().currentPendingChoice!;
+    expect(orderChoice.effectType).toBe('DSL_ORDER_MOVE_ST01-010');
+    const orderRes = restored.dispatchAction({
+      type: 'SELECT_CHOICE_OPTION',
+      playerId: 'p1',
+      pendingChoiceId: orderChoice.id,
+      selectedIds: orderChoice.options.map((o) => o.id),
+    });
+    expect(orderRes.success).toBe(true);
     expect(restored.getState().cards[top[4]!.instanceId]!.zone).toBe('HAND');
     expect(restored.zoneMgr.getCardsInZone('p1', 'PROCESSING')).toHaveLength(0);
   });

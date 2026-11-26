@@ -9,6 +9,7 @@ import { SeedRng } from '../rng/seed-rng.js';
 import { ICardDatabase } from '../database/card-registry.js';
 import { ContinuousEffectEngine, nextEffectTimestamp } from '../effects/continuous-effects.js';
 import { ReplacementEngine } from '../effects/replacement-engine.js';
+import { canMatchOrbCount } from '../effects/dsl/evaluator.js';
 import type { TriggerEvent } from '../priority/trigger-system.js';
 
 export class ZoneManager {
@@ -22,7 +23,8 @@ export class ZoneManager {
   private onWanshimingChargeCallback?: (
     playerId: string,
     cardInstanceId: string,
-    attackerCardId: string
+    attackerCardId: string,
+    chargeKind: 'ATTACK' | 'DAMAGE'
   ) => boolean;
   private onTriggerEventCallback?: (event: TriggerEvent) => void;
   private snapshotProvider?: (cardInstanceId: string) => TriggerEvent['subjectSnapshot'];
@@ -109,7 +111,12 @@ export class ZoneManager {
   }
 
   setWanshimingChargeHandler(
-    handler: (playerId: string, cardInstanceId: string, attackerCardId: string) => boolean
+    handler: (
+      playerId: string,
+      cardInstanceId: string,
+      attackerCardId: string,
+      chargeKind: 'ATTACK' | 'DAMAGE'
+    ) => boolean
   ): void {
     this.onWanshimingChargeCallback = handler;
   }
@@ -946,9 +953,9 @@ export class ZoneManager {
       return topCard.instanceId;
     }
 
-    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能进入处理区时，可选改为以横置状态放置到费用区
+    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能或伤害充能进入处理区时，可选改为以横置状态放置到费用区 (Q&A·5)
     if (
-      chargeKind === 'ATTACK' &&
+      (chargeKind === 'ATTACK' || chargeKind === 'DAMAGE') &&
       attackerCardId &&
       (topCard.cardNumber === 'BP01-037' || topCard.cardNumber === 'BP01-038')
     ) {
@@ -956,10 +963,19 @@ export class ZoneManager {
       const attackerDef = attacker
         ? this.cardDb.getCard(attacker.cardNumber) || (attacker.cardId ? this.cardDb.getCard(attacker.cardId) : undefined)
         : undefined;
+      const isRole = attacker
+        ? this.continuousEffects
+          ? this.continuousEffects.getEffectiveCardType(attackerCardId) === 'ROLE'
+          : attackerDef?.cardType === 'ROLE'
+        : false;
       const isQuRole =
-        Boolean(attacker && this.continuousEffects?.hasTrait(attackerCardId, '曲')) ||
-        Boolean(attackerDef?.traits?.includes('曲') || attackerDef?.name.includes('曲'));
-      if (isQuRole && this.onWanshimingChargeCallback?.(playerId, topCard.instanceId, attackerCardId)) {
+        isRole &&
+        (Boolean(attacker && this.continuousEffects?.hasTrait(attackerCardId, '曲')) ||
+          Boolean(attackerDef?.traits?.includes('曲') || attackerDef?.name.includes('曲')));
+      if (
+        isQuRole &&
+        this.onWanshimingChargeCallback?.(playerId, topCard.instanceId, attackerCardId, chargeKind)
+      ) {
         return topCard.instanceId;
       }
     }
@@ -1217,7 +1233,7 @@ export class ZoneManager {
       return { success: false, error: '所选卡牌不在自身信号球区' };
     }
 
-    let totalOrbValue = 0;
+    const orbValues: number[] = [];
     const resolvedColors = new Map<string, string>();
     for (const id of orbCardInstanceIds) {
       const card = this.state.cards[id]!;
@@ -1229,21 +1245,21 @@ export class ZoneManager {
         if (info.cannotEliminate) {
           return { success: false, error: '所选信号球因效果当前不能被消除 (1.3.3)' };
         }
-        totalOrbValue += info.orbValue;
+        orbValues.push(info.orbValue);
         resolvedColors.set(id, info.colors[0] ?? 'UNKNOWN');
       } else {
         const def = this.cardDb.getCard(card.cardNumber) || (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
         if (!card.isFaceUp || !def?.signalOrb) {
           return { success: false, error: '只能消除持有信号球标记的卡牌 (4.16.2)' };
         }
-        totalOrbValue += 1;
+        orbValues.push(1);
         resolvedColors.set(id, def.signalOrb);
       }
     }
 
     // Q&A·1 (BP01-037)：等效数量必须精确等于 3，不可将 1 张视为 3 球的卡拆成 2 球使用或超额凑数
-    if (totalOrbValue !== requiredCount) {
-      return { success: false, error: `所选信号球等效数量必须为 ${requiredCount} (当前为 ${totalOrbValue})` };
+    if (!canMatchOrbCount(orbValues, requiredCount)) {
+      return { success: false, error: `所选信号球等效数量必须为 ${requiredCount}` };
     }
 
     const isAdjacent = positions.every((p, i) => i === 0 || p === positions[i - 1]! + 1);

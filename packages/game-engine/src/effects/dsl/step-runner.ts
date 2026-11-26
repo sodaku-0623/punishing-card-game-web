@@ -3,6 +3,7 @@ import { extractCoreCardNumber } from '@zhanshuang/game-rules';
 import { addCardModifier, nextEffectTimestamp } from '../continuous-effects.js';
 import { getAttachedEquipmentIds } from '../../zone/battlefield-manager.js';
 import { resolveCustomChoice, startCustomHandler } from './custom-handlers.js';
+import type { CostOrbActionWithCount, HostWithRequiredOrbCount } from './cost-handler.js';
 import type {
   DslChoiceAction,
   DslExecutionFrame,
@@ -80,51 +81,19 @@ export class DslStepRunner {
           const targetPlayer = this.host.resolveSide(playerId, step.side ?? 'SELF');
           const revealedIds = this.host.revealTop(targetPlayer, step.count);
           vars[step.saveToVar] = revealedIds;
-          // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色公开进入处理区时，可选改为横置放置到费用区 (Q&A·5)
-          const srcCard = sourceId ? this.host.ctx.state.cards[sourceId] : undefined;
-          const srcDef = srcCard ? this.host.def(srcCard) : undefined;
-          const isQuRole =
-            Boolean(srcCard && srcDef?.cardType === 'ROLE') &&
-            (Boolean(srcCard && this.host.hasTrait(srcCard, '曲')) ||
-              Boolean(srcDef?.name.includes('曲')));
-          if (isQuRole) {
-            const wanshimingCards = revealedIds
-              .map((id) => this.host.ctx.state.cards[id])
-              .filter(
-                (c): c is CardInstance =>
-                  Boolean(
-                    c &&
-                      c.zone === 'PROCESSING' &&
-                      (c.cardNumber === 'BP01-037' || c.cardNumber === 'BP01-038')
-                  )
-              );
-            if (wanshimingCards.length > 0) {
-              this.host.enqueueDslChoice(
-                {
-                  id: this.host.choiceId('wanshiming-reveal-cost'),
-                  playerId: targetPlayer,
-                  choiceType: 'SELECT_CARDS',
-                  prompt:
-                    '公开的《万世铭》/《万世铭·重铸》因<曲>角色进入处理区，可选择任意张改为以横置状态放置到费用区（满10张时改放墓地）：',
-                  options: wanshimingCards.map((c) =>
-                    this.host.effects.createGeneralCardChoiceOption(c)
-                  ),
-                  effectType: 'BP01_WANSHIMING_REVEAL_TO_COST',
-                  sourceCardInstanceId: sourceId,
-                  minSelections: 0,
-                  maxSelections: wanshimingCards.length,
-                },
-                {
-                  cardNumber,
-                  sourceCardInstanceId: sourceId,
-                  playerId,
-                  vars,
-                  remainingSteps: queue,
-                  pendingAction: { kind: 'WANSHIMING_REVEAL_TO_COST', revealVar: step.saveToVar },
-                }
-              );
-              return;
-            }
+          if (
+            this.tryEnqueueWanshimingRevealToCost(
+              cardNumber,
+              sourceId,
+              playerId,
+              targetPlayer,
+              revealedIds,
+              step.saveToVar,
+              vars,
+              queue
+            )
+          ) {
+            return;
           }
           break;
         }
@@ -427,7 +396,7 @@ export class DslStepRunner {
             );
           };
           const eligibleCount = cards.filter(isEligible).length;
-          if (!step.alwaysShow && (cards.length === 0 || eligibleCount === 0)) {
+          if (cards.length === 0 || (!step.alwaysShow && eligibleCount === 0)) {
             vars[step.saveToVar] = [];
             break;
           }
@@ -540,7 +509,13 @@ export class DslStepRunner {
             break;
           }
           if (!optional && groups.length === 1) {
-            this.host.eliminate(playerId, groups[0]!, sourceId, step.excludeFromAbilityOrbCount);
+            (this.host as HostWithRequiredOrbCount).eliminate(
+              playerId,
+              groups[0]!,
+              sourceId,
+              step.excludeFromAbilityOrbCount,
+              step.count
+            );
             if (step.savePaidToVar) vars[step.savePaidToVar] = [...groups[0]!];
             queue.unshift(...step.onPaid);
             break;
@@ -555,6 +530,14 @@ export class DslStepRunner {
                 .join('、')}`,
             })),
           ];
+          const stepOrbPending: CostOrbActionWithCount = {
+            kind: 'COST_ORB',
+            onPaid: [...step.onPaid],
+            optional,
+            savePaidToVar: step.savePaidToVar,
+            excludeFromAbilityOrbCount: step.excludeFromAbilityOrbCount,
+            requiredCount: step.count,
+          };
           this.host.enqueueDslChoice(
             {
               id: this.host.choiceId('step-orb-cost'),
@@ -576,13 +559,7 @@ export class DslStepRunner {
               playerId,
               vars,
               remainingSteps: queue,
-              pendingAction: {
-                kind: 'COST_ORB',
-                onPaid: [...step.onPaid],
-                optional,
-                savePaidToVar: step.savePaidToVar,
-                excludeFromAbilityOrbCount: step.excludeFromAbilityOrbCount,
-              },
+              pendingAction: stepOrbPending,
             }
           );
           return;
@@ -1347,6 +1324,7 @@ export class DslStepRunner {
               ...(step.setPP !== undefined ? { setPP: evalNum(step.setPP) } : {}),
               ...(step.setDP !== undefined ? { setDP: evalNum(step.setDP) } : {}),
               ...(step.charge !== undefined ? { charge: evalNum(step.charge) } : {}),
+              ...(step.chargeIsAbility ? { chargeIsAbility: true } : {}),
               ...(step.setCharge !== undefined ? { setCharge: evalNum(step.setCharge) } : {}),
               ...(step.keywords ? { keywords: step.keywords } : {}),
               ...(step.removeKeywords ? { removeKeywords: step.removeKeywords } : {}),
@@ -1769,6 +1747,66 @@ export class DslStepRunner {
         return resolveCustomChoice(this.host.makeCustomRuntime(), action, pending.customFrame);
       }
     }
+  }
+
+  private tryEnqueueWanshimingRevealToCost(
+    cardNumber: string,
+    sourceId: string,
+    playerId: string,
+    targetPlayer: string,
+    revealedIds: string[],
+    revealVar: string,
+    vars: Record<string, string[]>,
+    queue: EffectStep[]
+  ): boolean {
+    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色公开进入处理区时，可选改为横置放置到费用区 (Q&A·5)
+    const srcCard = sourceId ? this.host.ctx.state.cards[sourceId] : undefined;
+    if (!srcCard) return false;
+    const srcDef = this.host.def(srcCard);
+    const continuousEffects = this.host.ctx.continuousEffects;
+    const isRole = continuousEffects
+      ? continuousEffects.getEffectiveCardType(srcCard.instanceId) === 'ROLE'
+      : srcDef?.cardType === 'ROLE';
+    const isQuRole =
+      isRole &&
+      (this.host.hasTrait(srcCard, '曲') || Boolean(srcDef?.name.includes('曲')));
+    if (!isQuRole) return false;
+    const wanshimingCards = revealedIds
+      .map((id) => this.host.ctx.state.cards[id])
+      .filter(
+        (c): c is CardInstance =>
+          Boolean(
+            c &&
+              c.zone === 'PROCESSING' &&
+              (c.cardNumber === 'BP01-037' || c.cardNumber === 'BP01-038')
+          )
+      );
+    if (wanshimingCards.length === 0) return false;
+    this.host.enqueueDslChoice(
+      {
+        id: this.host.choiceId('wanshiming-reveal-cost'),
+        playerId: targetPlayer,
+        choiceType: 'SELECT_CARDS',
+        prompt:
+          '公开的《万世铭》/《万世铭·重铸》因<曲>角色进入处理区，可选择任意张改为以横置状态放置到费用区（满10张时改放墓地）：',
+        options: wanshimingCards.map((c) =>
+          this.host.effects.createGeneralCardChoiceOption(c)
+        ),
+        effectType: 'BP01_WANSHIMING_REVEAL_TO_COST',
+        sourceCardInstanceId: sourceId,
+        minSelections: 0,
+        maxSelections: wanshimingCards.length,
+      },
+      {
+        cardNumber,
+        sourceCardInstanceId: sourceId,
+        playerId,
+        vars,
+        remainingSteps: queue,
+        pendingAction: { kind: 'WANSHIMING_REVEAL_TO_COST', revealVar },
+      }
+    );
+    return true;
   }
 
   private didCreatePendingChoice(prevPendingId: string | undefined, prevQueueLen: number): boolean {

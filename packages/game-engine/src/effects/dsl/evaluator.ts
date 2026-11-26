@@ -52,6 +52,29 @@ export function sliceZoneEdge<T>(
 }
 
 /**
+ * Q&A·1 (BP01-037)：判断一组信号球卡牌能否精确匹配目标信号球数量。
+ * 每张视为 N 球 (v > 1) 的卡牌可选作 1 球或 v 球使用，不可拆成 1 与 v 之间的中间值。
+ */
+export function canMatchOrbCount(orbValues: number[], target: number): boolean {
+  if (target < 0) return false;
+  let sums = new Set<number>([0]);
+  for (const v of orbValues) {
+    if (v <= 0) return false;
+    const opts = v > 1 ? [1, v] : [v];
+    const next = new Set<number>();
+    for (const s of sums) {
+      for (const o of opts) {
+        const ns = s + o;
+        if (ns <= target) next.add(ns);
+      }
+    }
+    if (next.size === 0) return false;
+    sums = next;
+  }
+  return sums.has(target);
+}
+
+/**
  * 4.16.2 / Q&A·1 从已解析的信号球槽位信息中滑窗匹配所有可消除的相邻组合
  */
 export function findOrbGroupsFromInfos(
@@ -60,9 +83,11 @@ export function findOrbGroupsFromInfos(
   size: number,
   filter: OrbColorFilter
 ): string[][] {
+  if (size <= 0) return [];
   const groups: string[][] = [];
   for (let start = 0; start < zoneCards.length; start++) {
-    let sum = 0;
+    let minSum = 0;
+    let reachable = new Set<number>([0]);
     let commonColors: string[] | undefined;
     const sliceIds: string[] = [];
 
@@ -81,13 +106,21 @@ export function findOrbGroupsFromInfos(
         if (commonColors.length === 0) break;
       }
 
-      sum += info.orbValue;
-      sliceIds.push(zoneCards[end]!.instanceId);
-      if (sum === size) {
-        groups.push([...sliceIds]);
-        break;
+      const opts = info.orbValue > 1 ? [1, info.orbValue] : [info.orbValue];
+      const nextReachable = new Set<number>();
+      for (const s of reachable) {
+        for (const o of opts) {
+          const ns = s + o;
+          if (ns <= size) nextReachable.add(ns);
+        }
       }
-      if (sum > size) break;
+      reachable = nextReachable;
+      minSum += 1;
+      sliceIds.push(zoneCards[end]!.instanceId);
+      if (reachable.has(size)) {
+        groups.push([...sliceIds]);
+      }
+      if (minSum >= size || reachable.size === 0) break;
     }
   }
   return groups;
@@ -855,7 +888,10 @@ export class DslEvaluator {
         }
         if (
           !inStaticEval &&
-          (card.zone === 'HAND' || (card.cardNumber === 'BP01-002' && card.zone === 'DECK'))
+          (card.zone === 'HAND' ||
+            (card.cardNumber === 'BP01-002' &&
+              (card.zone === 'DECK' ||
+                (card.zone === 'PROCESSING' && card.enteredFromZone === 'DECK'))))
         ) {
           cost = Math.max(
             0,

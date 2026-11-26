@@ -152,7 +152,7 @@ export const ST03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     cardNumber: 'ST03-008',
     name: '21号·XXI',
     vanillaEntry: true,
-    // 【起】横置该牌：直到回合结束为止，我方使用的下1张<薇拉>角色的费用-1 (不包含升变费用)
+    // 【起】横置该牌：直到回合结束为止，我方使用的下1张<薇拉>角色的费用-1。
     activate: {
       cost: { kind: 'TAP_SELF' },
       steps: [
@@ -161,7 +161,6 @@ export const ST03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           amount: 1,
           targetTrait: '薇拉',
           cardType: CardType.ROLE,
-          excludeAscension: true,
           remainingCount: 1,
           logText: '横置该牌：下1张<薇拉>角色费用-1',
         },

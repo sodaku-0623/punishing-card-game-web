@@ -214,9 +214,23 @@ describe('声明式卡牌效果描述与严格类型/结构校验 (docs/future-w
       }).success
     ).toBe(true);
 
-    // 验证 ST01-005 已出场且剩余 4 张公开牌已离开处理区置底
+    // 第 3 步暂停：按任意顺序将剩余 4 张牌置入牌组底
+    const orderChoice = restored2.getState().currentPendingChoice!;
+    expect(orderChoice.effectType).toBe('DSL_ORDER_MOVE_ST01-001');
+    const orderIds = orderChoice.options.map((o) => o.id).reverse();
+    expect(
+      restored2.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: p1,
+        pendingChoiceId: orderChoice.id,
+        selectedIds: orderIds,
+      }).success
+    ).toBe(true);
+
+    // 验证 ST01-005 已出场且剩余 4 张公开牌已按选定顺序离开处理区置底
     expect(restored2.getState().cards[cheapRole.instanceId]!.zone).toBe('BATTLEFIELD');
     expect(restored2.zoneMgr.getCardsInZone(p1, 'PROCESSING')).toHaveLength(0);
+    expect(restored2.zoneMgr.getCardsInZone(p1, 'DECK').slice(-4).map((c) => c.instanceId)).toEqual(orderIds);
     // ST01-005 自身【出】会抽1弃1，产生 PRESET_DISCARD 决策
     expect(restored2.getState().currentPendingChoice?.effectType).toBe('PRESET_DISCARD');
   });

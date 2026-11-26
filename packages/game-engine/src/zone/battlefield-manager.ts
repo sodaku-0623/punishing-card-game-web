@@ -964,7 +964,8 @@ export class BattlefieldManager {
     if (!partner) return false;
     if (
       partner.cannotReleasePartnerUntilTurn !== undefined &&
-      partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber
+      partner.cannotReleasePartnerUntilTurn >= this.state.turnNumber &&
+      !this.continuousEffects?.hasLostInherentAbilities(partnerId)
     ) {
       return true;
     }

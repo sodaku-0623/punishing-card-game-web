@@ -228,6 +228,7 @@ export const ST04_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
         {
           op: 'CHOOSE_ZONE_CARDS',

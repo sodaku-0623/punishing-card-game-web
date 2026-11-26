@@ -34,7 +34,7 @@ export interface CardEffectContext {
  * 负责识别并处理所有卡牌的登场效果【出】、战术效果、起动能力【起】与决策分支结算
  */
 export class CardEffectEngine {
-  /** 官方预组 (ST01~ST03) 的逐卡精确实现，优先于下方的通用近似解析 */
+  /** 官方全卡表声明式效果实现，优先于下方的通用近似解析 */
   readonly presets: PresetCardEffects;
 
   constructor(private ctx: CardEffectContext) {

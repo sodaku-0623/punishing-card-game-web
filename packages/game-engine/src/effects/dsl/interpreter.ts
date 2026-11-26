@@ -91,8 +91,8 @@ export class DeclarativeEffectInterpreter {
       emptySlotCount: (playerId) => this.emptySlotCount(playerId),
       choiceId: (tag) => this.choiceId(tag),
       orbGroups: (playerId, size, filter) => this.orbGroups(playerId, size, filter),
-      eliminate: (playerId, ids, sourceId, excludeFromAbilityOrbCount) =>
-        this.eliminate(playerId, ids, sourceId, excludeFromAbilityOrbCount),
+      eliminate: (playerId, ids, sourceId, excludeFromAbilityOrbCount, requiredCount?: number) =>
+        this.eliminate(playerId, ids, sourceId, excludeFromAbilityOrbCount, requiredCount),
       peekTop: (playerId, count) => this.peekTop(playerId, count),
       revealTop: (playerId, count) => this.revealTop(playerId, count),
       mill: (playerId, count) => this.mill(playerId, count),
@@ -761,7 +761,8 @@ export class DeclarativeEffectInterpreter {
     playerId: string,
     ids: string[],
     sourceId?: string,
-    excludeFromAbilityOrbCount = false
+    excludeFromAbilityOrbCount = false,
+    requiredCount?: number
   ): void {
     let eliminatedOrbValue = 0;
     const orbColors = ids.map((id) => {
@@ -776,7 +777,9 @@ export class DeclarativeEffectInterpreter {
     });
     const player = this.ctx.state.players[playerId];
     if (player) {
-      if (eliminatedOrbValue >= 3) {
+      // Q&A·1 (BP01-037)：使用视为 3 球的卡去支付 1 球代价时仅算作 1 球，不得误置「消除3个信号球」标记
+      const effectiveOrbCount = requiredCount !== undefined ? requiredCount : eliminatedOrbValue;
+      if (effectiveOrbCount >= 3) {
         player.eliminatedThreeOrbsThisTurn = true;
       }
       if (sourceId && !excludeFromAbilityOrbCount) {
@@ -815,9 +818,12 @@ export class DeclarativeEffectInterpreter {
   }
 
   private revealTop(playerId: string, count: number): string[] {
+    // 3.3.3.c 仅在开始公开前牌组为 0 时执行一次牌组更新；公开途中牌组耗尽即终止，不强制刷新并侵蚀+1
+    if (this.zone(playerId, 'DECK').length === 0) {
+      if (!this.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) return [];
+    }
     const revealed: string[] = [];
     for (let i = 0; i < count; i++) {
-      if (!this.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) break;
       const top = this.zone(playerId, 'DECK')[0];
       if (!top) break;
       this.ctx.zoneMgr.moveCard(top.instanceId, 'PROCESSING', { isFaceUp: true });
