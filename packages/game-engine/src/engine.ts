@@ -2932,7 +2932,7 @@ export class GameEngine {
         }
         if (this.continuousEffects.hasCardName(host.instanceId, '卡列尼娜·辉晓')) {
           p.eliminatedOrbsByKareninaCountThisTurn =
-            (p.eliminatedOrbsByKareninaCountThisTurn ?? 0) + costOpt.eliminateOrbs.count;
+            (p.eliminatedOrbsByKareninaCountThisTurn ?? 0) + 1;
         }
       }
     }
