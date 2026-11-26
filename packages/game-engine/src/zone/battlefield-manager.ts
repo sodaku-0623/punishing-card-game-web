@@ -81,6 +81,32 @@ export class BattlefieldManager {
   }
 
   /**
+   * BP02-067 万事·明晰梦【永】：若横置状态在对方战场，对方在横置状态角色上方升变须额外支付【1费】
+   * (Q&A·4 多张叠加、与对象数无关；失能时不生效)
+   */
+  getTappedWanshiAscensionTax(playerId: string, targetRoleIds: string[]): number {
+    const hasTappedTarget = targetRoleIds.some((id) => {
+      const target = this.state.cards[id];
+      return Boolean(target && !target.isReady);
+    });
+    if (!hasTappedTarget) return 0;
+    const oppId =
+      playerId === this.state.activePlayerId
+        ? this.state.nonActivePlayerId
+        : this.state.activePlayerId;
+    if (!oppId) return 0;
+    return this.getSlots(oppId).filter((s) => {
+      const r = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
+      return Boolean(
+        r &&
+          r.cardNumber === 'BP02-067' &&
+          !r.isReady &&
+          !this.continuousEffects?.hasLostInherentAbilities(r.instanceId)
+      );
+    }).length;
+  }
+
+  /**
    * 是否为该玩家战场卡位上的角色 (不含升变垫在下方的牌、装备中的装备牌及变为辅助机的角色；兼容 PR-041 卡牌类型变为角色牌的辅助机)
    */
   isSlotRole(playerId: string, cardInstanceId: string | undefined): boolean {

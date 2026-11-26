@@ -440,6 +440,12 @@ export class DslEvaluator {
         const oppOpen = state.players[oppId]?.openCostCount ?? 0;
         return this.compare(selfOpen, cond.op, oppOpen);
       }
+      case 'COST_LIMIT_COMPARE_OPPONENT': {
+        const oppId = resolveSide('OPPONENT');
+        const selfLimit = getCardsInZone(playerId, 'COST').length;
+        const oppLimit = getCardsInZone(oppId, 'COST').length;
+        return this.compare(selfLimit, cond.op, oppLimit);
+      }
       case 'FRIENDLY_ROLE_COUNT_COMPARE_OPPONENT': {
         const oppId = resolveSide('OPPONENT');
         return this.compare(getFieldRoles(playerId).length, cond.op, getFieldRoles(oppId).length);

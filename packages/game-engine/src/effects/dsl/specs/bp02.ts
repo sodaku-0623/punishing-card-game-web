@@ -97,6 +97,7 @@ function createBp02050ModeStep(suffix: string): EffectStep {
             op: 'MODIFY_STATS',
             target: { kind: 'VAR', varName: `buffTarget_${suffix}` },
             charge: 1,
+            chargeIsAbility: true,
             pp: 1000,
             duration: 'END_OF_TURN',
           },
@@ -422,7 +423,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         {
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'kept' },
-          toZone: 'DECK_SHUFFLE',
+          toZone: 'DECK_BOTTOM',
+          isFaceUp: false,
         },
         { op: 'SHUFFLE_DECK', side: 'SELF' },
       ],
@@ -538,7 +540,6 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
   { cardNumber: 'BP02-008', name: '伊什梅尔·幻日', vanillaEntry: true },
 
   // BP02-009 伊什梅尔·幻日 (2费 【永】：战场或费用区无视属性条件使用升变角色)
-  // 注：interpreter.ts canPlayerIgnoreAttributeForPlay 中 onlyAscensionRoles 目前以 !isAscension 判断（与「普通使用升变角色无视属性，使用升变机制仍需遵循」语义相反），受限点在汇报中单列说明。
   {
     cardNumber: 'BP02-009',
     name: '伊什梅尔·幻日',
@@ -854,8 +855,9 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
     name: '永夜曙光',
     tactics: [
       {
-        op: 'CHOOSE_ROLES',
+        op: 'CHOOSE_ZONE_CARDS',
         side: 'SELF',
+        zone: 'BATTLEFIELD',
         filter: { exactName: '丽芙·极昼' },
         prompt: '【永夜曙光】可将我方战场 1 张《丽芙·极昼》放置到墓地以破坏对方 PP<=5000 角色（不选则跳过）：',
         min: 0,
@@ -1032,7 +1034,6 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
   },
 
   // BP02-025 浊璃 (3费 辅助机)
-  // 受限点：晖【起】文本为「选择我方信号球区最下方的牌，将其加入手牌」，当前 CHOOSE_ZONE_CARDS 尚无仅限信号球区第 0 位的筛选器，多张信号球时将弹出信号球区供点选。
   {
     cardNumber: 'BP02-025',
     name: '浊璃',
@@ -1047,15 +1048,11 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         cost: { kind: 'TAP_SELF' },
         steps: [
           {
-            op: 'CHOOSE_ZONE_CARDS',
-            side: 'SELF',
-            zone: 'SIGNAL_ORB',
-            prompt: '【浊璃】晖【起】：请选择我方信号球区最下方的牌加入手牌：',
-            min: 1,
-            max: 1,
-            saveToVar: 'bottomOrb',
+            op: 'MOVE_CARDS',
+            target: { kind: 'ZONE_BOTTOM_CARD', side: 'SELF', zone: 'SIGNAL_ORB' },
+            toZone: 'HAND',
+            isFaceUp: true,
           },
-          { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'bottomOrb' }, toZone: 'HAND', isFaceUp: true },
         ],
       },
       {
@@ -1179,7 +1176,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                   {
                     op: 'MOVE_CARDS',
                     target: { kind: 'VAR', varName: 'recycled' },
-                    toZone: 'DECK_SHUFFLE',
+                    toZone: 'DECK_BOTTOM',
+                    isFaceUp: false,
                   },
                   // Q&A·4：选 0 张也要洗切，随后双方牌组顶 5 张放置到墓地
                   { op: 'SHUFFLE_DECK', side: 'SELF' },
@@ -1284,6 +1282,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'toGy' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
+          orderPrompt: '【拉弥亚·深谣 强压层流】请按顺序依次点选全部 {count} 张剩余卡牌放置到牌组底（先选者靠上、后选者在最底）：',
         },
       ],
     },
@@ -1337,13 +1337,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         steps: [
           {
             op: 'IF',
-            condition: {
-              kind: 'ALL',
-              conditions: [
-                { kind: 'SELF_MATCHES_FILTER', filter: { inZone: 'GRAVEYARD' } },
-                { kind: 'HAS_EMPTY_SLOT', side: 'SELF' },
-              ],
-            },
+            condition: { kind: 'SELF_MATCHES_FILTER', filter: { inZone: 'GRAVEYARD' } },
             then: [
               {
                 op: 'DISCARD_COST_STEP',
@@ -1353,7 +1347,13 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                 onPaid: [
                   {
                     op: 'IF',
-                    condition: { kind: 'SELF_MATCHES_FILTER', filter: { inZone: 'GRAVEYARD' } },
+                    condition: {
+                      kind: 'ALL',
+                      conditions: [
+                        { kind: 'SELF_MATCHES_FILTER', filter: { inZone: 'GRAVEYARD' } },
+                        { kind: 'HAS_EMPTY_SLOT', side: 'SELF' },
+                      ],
+                    },
                     then: [
                       {
                         op: 'IF',
@@ -1580,8 +1580,6 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
   // =========================================================================
 
   // BP02-037 含英·檀心 (7费)
-  // 受限点：第 2 项「将该牌下方的 1 张《飞叶点翠》放置到墓地」需同时兼容附着装备 BP02-047 与下方叠置的 BP02-040；
-  // 当前 CHOOSE_ZONE_CARDS 的 HOST_UNDERNEATH 仅遍历所有角色 underneathCardIds，故联合 BATTLEFIELD 扫描附着装备，存在场上其余《飞叶点翠》也会入列的风险。
   {
     cardNumber: 'BP02-037',
     name: '含英·檀心',
@@ -1659,10 +1657,9 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                         {
                           op: 'CHOOSE_ZONE_CARDS',
                           side: 'SELF',
-                          zone: 'HOST_UNDERNEATH',
-                          zones: ['HOST_UNDERNEATH', 'BATTLEFIELD'],
-                          hostFilter: { exactName: '含英·檀心' },
-                          filter: { exactName: '飞叶点翠', excludeSelf: true },
+                          zone: 'SELF_UNDERNEATH',
+                          zones: ['SELF_UNDERNEATH', 'SELF_ATTACHED_EQUIP'],
+                          filter: { exactName: '飞叶点翠' },
                           prompt: '【含英·檀心】请选择该牌下方 1 张《飞叶点翠》放置到墓地：',
                           min: 1,
                           max: 1,
@@ -1749,10 +1746,9 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                     {
                       op: 'CHOOSE_ZONE_CARDS',
                       side: 'SELF',
-                      zone: 'HOST_UNDERNEATH',
-                      zones: ['HOST_UNDERNEATH', 'BATTLEFIELD'],
-                      hostFilter: { exactName: '含英·檀心' },
-                      filter: { exactName: '飞叶点翠', excludeSelf: true },
+                      zone: 'SELF_UNDERNEATH',
+                      zones: ['SELF_UNDERNEATH', 'SELF_ATTACHED_EQUIP'],
+                      filter: { exactName: '飞叶点翠' },
                       prompt: '【含英·檀心】可选择该牌下方 1 张《飞叶点翠》放置到墓地（不选则不发动）：',
                       min: 0,
                       max: 1,
@@ -1832,6 +1828,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'kept' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
+          orderPrompt: '【含英·檀心】请按顺序依次点选全部 {count} 张剩余卡牌放置到牌组底（先选者靠上、后选者在最底）：',
         },
       ],
     },
@@ -1933,6 +1931,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         scope: 'SELF',
         condition: { kind: 'SELF_MATCHES_FILTER', filter: SELF_HAS_LEAF_FILTER },
         charge: 1,
+        chargeIsAbility: true,
       },
     ],
     entry: {
@@ -1946,11 +1945,11 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
           max: 1,
           saveToVar: 'host',
         },
+        { op: 'REVEAL_TOP', count: 2, saveToVar: 'revealed' },
         {
           op: 'IF',
           condition: { kind: 'VAR_NON_EMPTY', varName: 'host' },
           then: [
-            { op: 'REVEAL_TOP', count: 2, saveToVar: 'revealed' },
             {
               op: 'CHOOSE_FROM_VAR',
               varName: 'revealed',
@@ -1971,6 +1970,17 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
               op: 'MOVE_CARDS',
               target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
               toZone: 'DECK_BOTTOM',
+              chooseOrder: true,
+              orderPrompt: '【含英·檀心】请按顺序依次点选全部 {count} 张剩余卡牌放置到牌组底（先选者靠上、后选者在最底）：',
+            },
+          ],
+          else: [
+            {
+              op: 'MOVE_CARDS',
+              target: { kind: 'VAR', varName: 'revealed' },
+              toZone: 'DECK_BOTTOM',
+              chooseOrder: true,
+              orderPrompt: '【含英·檀心】请按顺序依次点选全部 {count} 张剩余卡牌放置到牌组底（先选者靠上、后选者在最底）：',
             },
           ],
         },
@@ -2048,7 +2058,6 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
 
   // BP02-047 飞叶点翠 (2费 装备 PP+500)
   // Q&A·4：单独出场时未装备任何角色不执行；作为装备出场时使装备对象《含英·檀心》获得【突进】。
-  // 受限点：CardTargetRef 暂无 strictly-self 的 EQUIPPED_HOST，当场上仅 1 张《含英·檀心》装备 BP02-047 时精准生效；多张各装备 BP02-047 时会一并匹配。
   {
     cardNumber: 'BP02-047',
     name: '飞叶点翠',
@@ -2057,12 +2066,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         {
           op: 'MODIFY_STATS',
           target: {
-            kind: 'ALL_MATCHING_ROLES',
-            side: 'SELF',
-            filter: {
-              exactName: '含英·檀心',
-              hasUnderneathOrEquipMatching: { cardNumbers: ['BP02-047'] },
-            },
+            kind: 'EQUIPPED_HOST',
+            filter: { exactName: '含英·檀心' },
           },
           keywords: ['突进'],
           duration: 'END_OF_TURN',
@@ -2170,7 +2175,8 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         {
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'toGy' },
-          toZone: 'DECK_SHUFFLE',
+          toZone: 'DECK_BOTTOM',
+          isFaceUp: false,
         },
         { op: 'SHUFFLE_DECK', side: 'SELF' },
         {
@@ -2254,7 +2260,6 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
   },
 
   // BP02-052 曲·启明 (4费)
-  // 受限点：Q&A·5 指出被 BP02-052 公开的《万世铭》也可触发改放费用区；当前只有 REVEAL_TOP 钩入了 BP01_WANSHIMING_REVEAL_TO_COST，全牌组检索 CHOOSE_ZONE_CARDS(DECK) 尚不触发该置换。
   {
     cardNumber: 'BP02-052',
     name: '曲·启明',
@@ -2293,6 +2298,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                 side: 'SELF',
                 zone: 'DECK',
                 filter: { anyFilters: [{ exactName: '曲·启明' }, { trait: '万世铭' }] },
+                revealPickedToProcessing: true,
                 prompt: '【曲·启明】【自】请选择我方牌组 1 张《曲·启明》或<万世铭>（洗切牌组后放置到牌组顶）：',
                 min: 1,
                 max: 1,
@@ -2343,7 +2349,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
                 op: 'IF',
                 condition: { kind: 'VAR_NON_EMPTY', varName: 'returned' },
                 then: [
-                  { op: 'MODIFY_STATS', target: { kind: 'SELF' }, charge: 1, duration: 'END_OF_TURN' },
+                  { op: 'MODIFY_STATS', target: { kind: 'SELF' }, charge: 1, chargeIsAbility: true, duration: 'END_OF_TURN' },
                   {
                     op: 'IF',
                     condition: { kind: 'VAR_COUNT_COMPARE', varName: 'returned', op: '>=', value: 2 },
@@ -2605,20 +2611,19 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
   },
 
   // BP02-060 21号·森息 (3费)
-  // 受限点：文本为「若我方费用上限不大于对方」（总费用区张数 3.6.6），ConditionExpr 当前仅提供比较明费上限的 OPEN_COST_COMPARE_OPPONENT（无暗费时等价，存在暗费时存在差异）。
   {
     cardNumber: 'BP02-060',
     name: '21号·森息',
     vanillaEntry: true,
     handCostDiscount: {
-      condition: { kind: 'OPEN_COST_COMPARE_OPPONENT', op: '<=' },
+      condition: { kind: 'COST_LIMIT_COMPARE_OPPONENT', op: '<=' },
       flatDiscount: 1,
     },
     staticEffects: [
       {
         id: 'dsl:BP02-060:field_cost_minus_1',
         scope: 'SELF',
-        condition: { kind: 'OPEN_COST_COMPARE_OPPONENT', op: '<=' },
+        condition: { kind: 'COST_LIMIT_COMPARE_OPPONENT', op: '<=' },
         costDelta: -1,
       },
     ],
@@ -2753,6 +2758,7 @@ export const BP02_EFFECT_SPECS: readonly CardEffectSpec[] = [
         // Q&A·4：【充能1】不增加基本充能数已为 1 的角色（用 setCharge: 1 而非 charge: 1），且不影响之后出场的角色
         keywords: ['充能1'],
         setCharge: 1,
+        chargeIsAbility: true,
         pp: 2000,
         setBaseDP: 1,
         duration: 'END_OF_TURN',

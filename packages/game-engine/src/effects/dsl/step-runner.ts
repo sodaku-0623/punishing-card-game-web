@@ -237,6 +237,13 @@ export class DslStepRunner {
                       rawPool.push(this.host.ctx.state.cards[eqId]!);
                     }
                   }
+                  if (!step.filter?.cardType && role?.partnerCardId) {
+                    const pid = role.partnerCardId;
+                    if (!seenIds.has(pid) && this.host.ctx.state.cards[pid]) {
+                      seenIds.add(pid);
+                      rawPool.push(this.host.ctx.state.cards[pid]!);
+                    }
+                  }
                 }
               }
             } else if (z === 'SELF_UNDERNEATH') {
@@ -245,6 +252,14 @@ export class DslStepRunner {
                 if (!seenIds.has(uid) && this.host.ctx.state.cards[uid]) {
                   seenIds.add(uid);
                   rawPool.push(this.host.ctx.state.cards[uid]!);
+                }
+              }
+            } else if (z === 'SELF_ATTACHED_EQUIP') {
+              const selfCard = this.host.ctx.state.cards[sourceId];
+              for (const eqId of getAttachedEquipmentIds(selfCard)) {
+                if (!seenIds.has(eqId) && this.host.ctx.state.cards[eqId]) {
+                  seenIds.add(eqId);
+                  rawPool.push(this.host.ctx.state.cards[eqId]!);
                 }
               }
             } else if (z === 'HOST_UNDERNEATH') {
@@ -368,6 +383,12 @@ export class DslStepRunner {
                 distinctAttributes: step.distinctAttributes,
                 maxTotalCost: step.maxTotalCost,
                 requireEmptySlotCount: Boolean(step.requireEmptySlot && rawMax > 1),
+                ...(step.revealPickedToProcessing
+                  ? {
+                      revealPickedToProcessing: true,
+                      revealPickedTargetPlayerId: targetPlayer,
+                    }
+                  : {}),
               },
             }
           );
@@ -829,9 +850,13 @@ export class DslStepRunner {
             vars
           );
           if (step.chooseOrder) {
+            const wanshimingMovedSet = new Set(vars.__wanshimingMovedToCost ?? []);
             const candidateIds = targets.filter((id) => {
               const card = this.host.ctx.state.cards[id];
               if (!card) return false;
+              if (wanshimingMovedSet.has(id) && card.zone !== 'PROCESSING') {
+                return false;
+              }
               if (
                 step.target.kind === 'REST_OF_VAR' &&
                 card.zone !== 'PROCESSING' &&
@@ -918,9 +943,53 @@ export class DslStepRunner {
           const targetId = (vars[step.targetVar] ?? [])[0];
           const extraId = step.extraStackVar ? (vars[step.extraStackVar] ?? [])[0] : undefined;
           if (cardId && targetId) {
-            this.host.ctx.fieldMgr.playAscensionCard(playerId, cardId, targetId, {
-              extraStackRoleCardId: extraId,
-            });
+            const tax = this.host.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [targetId]);
+            if (tax > 0) {
+              this.host.ctx.zoneMgr.syncCostStats(playerId);
+              const player = this.host.ctx.state.players[playerId];
+              const availCost =
+                (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
+              if (availCost >= tax) {
+                const targetCard = this.host.ctx.state.cards[targetId];
+                const targetName = (targetCard && this.host.def(targetCard)?.name) ?? '目标角色';
+                this.host.enqueueDslChoice(
+                  {
+                    id: this.host.choiceId('wanshi-ascend-tax'),
+                    playerId,
+                    choiceType: 'YES_NO',
+                    prompt: `对方场上有横置状态的《万事·明晰梦》，在横置的《${targetName}》上方升变须额外支付 ${tax} 费，是否支付并升变？`,
+                    options: [
+                      { id: 'opt_yes', label: `额外支付 ${tax} 费升变` },
+                      { id: 'opt_no', label: '不支付（跳过升变）' },
+                    ],
+                    effectType: 'BP02_067_ASCEND_TAX_CONFIRM',
+                    sourceCardInstanceId: sourceId,
+                    minSelections: 1,
+                    maxSelections: 1,
+                  },
+                  {
+                    cardNumber,
+                    sourceCardInstanceId: sourceId,
+                    playerId,
+                    vars,
+                    remainingSteps: queue,
+                    pendingAction: {
+                      kind: 'ASCEND_FROM_VAR_WITH_TAX',
+                      cardId,
+                      targetId,
+                      extraId,
+                      tax,
+                      shuffleDeckAfter: Boolean(step.shuffleDeckAfter),
+                    },
+                  }
+                );
+                return;
+              }
+            } else {
+              this.host.ctx.fieldMgr.playAscensionCard(playerId, cardId, targetId, {
+                extraStackRoleCardId: extraId,
+              });
+            }
           }
           if (step.shuffleDeckAfter) {
             this.host.ctx.zoneMgr.shuffleDeck(playerId);
@@ -1651,6 +1720,29 @@ export class DslStepRunner {
           }
         }
         vars[pending.saveToVar] = [...selected];
+        if (pending.revealPickedToProcessing && selected.length > 0) {
+          const movedToProcessing: string[] = [];
+          for (const id of selected) {
+            if (this.host.ctx.zoneMgr.moveCard(id, 'PROCESSING', { isFaceUp: true })) {
+              movedToProcessing.push(id);
+            }
+          }
+          if (
+            movedToProcessing.length > 0 &&
+            this.tryEnqueueWanshimingRevealToCost(
+              cardNumber,
+              sourceCardInstanceId,
+              playerId,
+              pending.revealPickedTargetPlayerId ?? playerId,
+              movedToProcessing,
+              pending.saveToVar,
+              vars,
+              remaining
+            )
+          ) {
+            return { success: true };
+          }
+        }
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
       }
@@ -1662,6 +1754,8 @@ export class DslStepRunner {
           delete this.host.ctx.state.cards[id];
           this.host.ctx.state.cards[id] = card;
         }
+        this.host.ctx.zoneMgr.invalidateZoneCache();
+        this.host.ctx.continuousEffects?.invalidateEvalFrame();
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
       }
@@ -1718,8 +1812,28 @@ export class DslStepRunner {
           this.host.ctx.zoneMgr.syncCostStats(card.controllerPlayerId);
           movedSet.add(id);
         }
-        if (movedSet.size > 0 && vars[pending.revealVar]) {
-          vars[pending.revealVar] = vars[pending.revealVar]!.filter((id) => !movedSet.has(id));
+        if (movedSet.size > 0) {
+          vars.__wanshimingMovedToCost = Array.from(
+            new Set([...(vars.__wanshimingMovedToCost ?? []), ...movedSet])
+          );
+          if (vars[pending.revealVar]) {
+            vars[pending.revealVar] = vars[pending.revealVar]!.filter((id) => !movedSet.has(id));
+          }
+        }
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+        return { success: true };
+      }
+
+      case 'ASCEND_FROM_VAR_WITH_TAX': {
+        if (selected[0] === 'opt_yes') {
+          if (this.host.ctx.payCost(playerId, pending.tax)) {
+            this.host.ctx.fieldMgr.playAscensionCard(playerId, pending.cardId, pending.targetId, {
+              extraStackRoleCardId: pending.extraId,
+            });
+          }
+        }
+        if (pending.shuffleDeckAfter) {
+          this.host.ctx.zoneMgr.shuffleDeck(playerId);
         }
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
@@ -1863,10 +1977,15 @@ export class DslStepRunner {
           ? 'SIGNAL_ORB'
           : step.toZone;
 
+    const wanshimingMovedSet = new Set(vars.__wanshimingMovedToCost ?? []);
+
     for (let i = 0; i < targets.length; i++) {
       const id = targets[i]!;
       const card = this.host.ctx.state.cards[id];
       if (!card) continue;
+      if (wanshimingMovedSet.has(id) && card.zone !== 'PROCESSING') {
+        continue;
+      }
       const fromZone = card.zone;
       const prevPendingId = this.host.ctx.state.currentPendingChoice?.id;
       const prevQueueLen = this.host.ctx.state.pendingChoiceQueue?.length ?? 0;

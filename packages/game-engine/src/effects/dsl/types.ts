@@ -125,6 +125,7 @@ export type ConditionExpr =
   | { kind: 'EROSION_COMPARE'; side: PlayerSide; op: CompareOp; value: number }
   | { kind: 'EROSION_CHANGED_THIS_TURN'; side: PlayerSide }
   | { kind: 'OPEN_COST_COMPARE_OPPONENT'; op: CompareOp }
+  | { kind: 'COST_LIMIT_COMPARE_OPPONENT'; op: CompareOp }
   | { kind: 'FRIENDLY_ROLE_COUNT_COMPARE_OPPONENT'; op: CompareOp }
   | { kind: 'SIGNAL_ORB_BOTTOM_COST_PARITY'; parity: 'ODD' | 'EVEN' }
   | { kind: 'SELF_UNDERNEATH_COUNT'; op: CompareOp; value: number; filter?: CardFilter }
@@ -346,6 +347,7 @@ export type EffectStep =
         | 'PROCESSING'
         | 'HOST_UNDERNEATH'
         | 'SELF_UNDERNEATH'
+        | 'SELF_ATTACHED_EQUIP'
         | 'OPPONENT_HAND_BLIND';
       /** 可选多区域联合选择 (如 BP01-028 墓地+费用区合计最多6张<万世铭>) */
       zones?: (
@@ -358,11 +360,14 @@ export type EffectStep =
         | 'PROCESSING'
         | 'HOST_UNDERNEATH'
         | 'SELF_UNDERNEATH'
+        | 'SELF_ATTACHED_EQUIP'
       )[];
       /** zone 为 HOST_UNDERNEATH 时筛选宿主角色 (如《露娜·终焉》) */
       hostFilter?: CardFilter;
       /** zone 为 BATTLEFIELD 时：true 仅匹配卡位顶层卡牌 (不含附着装备与下方牌) */
       topLevelOnly?: boolean;
+      /** true 时在选牌完成后将所选牌以正面朝上移入处理区，并触发 BP01-037/038 等公开进处理区置换 (Q&A·5 BP02-052) */
+      revealPickedToProcessing?: boolean;
       prompt: string;
       filter?: CardFilter;
       requireEmptySlot?: boolean;

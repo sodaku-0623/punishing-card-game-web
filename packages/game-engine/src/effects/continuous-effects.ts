@@ -1144,6 +1144,18 @@ export class ContinuousEffectEngine {
     }
     let dp = baseDPValue;
 
+    // 独立前置 pass：按时间戳先应用「充能数变为 X」(setCharge)，使先后获得/赋予的【充能+X】在其上叠加而不被覆盖 (P2-1 / BP02-065)
+    for (const op of statOps) {
+      if (op.setCharge !== undefined) {
+        if (
+          !op.chargeIsAbility ||
+          (!cannotGainAbilities && (latestLoseAbilitiesTs < 0 || op.timestamp > latestLoseAbilitiesTs))
+        ) {
+          charge = op.setCharge;
+        }
+      }
+    }
+
     const preventOppPPDelta = prohibitionsSet.has('CANNOT_MODIFY_PP_BY_OPPONENT');
     for (const op of statOps) {
       // Q&A·9 BP04-016: 「PP 不会因对方效果增减」挡住对方的 pp +/-，但挡不住「PP 变为 X」(setPP)
@@ -1169,7 +1181,6 @@ export class ContinuousEffectEngine {
         dp = op.setDP - baselinePartnerDP;
       }
       if (op.dp !== undefined) dp += op.dp;
-      if (op.setCharge !== undefined) charge = op.setCharge;
       if (op.charge !== undefined) {
         // Q&A·1 / Q&A·3 (BP01-025/BP01-050)：以「获得【充能+X】能力」形式赋予的充能，
         // 在宿主失去能力时丢失先获部分，但在失能之后新获得的若未受 CANNOT_GAIN_ABILITIES 阻止则保留

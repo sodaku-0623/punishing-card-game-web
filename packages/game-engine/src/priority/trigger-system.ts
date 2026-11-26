@@ -486,7 +486,10 @@ export class TriggerManager {
         if (card.partnerOfCardId) return;
         const expectedTs = trigger.triggerContext?.expectedEnteredTimestamp as number | undefined;
         if (expectedTs !== undefined && card.enteredZoneTimestamp !== expectedTs) return;
-        ctx.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', { isFaceUp: true });
+        ctx.zoneMgr.moveCard(card.instanceId, 'GRAVEYARD', {
+          isFaceUp: true,
+          sentByEffectOrCost: card.zone === 'BATTLEFIELD',
+        });
       },
     });
 
