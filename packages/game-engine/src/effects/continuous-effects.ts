@@ -149,6 +149,8 @@ export interface StaticContribution {
   dp?: number;
   setDP?: number;
   setBaseDP?: number;
+  baseDPDelta?: number;
+  maxCurrentBaseDP?: number;
   charge?: number;
   chargeIsAbility?: boolean;
   setCharge?: number;
@@ -239,6 +241,8 @@ interface TimestampedStat {
   setDP?: number;
   baselinePartnerCardId?: string;
   setBaseDP?: number;
+  baseDPDelta?: number;
+  maxCurrentBaseDP?: number;
   charge?: number;
   chargeIsAbility?: boolean;
   setCharge?: number;
@@ -1113,6 +1117,8 @@ export class ContinuousEffectEngine {
           dp: contrib.dp,
           setDP: contrib.setDP,
           setBaseDP: contrib.setBaseDP,
+          baseDPDelta: contrib.baseDPDelta,
+          maxCurrentBaseDP: contrib.maxCurrentBaseDP,
           charge: contrib.charge,
           chargeIsAbility: contrib.chargeIsAbility,
           setCharge: contrib.setCharge,
@@ -1127,6 +1133,14 @@ export class ContinuousEffectEngine {
     }
     for (const op of statOps) {
       if (op.setBaseDP !== undefined) baseDPValue = op.setBaseDP;
+    }
+    for (const op of statOps) {
+      if (
+        op.baseDPDelta !== undefined &&
+        (op.maxCurrentBaseDP === undefined || baseDPValue <= op.maxCurrentBaseDP)
+      ) {
+        baseDPValue += op.baseDPDelta;
+      }
     }
     let dp = baseDPValue;
 
@@ -1376,7 +1390,7 @@ export class ContinuousEffectEngine {
   // ===================================================================
 
   private registerBuiltinStaticRules(): void {
-    // 注：官方预组 ST01~ST03 的【永】静态规则由声明式效果库 (effects/dsl/specs/starter-decks.ts) 统一注册。
+    // 注：官方全卡表的【永】静态规则主要由声明式效果库 (effects/dsl/specs/*.ts) 统一注册。
     // BP04-001 露娜·终焉：【永】该牌下方的牌每有1张，该牌PP+1000。若该牌下方的牌为10张及以上，该牌DP+1。(Q&A·10)
     this.registerStaticRule({
       id: 'static:BP04-001',

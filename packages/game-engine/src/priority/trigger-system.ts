@@ -299,7 +299,9 @@ export class TriggerManager {
                 this.continuousEffects.hasLostInherentAbilities(m.sourceCardInstanceId),
             },
           };
-          this.state.pendingTriggers.push(pending);
+          if (!this.isTriggerQuotaExhausted(pending)) {
+            this.state.pendingTriggers.push(pending);
+          }
         }
       }
     }
@@ -367,6 +369,29 @@ export class TriggerManager {
   }
 
   /**
+   * 10.1 / Q&A·7 检查待机自动能力是否已耗尽本回合单卡或同编号共享次数上限
+   */
+  isTriggerQuotaExhausted(trigger: PendingTrigger): boolean {
+    const player = this.state.players[trigger.controllerPlayerId];
+    if (!player) return false;
+    const maxPerCard = trigger.maxPerTurn ?? (trigger.oncePerTurn ? 1 : undefined);
+    if (maxPerCard !== undefined) {
+      const usageKey = trigger.oncePerTurnKey ?? `${trigger.sourceCardInstanceId}:${trigger.abilityId}`;
+      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxPerCard) {
+        return true;
+      }
+    }
+    const maxByPlayer = trigger.maxPerTurnByPlayer ?? (trigger.oncePerTurnByPlayer ? 1 : undefined);
+    if (maxByPlayer !== undefined) {
+      const usageKey = `player:${trigger.sharedTurnKey ?? trigger.abilityId}`;
+      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxByPlayer) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * 8.7.3 / 8.7.7 执行一个已从待机池取出的自动能力
    */
   executeTrigger(trigger: PendingTrigger): void {
@@ -411,14 +436,14 @@ export class TriggerManager {
     }
 
     // 10.1 【回合1】/【回合N】限制：检查并消耗次数 (10.1.2.a 按 sourceCardInstanceId:abilityId 或自定义 oncePerTurnKey 计数，移区自动清空)
+    if (this.isTriggerQuotaExhausted(trigger)) {
+      return;
+    }
     const maxPerCard = trigger.maxPerTurn ?? (trigger.oncePerTurn ? 1 : undefined);
     if (maxPerCard !== undefined) {
       const player = this.state.players[trigger.controllerPlayerId];
       if (!player) return;
       const usageKey = trigger.oncePerTurnKey ?? `${trigger.sourceCardInstanceId}:${trigger.abilityId}`;
-      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxPerCard) {
-        return;
-      }
       if (!trigger.deferOncePerTurnUntilCostPaid) {
         player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
       }
@@ -430,9 +455,6 @@ export class TriggerManager {
       const player = this.state.players[trigger.controllerPlayerId];
       if (!player) return;
       const usageKey = `player:${trigger.sharedTurnKey ?? trigger.abilityId}`;
-      if ((player.turnAbilityUsage[usageKey] ?? 0) >= maxByPlayer) {
-        return;
-      }
       player.turnAbilityUsage[usageKey] = (player.turnAbilityUsage[usageKey] ?? 0) + 1;
     }
 

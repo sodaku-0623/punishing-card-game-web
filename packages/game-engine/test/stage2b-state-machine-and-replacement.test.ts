@@ -858,12 +858,24 @@ describe('Stage 2B 状态机安全、置换收口与【出】能力统一触发'
         }).success
       ).toBe(true);
 
-      // ST01-005 已进入战场且进入其【出】丢牌决策，但在此之前剩余 4 张牌必须已经被置入牌组底！
+      // 选完出场角色后先按任意顺序将剩余 4 张公开牌置底，再结算 ST01-005 【出】
+      expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_ST01-001');
+      const orderIds = [...expectedBottom4].reverse();
+      expect(
+        engine.dispatchAction({
+          type: 'SELECT_CHOICE_OPTION',
+          playerId: 'p1',
+          pendingChoiceId: state.currentPendingChoice!.id,
+          selectedIds: orderIds,
+        }).success
+      ).toBe(true);
+
+      // ST01-005 已进入战场且进入其【出】丢牌决策，但在此之前剩余 4 张牌必须已经按选序置入牌组底！
       expect(state.cards[st01005.instanceId]!.zone).toBe('BATTLEFIELD');
       expect(state.currentPendingChoice).toBeDefined();
       expect(state.currentPendingChoice!.prompt).toContain('露西亚');
       const deckBottom4Now = engine.zoneMgr.getCardsInZone('p1', 'DECK').slice(-4).map((c) => c.instanceId);
-      expect(new Set(deckBottom4Now)).toEqual(new Set(expectedBottom4));
+      expect(deckBottom4Now).toEqual(orderIds);
     });
 
     it('BP01-058 双【出】自由排序：可先结算【出1】从墓地凑齐第 2 张《梦赴光寥之乡》，再结算【出2】将对方<=3费角色置底', () => {

@@ -11,6 +11,24 @@ export type CostPendingAction = Extract<
   { kind: 'COST_DISCARD' | 'COST_ORB' | 'COST_ORB_OR_DISCARD' | 'COST_PAY_COST' }
 >;
 
+export type HostWithRequiredOrbCount = DslInterpreterHost & {
+  eliminate(
+    playerId: string,
+    ids: string[],
+    sourceId?: string,
+    excludeFromAbilityOrbCount?: boolean,
+    requiredCount?: number
+  ): void;
+};
+
+export type CostOrbActionWithCount = Extract<DslPendingAction, { kind: 'COST_ORB' }> & {
+  requiredCount?: number;
+};
+
+type CostOrbOrDiscardActionWithCount = Extract<DslPendingAction, { kind: 'COST_ORB_OR_DISCARD' }> & {
+  requiredCount?: number;
+};
+
 export function isCostPendingAction(pending: DslPendingAction): pending is CostPendingAction {
   return (
     pending.kind === 'COST_DISCARD' ||
@@ -120,12 +138,26 @@ export class DslCostHandler {
         }
         this.host.ctx.zoneMgr.setCardReady(sourceId, false);
         if (groups.length === 1) {
-          this.host.eliminate(playerId, groups[0]!, sourceId);
+          (this.host as HostWithRequiredOrbCount).eliminate(
+            playerId,
+            groups[0]!,
+            sourceId,
+            undefined,
+            cost.count
+          );
           if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
           this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
           return { success: true };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_ORB_COST';
+        const tapOrbPending: CostOrbActionWithCount = {
+          kind: 'COST_ORB',
+          onPaid: [...steps],
+          optional: false,
+          markUsed,
+          markUsedKey: effectiveUsageKey,
+          requiredCount: cost.count,
+        };
         this.host.enqueueDslChoice(
           {
             id: this.host.choiceId('tap-orb-cost'),
@@ -149,13 +181,7 @@ export class DslCostHandler {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: {
-              kind: 'COST_ORB',
-              onPaid: [...steps],
-              optional: false,
-              markUsed,
-              markUsedKey: effectiveUsageKey,
-            },
+            pendingAction: tapOrbPending,
           }
         );
         return { success: true };
@@ -436,7 +462,13 @@ export class DslCostHandler {
               };
         }
         if (!optional && groups.length === 1) {
-          this.host.eliminate(playerId, groups[0]!, sourceId);
+          (this.host as HostWithRequiredOrbCount).eliminate(
+            playerId,
+            groups[0]!,
+            sourceId,
+            undefined,
+            cost.count
+          );
           if (cost.savePaidToVar) vars[cost.savePaidToVar] = [...groups[0]!];
           if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
           this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
@@ -452,6 +484,15 @@ export class DslCostHandler {
               .join('、')}`,
           })),
         ];
+        const orbPending: CostOrbActionWithCount = {
+          kind: 'COST_ORB',
+          onPaid: [...steps],
+          optional,
+          markUsed,
+          markUsedKey: effectiveUsageKey,
+          savePaidToVar: cost.savePaidToVar,
+          requiredCount: cost.count,
+        };
         this.host.enqueueDslChoice(
           {
             id: this.host.choiceId('orb-cost'),
@@ -470,14 +511,7 @@ export class DslCostHandler {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: {
-              kind: 'COST_ORB',
-              onPaid: [...steps],
-              optional,
-              markUsed,
-              markUsedKey: effectiveUsageKey,
-              savePaidToVar: cost.savePaidToVar,
-            },
+            pendingAction: orbPending,
           }
         );
         return { success: true };
@@ -485,14 +519,17 @@ export class DslCostHandler {
 
       case 'ELIMINATE_ORB_OR_DISCARD_HAND': {
         const optional = cost.optional !== false;
-        const orbs = this.host.zone(playerId, 'SIGNAL_ORB').filter((c) => this.host.isOrb(c));
+        const orbGroups = this.host.orbGroups(playerId, 1, 'ANY');
         const hand = this.host.zone(playerId, 'HAND');
         const options = [
           ...(optional ? [{ id: 'skip', label: '不支付代价 (不发动)' }] : []),
-          ...orbs.map((c) => ({
-            id: `orb:${c.instanceId}`,
-            label: `消除信号球【${this.host.def(c)?.name ?? c.cardNumber}】`,
-          })),
+          ...orbGroups.map((g) => {
+            const c = this.host.ctx.state.cards[g[0]!]!;
+            return {
+              id: `orb:${g[0]!}`,
+              label: `消除信号球【${this.host.def(c)?.name ?? c.cardNumber}】`,
+            };
+          }),
           ...hand.map((c) => ({
             id: `hand:${c.instanceId}`,
             label: `丢弃手牌【${this.host.def(c)?.name ?? c.cardNumber}】`,
@@ -503,6 +540,14 @@ export class DslCostHandler {
             ? { success: true }
             : { success: false, error: '没有可支付的信号球或手牌代价' };
         }
+        const orbOrDiscardPending: CostOrbOrDiscardActionWithCount = {
+          kind: 'COST_ORB_OR_DISCARD',
+          onPaid: [...steps],
+          optional,
+          markUsed,
+          markUsedKey: effectiveUsageKey,
+          requiredCount: 1,
+        };
         this.host.enqueueDslChoice(
           {
             id: this.host.choiceId('orb-or-hand-cost'),
@@ -521,13 +566,7 @@ export class DslCostHandler {
             playerId,
             vars,
             remainingSteps: [],
-            pendingAction: {
-              kind: 'COST_ORB_OR_DISCARD',
-              onPaid: [...steps],
-              optional,
-              markUsed,
-              markUsedKey: effectiveUsageKey,
-            },
+            pendingAction: orbOrDiscardPending,
           }
         );
         return { success: true };
@@ -587,11 +626,12 @@ export class DslCostHandler {
           return { success: false, error: '必须支付消除信号球代价' };
         }
         const paidIds = group.split(',');
-        this.host.eliminate(
+        (this.host as HostWithRequiredOrbCount).eliminate(
           playerId,
           paidIds,
           sourceCardInstanceId,
-          pending.excludeFromAbilityOrbCount
+          pending.excludeFromAbilityOrbCount,
+          (pending as CostOrbActionWithCount).requiredCount
         );
         if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...paidIds];
         if (pending.markUsed) {
@@ -607,12 +647,26 @@ export class DslCostHandler {
       case 'COST_ORB_OR_DISCARD': {
         const pick = selected[0];
         if (!pick || pick === 'skip') {
-          if (pending.optional) return { success: true };
+          if (pending.optional) {
+            if (remaining.length > 0) {
+              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            }
+            return { success: true };
+          }
           return { success: false, error: '必须支付代价' };
         }
         const [kind, id] = pick.split(':') as [string, string];
-        if (kind === 'orb') this.host.eliminate(playerId, [id], sourceCardInstanceId);
-        else this.host.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        if (kind === 'orb') {
+          (this.host as HostWithRequiredOrbCount).eliminate(
+            playerId,
+            [id],
+            sourceCardInstanceId,
+            undefined,
+            (pending as CostOrbOrDiscardActionWithCount).requiredCount ?? 1
+          );
+        } else {
+          this.host.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        }
         if (pending.markUsed) {
           this.host.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         }

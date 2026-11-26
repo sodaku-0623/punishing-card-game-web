@@ -299,6 +299,19 @@ describe('ST04 突击鹰小队官方预组 (14 张声明式效果)', () => {
         selectedIds: [shield.instanceId],
       }).success
     ).toBe(true);
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_ST04-007');
+    const st04007Order = state.currentPendingChoice!.options.map((o) => o.id).reverse();
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: state.currentPendingChoice!.id,
+        selectedIds: st04007Order,
+      }).success
+    ).toBe(true);
+    expect(
+      engine.zoneMgr.getCardsInZone(active, 'DECK').slice(-4).map((c) => c.instanceId)
+    ).toEqual(st04007Order);
     expect(state.currentPendingChoice?.effectType).toBe('PRESET_DISCARD');
     // 弃掉刚上手的 ST04-001 到墓地，顺便给下一步 ST04-002 回收
     expect(

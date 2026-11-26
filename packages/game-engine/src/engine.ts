@@ -32,6 +32,7 @@ import {
 } from './effects/continuous-effects.js';
 import { ReplacementEngine } from './effects/replacement-engine.js';
 import { CardEffectEngine } from './effects/card-effects.js';
+import { canMatchOrbCount, findOrbGroupsFromInfos } from './effects/dsl/evaluator.js';
 import { advancePendingChoice, enqueuePendingChoice, nextChoiceId } from './state/pending-choice.js';
 
 export interface ActionResult {
@@ -141,23 +142,29 @@ export class GameEngine {
       this.zoneMgr.moveCard(cid, 'GRAVEYARD', { isFaceUp: true, sentByEffectOrCost });
     });
     this.replacementEngine.setChoiceEnqueuer((ch) => enqueuePendingChoice(this.state, ch));
-    this.zoneMgr.setWanshimingChargeHandler((playerId, cardInstanceId, attackerCardId) => {
+    this.zoneMgr.setWanshimingChargeHandler((playerId, cardInstanceId, attackerCardId, chargeKind) => {
       const card = this.state.cards[cardInstanceId];
       const def = card ? this.cardDb.getCard(card.cardNumber) : undefined;
+      const isDamage = chargeKind === 'DAMAGE';
       enqueuePendingChoice(this.state, {
         id: nextChoiceId(this.state, 'wanshiming-charge'),
         playerId,
         choiceType: 'SELECT_OPTION',
-        prompt: `【${def?.name ?? '万世铭'}】因<曲>角色攻击充能进入处理区，是否改为以横置状态放置到费用区（满10张时改放墓地）？`,
+        prompt: `【${def?.name ?? '万世铭'}】因<曲>角色${isDamage ? '伤害充能' : '攻击充能'}进入处理区，是否改为以横置状态放置到费用区（满10张时改放墓地）？`,
         options: [
           { id: 'to_cost', label: '改为横置放置到费用区 (8.10 置换)' },
-          { id: 'keep', label: '保持原处理 (正常充能加入手牌)' },
+          {
+            id: 'keep',
+            label: isDamage
+              ? '保持原处理 (继续完成伤害充能：放置到费用区并侵蚀+1)'
+              : '保持原处理 (正常充能加入手牌)',
+          },
         ],
         effectType: 'BP01_WANSHIMING_TO_COST',
         sourceCardInstanceId: cardInstanceId,
         minSelections: 1,
         maxSelections: 1,
-        metadata: { cardInstanceId, attackerCardId },
+        metadata: { cardInstanceId, attackerCardId, chargeKind },
       });
       return true;
     });
@@ -2124,9 +2131,13 @@ export class GameEngine {
       return { success: true };
     }
 
-    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能进入处理区时的可选置换
+    // BP01-037 万世铭 / BP01-038 万世铭·重铸：因<曲>角色攻击充能或伤害充能进入处理区时的可选置换 (Q&A·5)
     if (choice.effectType === 'BP01_WANSHIMING_TO_COST') {
-      const meta = (choice.metadata ?? {}) as { cardInstanceId?: string; attackerCardId?: string };
+      const meta = (choice.metadata ?? {}) as {
+        cardInstanceId?: string;
+        attackerCardId?: string;
+        chargeKind?: 'ATTACK' | 'DAMAGE';
+      };
       this.state.currentPendingChoice = undefined;
       const picked = action.selectedIds[0];
       if (meta.cardInstanceId) {
@@ -2136,15 +2147,28 @@ export class GameEngine {
           this.zoneMgr.moveCard(card.instanceId, 'COST', { isFaceUp: true, isReady: false });
           this.zoneMgr.syncCostStats(card.controllerPlayerId);
         } else if (card && card.zone === 'PROCESSING') {
-          // 选择不置换：发出正常攻击充能事件 (供 BP01-028 模式3 等触发)
+          // 选择不置换：保持在 PROCESSING，发出对应充能事件与【充能自】处理，交由后续充能完成流程收尾
+          const chargeKind = meta.chargeKind ?? 'ATTACK';
           this.triggerMgr.emit({
             type: 'CARD_CHARGED',
             playerId: action.playerId,
             cardInstanceId: card.instanceId,
             targetCardId: meta.attackerCardId,
-            chargeKind: 'ATTACK',
+            chargeKind,
             subjectSnapshot: this.triggerMgr.snapshotCard(card.instanceId),
           });
+          const cardDef =
+            this.cardDb.getCard(card.cardNumber) ||
+            (card.cardId ? this.cardDb.getCard(card.cardId) : undefined);
+          if (cardDef && cardDef.rulesText.includes('充能自')) {
+            this.effectEngine.handleChargeAutoEffect(
+              action.playerId,
+              card.instanceId,
+              cardDef,
+              chargeKind,
+              meta.attackerCardId
+            );
+          }
         }
       }
       if (!this.state.currentPendingChoice) {
@@ -2862,11 +2886,14 @@ export class GameEngine {
     const partnerZone = partner.zone;
     const options = (hostDef.assistConfig?.costOptions ?? []).filter((o) => o.zone === partnerZone);
     // ST06-010 阿斯特莉亚：装备给《亚里莎·回音》时允许从墓地支付 2 费选择协战搭档
+    const hasSt06010Equip = getAttachedEquipmentIds(host).some((eqId) => {
+      const eq = this.state.cards[eqId];
+      return eq?.cardNumber === 'ST06-010' && !this.continuousEffects.hasLostInherentAbilities(eqId);
+    });
     if (
       partnerZone === 'GRAVEYARD' &&
-      host.attachedEquipmentId &&
-      this.state.cards[host.attachedEquipmentId]?.cardNumber === 'ST06-010' &&
-      !this.continuousEffects.hasLostInherentAbilities(host.attachedEquipmentId) &&
+      hasSt06010Equip &&
+      !this.continuousEffects.hasLostInherentAbilities(host.instanceId) &&
       !this.continuousEffects.hasProhibition(host.instanceId, 'CANNOT_GAIN_ABILITIES') &&
       this.continuousEffects.hasCardName(host.instanceId, '亚里莎·回音') &&
       !options.some((o) => o.zone === 'GRAVEYARD')
@@ -2905,28 +2932,7 @@ export class GameEngine {
   ): string[] | undefined {
     const orbs = this.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB');
     const infos = orbs.map((c) => this.continuousEffects.getEffectiveOrbInfo(c.instanceId));
-    for (let start = 0; start < orbs.length; start++) {
-      let sum = 0;
-      let commonColors: string[] | undefined;
-      const ids: string[] = [];
-      for (let end = start; end < orbs.length; end++) {
-        const info = infos[end]!;
-        if (!info.isOrb || info.cannotEliminate || info.orbValue <= 0) break;
-        if (req.filter !== 'ANY' && req.filter !== 'SAME' && !info.colors.includes(req.filter)) break;
-        if (req.filter === 'SAME') {
-          commonColors =
-            commonColors === undefined
-              ? [...info.colors]
-              : commonColors.filter((col) => info.colors.includes(col as 'RED' | 'BLUE' | 'YELLOW'));
-          if (commonColors.length === 0) break;
-        }
-        sum += info.orbValue;
-        ids.push(orbs[end]!.instanceId);
-        if (sum === req.count) return ids;
-        if (sum > req.count) break;
-      }
-    }
-    return undefined;
+    return findOrbGroupsFromInfos(orbs, infos, req.count, req.filter)[0];
   }
 
   private matchesAssistPartnerFilter(
@@ -3064,7 +3070,7 @@ export class GameEngine {
         if (!adjacent || new Set(action.orbCardInstanceIds).size !== action.orbCardInstanceIds.length) {
           return { success: false, error: '协战消球代价必须选择自身信号球区相邻的不同信号球' };
         }
-        let sum = 0;
+        const orbValues: number[] = [];
         const colors: string[] = [];
         for (const oid of action.orbCardInstanceIds) {
           const info = this.continuousEffects.getEffectiveOrbInfo(oid);
@@ -3074,10 +3080,10 @@ export class GameEngine {
           if (req.filter !== 'ANY' && req.filter !== 'SAME' && !info.colors.includes(req.filter)) {
             return { success: false, error: '所选信号球颜色不符合协战代价要求' };
           }
-          sum += info.orbValue;
+          orbValues.push(info.orbValue);
           colors.push(...info.colors);
         }
-        if (sum !== req.count) {
+        if (!canMatchOrbCount(orbValues, req.count)) {
           return { success: false, error: `协战代价需要消除等效 ${req.count} 个信号球` };
         }
         if (req.filter === 'SAME') {
@@ -3179,9 +3185,10 @@ export class GameEngine {
       const subject = fieldRequirement[2]!;
       const exists = this.fieldMgr.getSlots(playerId).some((s) => {
         const role = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
-        const roleDef = role ? this.cardDb.getCard(role.cardNumber) : undefined;
-        if (!roleDef) return false;
-        return bracket === '《' ? roleDef.name === subject : this.continuousEffects.hasTrait(role!.instanceId, subject);
+        if (!role) return false;
+        return bracket === '《'
+          ? this.continuousEffects.hasCardName(role.instanceId, subject)
+          : this.continuousEffects.hasTrait(role.instanceId, subject);
       });
       if (!exists) {
         return `该牌只能在我方战场存在${bracket === '《' ? `《${subject}》` : `<${subject}>`}时才能使用`;

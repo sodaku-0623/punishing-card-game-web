@@ -122,13 +122,16 @@ export function registerDeclarativeTriggers(
               if (!attackerId) return [];
               const attacker = state.cards[attackerId];
               if (!attacker) return [];
-              // 宿主被禁止获得新能力 (如 BP02-058 CANNOT_GAIN_ABILITIES) 时，装备赋予的【自】同样不得触发
+              const ownedByEquip = Boolean(trig.matcher.ownedByEquipment);
+              // 宿主被禁止获得新能力 (如 BP02-058 CANNOT_GAIN_ABILITIES) 时，装备赋予的【自】不得触发；
+              // 若为装备自身持有的【自】(ownedByEquipment=true，如 ST05-008)，则不受宿主 CANNOT_GAIN_ABILITIES 限制
               if (
-                continuousEffects.hasProhibition(attacker.instanceId, 'CANNOT_GAIN_ABILITIES') ||
-                host.ctx.continuousEffects?.hasProhibition(
-                  attacker.instanceId,
-                  'CANNOT_GAIN_ABILITIES'
-                )
+                !ownedByEquip &&
+                (continuousEffects.hasProhibition(attacker.instanceId, 'CANNOT_GAIN_ABILITIES') ||
+                  host.ctx.continuousEffects?.hasProhibition(
+                    attacker.instanceId,
+                    'CANNOT_GAIN_ABILITIES'
+                  ))
               ) {
                 return [];
               }
@@ -151,16 +154,23 @@ export function registerDeclarativeTriggers(
               ) {
                 return [];
               }
-              if (!condOk(attacker.controllerPlayerId, attacker.instanceId)) return [];
+              if (!ownedByEquip && !condOk(attacker.controllerPlayerId, attacker.instanceId)) {
+                return [];
+              }
               const matches = [];
               for (const eqId of eqIds) {
                 const equip = state.cards[eqId];
                 if (!equip || equip.cardNumber !== spec.cardNumber) continue;
                 if (continuousEffects.hasLostInherentAbilities(equip.instanceId)) continue;
+                if (ownedByEquip && !condOk(attacker.controllerPlayerId, equip.instanceId)) {
+                  continue;
+                }
                 // Q&A·2：不同装备卡给予同一角色的同文本能力各自计次，且升变后宿主实例变化可再次发动
-                const onceKey = `${attacker.instanceId}:${trig.abilityId}:${equip.instanceId}`;
+                const onceKey = ownedByEquip
+                  ? `${equip.instanceId}:${trig.abilityId}`
+                  : `${attacker.instanceId}:${trig.abilityId}:${equip.instanceId}`;
                 matches.push({
-                  sourceCardInstanceId: attacker.instanceId,
+                  sourceCardInstanceId: ownedByEquip ? equip.instanceId : attacker.instanceId,
                   sourceCardNumber: spec.cardNumber,
                   controllerPlayerId: attacker.controllerPlayerId,
                   label: trig.label,
@@ -1128,6 +1138,7 @@ export function registerDeclarativeStaticEffects(
         eff.dp !== undefined ||
         eff.setDP !== undefined ||
         eff.setBaseDP !== undefined ||
+        eff.baseDPDelta !== undefined ||
         eff.charge !== undefined ||
         eff.setCharge !== undefined;
 
@@ -1342,6 +1353,10 @@ export function registerDeclarativeStaticEffects(
               ...(dp !== undefined ? { dp } : {}),
               ...(setDP !== undefined ? { setDP } : {}),
               ...(setBaseDP !== undefined ? { setBaseDP } : {}),
+              ...(eff.baseDPDelta !== undefined ? { baseDPDelta: eff.baseDPDelta } : {}),
+              ...(eff.maxCurrentBaseDP !== undefined
+                ? { maxCurrentBaseDP: eff.maxCurrentBaseDP }
+                : {}),
               ...(charge !== undefined ? { charge } : {}),
               ...(eff.chargeIsAbility ? { chargeIsAbility: true } : {}),
               ...(setCharge !== undefined ? { setCharge } : {}),

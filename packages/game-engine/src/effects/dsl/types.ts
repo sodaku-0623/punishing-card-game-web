@@ -617,6 +617,7 @@ export type EffectStep =
       setPP?: NumberExpr;
       setDP?: NumberExpr;
       charge?: NumberExpr;
+      chargeIsAbility?: boolean;
       setCharge?: NumberExpr;
       keywords?: string[];
       removeKeywords?: string[];
@@ -696,6 +697,8 @@ export type DeclarativeTriggerMatcher =
       /** 要求装备对象为指定卡名 (如 ST02-009 要求《露娜·银冕》) */
       requiredHostName?: string;
       requiredHostTrait?: string;
+      /** true 表示该【自】为装备牌自身持有而非赋予宿主角色 (如 ST05-008) */
+      ownedByEquipment?: boolean;
     }
   | {
       kind: 'OTHER_FRIENDLY_ROLE_ENTERED';
@@ -863,6 +866,10 @@ export interface DeclarativeStaticEffectSpec {
   dp?: NumberExpr;
   setDP?: NumberExpr;
   setBaseDP?: NumberExpr;
+  /** 增量修改基本 DP (如 BP01-051 帕瓦对下方宿主的基本 DP+1) */
+  baseDPDelta?: number;
+  /** 仅当当前已结算基本 DP <= maxCurrentBaseDP 时才叠加 baseDPDelta (如 BP01-051 基本DP为1及以下) */
+  maxCurrentBaseDP?: number;
   charge?: NumberExpr;
   /** true 表示以「获得【充能+X】能力」形式赋予 (Q&A·1 BP01-050：宿主失去能力时该【充能+1】一并失去) */
   chargeIsAbility?: boolean;

@@ -169,7 +169,7 @@ describe('BP01 第一批：灰鸦小队 (BP01-001 ~ BP01-007)', () => {
     });
     expect(overCost.success).toBe(false);
 
-    // 选择 bp01004 (3费) + bp01006 (2费) = 5 <= 6 → 成功出场！
+    // 选择 bp01004 (3费) + bp01006 (2费) = 5 <= 6 → 成功出场，并按选定顺序将剩余 3 张牌置底！
     expect(
       engine.dispatchAction({
         type: 'SELECT_CHOICE_OPTION',
@@ -178,6 +178,19 @@ describe('BP01 第一批：灰鸦小队 (BP01-001 ~ BP01-007)', () => {
         selectedIds: [bp01004.instanceId, bp01006.instanceId],
       }).success
     ).toBe(true);
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_BP01-001');
+    const bp01001Order = state.currentPendingChoice!.options.map((o) => o.id).reverse();
+    expect(
+      engine.dispatchAction({
+        type: 'SELECT_CHOICE_OPTION',
+        playerId: active,
+        pendingChoiceId: state.currentPendingChoice!.id,
+        selectedIds: bp01001Order,
+      }).success
+    ).toBe(true);
+    expect(
+      engine.zoneMgr.getCardsInZone(active, 'DECK').slice(-3).map((c) => c.instanceId)
+    ).toEqual(bp01001Order);
     expect(state.cards[bp01004.instanceId]!.zone).toBe('BATTLEFIELD');
     expect(state.cards[bp01006.instanceId]!.zone).toBe('BATTLEFIELD');
   });
@@ -453,7 +466,7 @@ describe('BP01 第一批：七实·遥星之座 & 帕瓦叠置体系 (BP01-040 ~
         sourceCardId: nanami40.instanceId,
       }).success
     ).toBe(true);
-    expect(state.currentPendingChoice?.effectType).toBe('PRESET_BP01_040_MODE');
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_CHOOSE_ACTIVATED_ABILITY');
     expect(
       engine.dispatchAction({
         type: 'SELECT_CHOICE_OPTION',

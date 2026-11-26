@@ -1055,6 +1055,9 @@ function validateSteps(
         validateNumberExpr(step.setCharge, `${sp}.setCharge`, vars);
         validateNumberExpr(step.costDelta, `${sp}.costDelta`, vars);
         validateNumberExpr(step.setCost, `${sp}.setCost`, vars);
+        if (step.chargeIsAbility !== undefined) {
+          assert(typeof step.chargeIsAbility === 'boolean', `${sp}.chargeIsAbility 必须是布尔值`);
+        }
         validateCommonStatModFields(step, sp, grantedTriggerRefs);
         if (step.removeKeywords !== undefined) {
           assertNonEmptyStringArray(step.removeKeywords, `${sp}.removeKeywords`);
@@ -1330,6 +1333,11 @@ function validateReplacementSpec(repl: DeclarativeReplacementSpec, path: string)
 function validateTriggerMatcher(matcher: DeclarativeTriggerMatcher, path: string): void {
   assert(matcher && VALID_TRIGGER_MATCHERS.has(matcher.kind), `${path}.kind 非法`);
   switch (matcher.kind) {
+    case 'EQUIPPED_ROLE_ATTACKING':
+      if (matcher.ownedByEquipment !== undefined) {
+        assert(typeof matcher.ownedByEquipment === 'boolean', `${path}.ownedByEquipment 必须是布尔值`);
+      }
+      break;
     case 'OTHER_FRIENDLY_ROLE_ENTERED':
     case 'SELF_IN_SIGNAL_ORB_ON_FRIENDLY_ROLE_ENTERED':
       validateFilter(matcher.enteredFilter, `${path}.enteredFilter`);
@@ -1440,6 +1448,15 @@ function validateStaticEffect(
   validateNumberExpr(eff.dp, `${path}.dp`);
   validateNumberExpr(eff.setDP, `${path}.setDP`);
   validateNumberExpr(eff.setBaseDP, `${path}.setBaseDP`);
+  if (eff.baseDPDelta !== undefined) {
+    assert(
+      typeof eff.baseDPDelta === 'number' && Number.isInteger(eff.baseDPDelta),
+      `${path}.baseDPDelta 必须是整数，收到 ${String(eff.baseDPDelta)}`
+    );
+  }
+  if (eff.maxCurrentBaseDP !== undefined) {
+    assertNonNegativeInt(eff.maxCurrentBaseDP, `${path}.maxCurrentBaseDP`);
+  }
   validateNumberExpr(eff.charge, `${path}.charge`);
   validateNumberExpr(eff.setCharge, `${path}.setCharge`);
   validateNumberExpr(eff.costDelta, `${path}.costDelta`);
@@ -1451,6 +1468,7 @@ function validateStaticEffect(
     eff.dp !== undefined ||
     eff.setDP !== undefined ||
     eff.setBaseDP !== undefined ||
+    eff.baseDPDelta !== undefined ||
     eff.charge !== undefined ||
     eff.setCharge !== undefined ||
     eff.costDelta !== undefined ||

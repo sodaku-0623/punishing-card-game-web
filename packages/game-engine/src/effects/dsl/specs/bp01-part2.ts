@@ -147,6 +147,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
                 op: 'MODIFY_STATS',
                 target: { kind: 'SELF' },
                 charge: 1,
+                chargeIsAbility: true,
                 pp: 1000,
                 duration: 'END_OF_TURN',
               },
@@ -369,6 +370,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
       ],
     },
@@ -456,6 +458,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
         op: 'MOVE_CARDS',
         target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'pickEquip' },
         toZone: 'DECK_BOTTOM',
+        chooseOrder: true,
       },
     ],
   },
@@ -543,6 +546,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
                       op: 'MODIFY_STATS',
                       target: { kind: 'SELF' },
                       charge: 1,
+                      chargeIsAbility: true,
                       setBasePP: 9999,
                       duration: 'END_OF_TURN',
                     },
@@ -779,6 +783,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
       ],
     },
@@ -818,6 +823,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
         },
       ],
     },
@@ -844,7 +850,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
             {
               id: 'charge_plus_1',
               label: '直到回合结束为止，该牌获得【充能+1】',
-              steps: [{ op: 'MODIFY_STATS', target: { kind: 'SELF' }, charge: 1, duration: 'END_OF_TURN' }],
+              steps: [{ op: 'MODIFY_STATS', target: { kind: 'SELF' }, charge: 1, chargeIsAbility: true, duration: 'END_OF_TURN' }],
             },
             {
               id: 'pp_plus_2000',
@@ -917,6 +923,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
                 op: 'MOVE_CARDS',
                 target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' },
                 toZone: 'DECK_BOTTOM',
+                chooseOrder: true,
               },
             ],
           },
@@ -925,7 +932,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // BP01-037 万世铭 (1费 战术；因<曲>入处理区改放横置费用区由 ZoneManager + Interpreter 统一处理)
+  // BP01-037 万世铭 (1费 战术；因<曲>入处理区改放横置费用区由 ZoneManager + step-runner.ts 统一处理)
   {
     cardNumber: 'BP01-037',
     name: '万世铭',
@@ -1234,6 +1241,7 @@ export const BP01_PART2_SPECS: readonly CardEffectSpec[] = [
                 op: 'MOVE_CARDS',
                 target: { kind: 'REST_OF_VAR', allVar: 'topCards', excludeVar: 'keepTop' },
                 toZone: 'DECK_BOTTOM',
+                chooseOrder: true,
               },
             ],
           },

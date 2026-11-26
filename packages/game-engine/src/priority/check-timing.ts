@@ -51,6 +51,13 @@ export class CheckTimingManager {
       // 若存在尚未完成的玩家决策，在执行任何待机自动能力前暂停检查时机
       if (this.state.currentPendingChoice) return false;
 
+      // 10.1 / Q&A·7：清理已耗尽单卡或同编号共享次数上限的待机能力，避免弹出无效选序窗口
+      if (this.triggerMgr && this.state.pendingTriggers.length > 0) {
+        this.state.pendingTriggers = this.state.pendingTriggers.filter(
+          (t) => !this.triggerMgr!.isTriggerQuotaExhausted(t)
+        );
+      }
+
       // 8.5.1.c 回合玩家存在触发条件生效的待机自动能力
       const activePlayerTriggers = this.state.pendingTriggers.filter(
         (t) => t.controllerPlayerId === this.state.activePlayerId

@@ -30,7 +30,7 @@ export const ST06_EFFECT_SPECS: readonly CardEffectSpec[] = [
   {
     cardNumber: 'ST06-002',
     name: '坠落与新生 塞西莉',
-    // 【协战永】：该牌从手牌成为《坠落与新生 亚里莎·回音》的协战搭档的回合中，该牌不会解除协战状态。(由 engine.ts handlePerformAssist 设置 cannotReleasePartnerUntilTurn)
+    // 【协战永】：该牌从手牌成为《坠落与新生 亚里莎·回音》的协战搭档的回合中，该牌不会解除协战状态。(由 zone/battlefield-manager.ts attachPartner 设置 cannotReleasePartnerUntilTurn)
     // 【协战自】：该牌成为<亚里莎>角色的协战搭档时，可以消除【任意信号球】。根据因此方法消除的信号球牌，执行以下行动。
     // ·<信号球·红> 若为我方回合且对方战场的角色为3张及以上，选择对方战场1张费用为3及以下的角色，将其返回手牌。
     // ·<信号球·蓝> 选择我方费用区最多2张<亚里莎>或<塞西莉>，将其竖直。
@@ -100,14 +100,14 @@ export const ST06_EFFECT_SPECS: readonly CardEffectSpec[] = [
   {
     cardNumber: 'ST06-003',
     name: '亚里莎·回音',
-    // 【永】：若我方明费上限不大于对方，战场的该牌的基本DP变为1。(该牌印刷基本DP为0，+1确保不覆盖搭档叠加的基本DP 8.13.4.b)
+    // 【永】：若我方明费上限不大于对方，战场的该牌的基本DP变为1。
     vanillaEntry: true,
     staticEffects: [
       {
         id: 'ST06_003_BASE_DP_ONE',
         scope: 'SELF',
         condition: { kind: 'OPEN_COST_COMPARE_OPPONENT', op: '<=' },
-        dp: 1,
+        setBaseDP: 1,
       },
     ],
   },
@@ -185,6 +185,7 @@ export const ST06_EFFECT_SPECS: readonly CardEffectSpec[] = [
         targetFilter: { trait: '亚里莎' },
         pp: 1500,
         charge: 1,
+        chargeIsAbility: true,
         dependsOnTraits: true,
       },
     ],

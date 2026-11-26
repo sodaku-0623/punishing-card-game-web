@@ -32,7 +32,7 @@ export const ST01_EFFECT_SPECS: readonly CardEffectSpec[] = [
           choiceEffectType: 'PRESET_ST01_001_PICK',
         },
         { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'picked' }, toZone: 'BATTLEFIELD', triggerEntry: true },
-        { op: 'MOVE_CARDS', target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' }, toZone: 'DECK_BOTTOM' },
+        { op: 'MOVE_CARDS', target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' }, toZone: 'DECK_BOTTOM', chooseOrder: true },
       ],
     },
     // 【起】消除【2蓝色信号球】：选择我方战场1张角色返回手牌。若如此做，选择我方手牌1张费用为4及以下的<灰鸦小队>角色出场。
@@ -109,6 +109,7 @@ export const ST01_EFFECT_SPECS: readonly CardEffectSpec[] = [
                   op: 'MODIFY_STATS',
                   target: { kind: 'VAR', varName: 'target' },
                   charge: 1,
+                  chargeIsAbility: true,
                   duration: 'END_OF_TURN',
                 },
               ],
@@ -200,7 +201,7 @@ export const ST01_EFFECT_SPECS: readonly CardEffectSpec[] = [
         choiceEffectType: 'PRESET_ST01_010_PICK',
       },
       { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'picked' }, toZone: 'HAND' },
-      { op: 'MOVE_CARDS', target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' }, toZone: 'DECK_BOTTOM' },
+      { op: 'MOVE_CARDS', target: { kind: 'REST_OF_VAR', allVar: 'revealed', excludeVar: 'picked' }, toZone: 'DECK_BOTTOM', chooseOrder: true },
     ],
   },
   {
