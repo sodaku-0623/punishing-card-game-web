@@ -612,13 +612,20 @@ export class CardEffectEngine {
         const chargeCardId = choice.sourceCardInstanceId;
         const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
         if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        this.ctx.zoneMgr.syncCostStats(playerId);
+        const player = this.ctx.state.players[playerId];
+        const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
         const targets = this.getFriendlyRoles(playerId).filter((r) => {
           const d = this.getCardDef(r);
-          return d && d.name === '里·超刻' && d.cost < 9;
+          if (!d || d.name !== '里·超刻' || d.cost >= 9) return false;
+          const totalCost = 3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [r.instanceId]);
+          return availCost >= totalCost;
         });
         if (targets.length === 0) break;
         if (targets.length === 1) {
-          if (this.ctx.payCost(playerId, 3)) {
+          const totalCost =
+            3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [targets[0]!.instanceId]);
+          if (this.ctx.payCost(playerId, totalCost)) {
             this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targets[0]!.instanceId);
           }
         } else {
@@ -642,7 +649,8 @@ export class CardEffectEngine {
         const chargeCard = chargeCardId ? this.ctx.state.cards[chargeCardId] : undefined;
         const targetId = selectedIds[0];
         if (!chargeCard || chargeCard.zone !== 'PROCESSING' || !targetId) break;
-        if (this.ctx.payCost(playerId, 3)) {
+        const totalCost = 3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [targetId]);
+        if (this.ctx.payCost(playerId, totalCost)) {
           this.ctx.fieldMgr.playAscensionCard(playerId, chargeCardId!, targetId);
         }
         break;
@@ -1106,20 +1114,29 @@ export class CardEffectEngine {
       if (chargeKind !== 'ATTACK' || !attackerCardId) return false;
       const attacker = this.ctx.state.cards[attackerCardId];
       if (!attacker || this.getCardDef(attacker)?.name !== '里·超刻') return false;
+      this.ctx.zoneMgr.syncCostStats(playerId);
       const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
-      if (availCost < 3) return false;
       const eligibleTargets = this.getFriendlyRoles(playerId).filter((r) => {
         const d = this.getCardDef(r);
-        return d && d.name === '里·超刻' && d.cost < 9;
+        if (!d || d.name !== '里·超刻' || d.cost >= 9) return false;
+        const totalCost = 3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [r.instanceId]);
+        return availCost >= totalCost;
       });
       if (eligibleTargets.length === 0) return false;
+      const taxes = eligibleTargets.map((r) =>
+        this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [r.instanceId])
+      );
+      const minTax = Math.min(...taxes);
+      const maxTax = Math.max(...taxes);
+      const costHint =
+        minTax === maxTax ? `${3 + minTax} 费` : `${3 + minTax}~${3 + maxTax} 费`;
       this.ctx.setPendingChoice({
         id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'YES_NO',
-        prompt: `【${cardDef.name}】充能自：是否支付 3 费将该牌无视费用上限升变出场并获得【速攻】？`,
+        prompt: `【${cardDef.name}】充能自：是否支付 ${costHint} 将该牌无视费用上限升变出场并获得【速攻】？`,
         options: [
-          { id: 'opt_yes', label: '支付 3 费升变出场' },
+          { id: 'opt_yes', label: `支付 ${costHint} 升变出场` },
           { id: 'opt_no', label: '不发动' },
         ],
         effectType: 'BP03_023_CHARGE_ASCEND',

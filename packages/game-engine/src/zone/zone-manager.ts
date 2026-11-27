@@ -228,8 +228,20 @@ export class ZoneManager {
         effectiveToZone === 'BATTLEFIELD' &&
         (Boolean(options?.isPlacingUnderneath) || Boolean(options?.resetStateOnSameZone)));
 
+    // 8.13.4.a.2 解除战场关系前记录原协战搭档或下方牌身份（仅针对从战场/下方移出判定，不视为战场角色）
+    const wasPartner = fromZone === 'BATTLEFIELD' && Boolean(card.partnerOfCardId);
+    const wasUnderneath =
+      fromZone === 'BATTLEFIELD' &&
+      Object.values(this.state.battlefields).some((slots) =>
+        slots.some(
+          (s) =>
+            Boolean(s.roleCardId) &&
+            Boolean(this.state.cards[s.roleCardId!]?.underneathCardIds?.includes(card.instanceId))
+        )
+      );
+
     const leftBattlefieldSnapshot =
-      leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger
+      leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger && !wasPartner && !wasUnderneath
         ? this.snapshotProvider?.(cardInstanceId)
         : undefined;
 
@@ -389,8 +401,8 @@ export class ZoneManager {
       }
     }
 
-    // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报)
-    if (leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger) {
+    // 8.7.4.a.2 离开战场触发事件 (携带离场前在战场时的快照情报；8.13.4.a.2 搭档与下方牌不视为战场角色，不发射离场事件)
+    if (leavingBattlefieldOrTopLevel && !options?.skipLeftFieldTrigger && !wasPartner && !wasUnderneath) {
       this.onTriggerEventCallback?.({
         type: 'CARD_LEFT_FIELD',
         playerId: card.controllerPlayerId,

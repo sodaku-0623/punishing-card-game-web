@@ -40,6 +40,7 @@ const VALID_CHOOSE_ZONES = new Set([
   'PROCESSING',
   'HOST_UNDERNEATH',
   'SELF_UNDERNEATH',
+  'SELF_ATTACHED_EQUIP',
   'OPPONENT_HAND_BLIND',
 ]);
 const VALID_MULTI_CHOOSE_ZONES = new Set([
@@ -52,6 +53,7 @@ const VALID_MULTI_CHOOSE_ZONES = new Set([
   'PROCESSING',
   'HOST_UNDERNEATH',
   'SELF_UNDERNEATH',
+  'SELF_ATTACHED_EQUIP',
 ]);
 const VALID_USABLE_ZONES = new Set(['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_ORB', 'COST', 'UNDERNEATH']);
 const VALID_CUSTOM_HANDLERS = new Set([
@@ -470,6 +472,7 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       assert(VALID_SIDES.has(cond.side), `${path}.side 非法`);
       return;
     case 'OPEN_COST_COMPARE_OPPONENT':
+    case 'COST_LIMIT_COMPARE_OPPONENT':
     case 'FRIENDLY_ROLE_COUNT_COMPARE_OPPONENT':
       assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法: ${String(cond.op)}`);
       return;
@@ -797,6 +800,9 @@ function validateSteps(
         }
         if (step.distinctAttributes !== undefined) {
           assert(typeof step.distinctAttributes === 'boolean', `${sp}.distinctAttributes 必须是布尔值`);
+        }
+        if (step.revealPickedToProcessing !== undefined) {
+          assert(typeof step.revealPickedToProcessing === 'boolean', `${sp}.revealPickedToProcessing 必须是布尔值`);
         }
         if (step.dynamicMin !== undefined) validateNumberExpr(step.dynamicMin, `${sp}.dynamicMin`, vars);
         if (step.dynamicMax !== undefined) validateNumberExpr(step.dynamicMax, `${sp}.dynamicMax`, vars);
@@ -1458,6 +1464,9 @@ function validateStaticEffect(
     assertNonNegativeInt(eff.maxCurrentBaseDP, `${path}.maxCurrentBaseDP`);
   }
   validateNumberExpr(eff.charge, `${path}.charge`);
+  if (eff.chargeIsAbility !== undefined) {
+    assert(typeof eff.chargeIsAbility === 'boolean', `${path}.chargeIsAbility 必须是布尔值`);
+  }
   validateNumberExpr(eff.setCharge, `${path}.setCharge`);
   validateNumberExpr(eff.costDelta, `${path}.costDelta`);
   validateNumberExpr(eff.setCost, `${path}.setCost`);

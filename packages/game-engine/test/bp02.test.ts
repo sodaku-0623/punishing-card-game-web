@@ -901,6 +901,18 @@ describe('BP02 曲·启明 & 万世铭体系', () => {
     // 翻 4 选最多 2 张入手
     const revCh = engine.getState().currentPendingChoice!;
     pickChoice(engine, 'p1', [revCh.options[0]!.id]);
+    // 剩余 3 张牌由操作玩家自选置入牌组底顺序 (chooseOrder: true)
+    const orderCh = engine.getState().currentPendingChoice!;
+    expect(orderCh.effectType).toBe('DSL_ORDER_MOVE_BP02-048');
+    expect(orderCh.options).toHaveLength(3);
+    const orderedBottom = orderCh.options.map((o) => o.id).reverse();
+    pickChoice(engine, 'p1', orderedBottom);
+    expect(
+      engine.zoneMgr
+        .getCardsInZone('p1', 'DECK')
+        .slice(-3)
+        .map((c) => c.instanceId)
+    ).toEqual(orderedBottom);
 
     expect(wsmCost.zone).toBe('GRAVEYARD');
     expect(wsmHand.zone).toBe('GRAVEYARD');
@@ -1110,7 +1122,7 @@ describe('BP02 三头犬小队体系', () => {
     expect(laterStats.dp).toBe(0);
   });
 
-  it('BP02-060：我方明费上限不大于对方时，手牌与战场的该牌费用 -1', () => {
+  it('BP02-060：我方费用上限不大于对方时，手牌与战场的该牌费用 -1', () => {
     const engine = createEngine(
       makeDeck('ST03', ['BP02-060', 'BP02-064']),
       makeDeck('ST01')
@@ -1194,11 +1206,12 @@ describe('BP02 万事·明晰梦体系', () => {
     expect(cardState(engine, p2Role.instanceId).isFrozen).toBeUndefined();
 
     const elimRes = engine.dispatchAction({
-      type: 'ELIMINATE_ORBS',
+      type: 'ELIMINATE_3_ORBS',
       playerId: 'p2',
       orbCardInstanceIds: p2Orbs.map((o) => o.instanceId),
     });
     expect(elimRes.success).toBe(false);
+    expect(elimRes.error).toContain('不能被消除');
 
     // 验证 P1 横置的 BP02-067 使 P2 在横置的 p2Role (<万事>) 上升变 BP02-067 (原升变代价 3 费) 额外支付 1 费 = 4 费 (Q&A·4)
     expect(engine.calculateCardCost('p2', p2W067.instanceId, true, p2Role.instanceId).costToPay).toBe(4);

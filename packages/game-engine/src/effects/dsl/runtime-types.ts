@@ -69,6 +69,16 @@ export type DslPendingAction =
       distinctAttributes?: boolean;
       maxTotalCost?: number;
       requireEmptySlotCount?: boolean;
+      revealPickedToProcessing?: boolean;
+      revealPickedTargetPlayerId?: string;
+    }
+  | {
+      kind: 'ASCEND_FROM_VAR_WITH_TAX';
+      cardId: string;
+      targetId: string;
+      extraId?: string;
+      tax: number;
+      shuffleDeckAfter: boolean;
     }
   | { kind: 'REORDER_ZONE'; zone: 'SIGNAL_ORB' }
   | {

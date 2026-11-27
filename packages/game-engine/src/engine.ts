@@ -727,27 +727,9 @@ export class GameEngine {
         : [];
 
     // BP02-067 万事·明晰梦【永】：若横置状态在对方战场，对方在横置状态角色上方升变须额外支付【1费】(Q&A·4 多张叠加、与对象数无关)
-    if (
-      isAscensionPlay &&
-      targetAscensionIds.some((id) => {
-        const targetAsc = this.state.cards[id];
-        return Boolean(targetAsc && !targetAsc.isReady);
-      })
-    ) {
-      const oppId = this.getOpponentId(playerId);
-      const tappedWanshiCount = this.fieldMgr.getSlots(oppId).filter((s) => {
-        const r = s.roleCardId ? this.state.cards[s.roleCardId] : undefined;
-        return Boolean(
-          r &&
-            r.cardNumber === 'BP02-067' &&
-            !r.isReady &&
-            !this.continuousEffects.hasLostInherentAbilities(r.instanceId)
-        );
-      }).length;
-      if (tappedWanshiCount > 0) {
-        baseCost += tappedWanshiCount;
-      }
-    }
+    const wanshiExtraCost = isAscensionPlay
+      ? this.fieldMgr.getTappedWanshiAscensionTax(playerId, targetAscensionIds)
+      : 0;
 
     let discount = 0;
     const appliedModifiers: CostModifier[] = [];
@@ -800,7 +782,7 @@ export class GameEngine {
       }
       discount += fieldAdj.discount;
 
-      const costToPay = Math.max(0, effectiveBase - discount);
+      const costToPay = Math.max(0, effectiveBase - discount) + wanshiExtraCost;
       return { costToPay, appliedModifiers };
   }
 
@@ -1586,8 +1568,7 @@ export class GameEngine {
         const orbZone = this.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB').filter((c) => {
           if (!condition.cardName) return true;
           if (!c.isFaceUp) return false;
-          const def = this.cardDb.getCard(c.cardNumber);
-          return def?.name.replace(/\s+/g, '') === condition.cardName.replace(/\s+/g, '');
+          return this.continuousEffects.hasCardName(c.instanceId, condition.cardName);
         });
         return orbZone.length >= condition.value
           ? undefined

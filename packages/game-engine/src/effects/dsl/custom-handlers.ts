@@ -707,9 +707,12 @@ export function resolveCustomChoice(
       for (const id of selected) {
         const c = rt.ctx.state.cards[id];
         if (!c) continue;
-        if (c.zone === 'COST') fromCostCount++;
-        else if (c.zone === 'HAND') fromHandCount++;
-        rt.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        const prevZone = c.zone;
+        const moved = rt.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+        if (moved && rt.ctx.state.cards[id]?.zone === 'GRAVEYARD') {
+          if (prevZone === 'COST') fromCostCount++;
+          else if (prevZone === 'HAND') fromHandCount++;
+        }
       }
       if (fromCostCount > 0) {
         rt.ctx.zoneMgr.syncCostStats(playerId);
@@ -721,6 +724,7 @@ export function resolveCustomChoice(
             untilTurn: turn + 1,
             source: cardNumber,
             sourceCardInstanceId: sourceId,
+            appliedByPlayerId: playerId,
           });
         }
       }
@@ -742,6 +746,8 @@ export function resolveCustomChoice(
             op: 'MOVE_CARDS',
             target: { kind: 'REST_OF_VAR', allVar: '__bp02048_rev', excludeVar: '__bp02048_keep' },
             toZone: 'DECK_BOTTOM',
+            chooseOrder: true,
+            orderPrompt: '【曲·启明】请按从牌组底上方到最底部的顺序依次点选剩余公开牌：',
           }
         );
       }
