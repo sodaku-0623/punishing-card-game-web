@@ -56,7 +56,8 @@ export interface CustomHandlerRuntime {
     playerId: string,
     cost: AbilityCost | undefined,
     steps: EffectStep[],
-    vars: Record<string, string[]>
+    vars: Record<string, string[]>,
+    afterSteps?: EffectStep[]
   ) => void;
   bringToField: (
     playerId: string,
@@ -65,6 +66,23 @@ export interface CustomHandlerRuntime {
     enterTapped?: boolean,
     enterAbilitiesLost?: boolean
   ) => boolean;
+}
+
+function moveCardVerified(
+  rt: CustomHandlerRuntime,
+  cardId: string,
+  targetZone: ZoneId,
+  options?: Parameters<CustomHandlerRuntime['ctx']['zoneMgr']['moveCard']>[2]
+): boolean {
+  const moved = rt.ctx.zoneMgr.moveCard(cardId, targetZone, options);
+  return moved && rt.ctx.state.cards[cardId]?.zone === targetZone;
+}
+
+function isGameFinished(rt: CustomHandlerRuntime): boolean {
+  return (
+    rt.ctx.state.status === 'FINISHED' ||
+    Object.values(rt.ctx.state.players).some((p) => (p.erosionCount ?? 0) >= 7)
+  );
 }
 
 const LILITH_COST_DECL_CARDS: Readonly<Record<string, number[]>> = {
@@ -235,6 +253,21 @@ export function startCustomHandler(
       return true;
     }
 
+    case 'BP03_056_RETURN_GY_TO_BOTTOM': {
+      const gyId = vars.__bp03056_picked_gy?.[0];
+      const expectedTs = vars.__bp03056_picked_gy_ts?.[0];
+      const card = gyId ? rt.ctx.state.cards[gyId] : undefined;
+      if (
+        card &&
+        card.zone === 'GRAVEYARD' &&
+        expectedTs !== undefined &&
+        String(card.enteredZoneTimestamp ?? 0) === expectedTs
+      ) {
+        rt.ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
+      }
+      return false;
+    }
+
     case 'BP03_057_LILITH_CHALLENGE': {
       const handLiliths = rt.zone(playerId, 'HAND').filter((c) => rt.hasTrait(c, '莉莉丝'));
       if (handLiliths.length === 0) return false;
@@ -257,10 +290,15 @@ export function startCustomHandler(
 
     case 'BP03_058_ASCENDING_COST_5': {
       const revealed: string[] = [];
+      // 3.3.3.c 仅在开始公开前牌组为空时执行 1 次牌组更新，循环内不强刷
+      if (rt.zone(playerId, 'DECK').length === 0) {
+        rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId);
+      }
+      if (rt.ctx.state.status === 'FINISHED') return false;
       for (let i = 0; i < 5; i++) {
-        if (!rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) break;
-        const top = rt.zone(playerId, 'DECK')[0]!;
-        rt.ctx.zoneMgr.moveCard(top.instanceId, 'PROCESSING', { isFaceUp: true });
+        const top = rt.zone(playerId, 'DECK')[0];
+        if (!top) break;
+        if (!moveCardVerified(rt, top.instanceId, 'PROCESSING', { isFaceUp: true })) break;
         revealed.push(top.instanceId);
       }
       vars.bp03_058_rev = revealed;
@@ -321,15 +359,21 @@ export function startCustomHandler(
       let selfTopId: string | undefined;
       let oppTopId: string | undefined;
       if (rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) {
-        const c = rt.zone(playerId, 'DECK')[0]!;
-        rt.ctx.zoneMgr.moveCard(c.instanceId, 'PROCESSING', { isFaceUp: true });
-        selfTopId = c.instanceId;
+        if (isGameFinished(rt)) return false;
+        const c = rt.zone(playerId, 'DECK')[0];
+        if (c && moveCardVerified(rt, c.instanceId, 'PROCESSING', { isFaceUp: true })) {
+          selfTopId = c.instanceId;
+        }
       }
+      if (isGameFinished(rt)) return false;
       if (rt.ctx.zoneMgr.refreshDeckIfEmpty(oppId)) {
-        const c = rt.zone(oppId, 'DECK')[0]!;
-        rt.ctx.zoneMgr.moveCard(c.instanceId, 'PROCESSING', { isFaceUp: true });
-        oppTopId = c.instanceId;
+        if (isGameFinished(rt)) return false;
+        const c = rt.zone(oppId, 'DECK')[0];
+        if (c && moveCardVerified(rt, c.instanceId, 'PROCESSING', { isFaceUp: true })) {
+          oppTopId = c.instanceId;
+        }
       }
+      if (isGameFinished(rt)) return false;
       vars.bp03_063_self = selfTopId ? [selfTopId] : [];
       vars.bp03_063_opp = oppTopId ? [oppTopId] : [];
       if (selfTopId && promptNextLilithCostDeclaration(rt, [selfTopId], vars, baseFrame, 'RESOLVE_CLASH')) {
@@ -340,6 +384,14 @@ export function startCustomHandler(
 
     case 'BP03_064_SIMULTANEOUS_REVEAL_ORB': {
       const oppId = rt.resolveSide(playerId, 'OPPONENT');
+      if (rt.zone(playerId, 'DECK').length === 0) {
+        rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId);
+        if (isGameFinished(rt)) return false;
+      }
+      if (rt.zone(oppId, 'DECK').length === 0) {
+        rt.ctx.zoneMgr.refreshDeckIfEmpty(oppId);
+        if (isGameFinished(rt)) return false;
+      }
       const selfRev: string[] = [];
       const oppRev: string[] = [];
       let selfHit = false;
@@ -355,25 +407,54 @@ export function startCustomHandler(
         }
         const sTop = selfDeck[0]!;
         const oTop = oppDeck[0]!;
-        rt.ctx.zoneMgr.moveCard(sTop.instanceId, 'PROCESSING', { isFaceUp: true });
-        rt.ctx.zoneMgr.moveCard(oTop.instanceId, 'PROCESSING', { isFaceUp: true });
-        selfRev.push(sTop.instanceId);
-        oppRev.push(oTop.instanceId);
-        if (rt.def(sTop)?.signalOrb) selfHit = true;
-        if (rt.def(oTop)?.signalOrb) oppHit = true;
+        const sMoved = rt.ctx.zoneMgr.moveCard(sTop.instanceId, 'PROCESSING', { isFaceUp: true });
+        const oMoved = rt.ctx.zoneMgr.moveCard(oTop.instanceId, 'PROCESSING', { isFaceUp: true });
+        if (sMoved && sTop.zone === 'PROCESSING') {
+          selfRev.push(sTop.instanceId);
+          if (rt.def(sTop)?.signalOrb) selfHit = true;
+        }
+        if (oMoved && oTop.zone === 'PROCESSING') {
+          oppRev.push(oTop.instanceId);
+          if (rt.def(oTop)?.signalOrb) oppHit = true;
+        }
+        // 防御置换阻止或卡牌未离开牌组导致死循环
+        if (!sMoved || !oMoved || sTop.zone === 'DECK' || oTop.zone === 'DECK') {
+          interrupted = true;
+          break;
+        }
         if (selfHit || oppHit) break;
       }
 
       // 将公开到处理区的牌放回各自牌组并洗切
-      for (const id of selfRev) rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-      for (const id of oppRev) rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-      if (selfRev.length > 0) rt.ctx.zoneMgr.shuffleDeck(playerId);
-      if (oppRev.length > 0) rt.ctx.zoneMgr.shuffleDeck(oppId);
+      let selfMovedBack = false;
+      for (const id of selfRev) {
+        if (rt.ctx.state.cards[id]?.zone === 'PROCESSING') {
+          if (moveCardVerified(rt, id, 'DECK', { isFaceUp: false })) {
+            selfMovedBack = true;
+          }
+        }
+      }
+      let oppMovedBack = false;
+      for (const id of oppRev) {
+        if (rt.ctx.state.cards[id]?.zone === 'PROCESSING') {
+          if (moveCardVerified(rt, id, 'DECK', { isFaceUp: false })) {
+            oppMovedBack = true;
+          }
+        }
+      }
+      if (selfMovedBack) rt.ctx.zoneMgr.shuffleDeck(playerId);
+      if (oppMovedBack) rt.ctx.zoneMgr.shuffleDeck(oppId);
 
       if (interrupted) return false;
 
-      if (selfHit) rt.ctx.zoneMgr.drawCards(playerId, 2);
-      if (oppHit) rt.ctx.zoneMgr.drawCards(oppId, 2);
+      if (selfHit) {
+        rt.ctx.zoneMgr.drawCards(playerId, 2);
+        if (isGameFinished(rt)) return false;
+      }
+      if (oppHit) {
+        rt.ctx.zoneMgr.drawCards(oppId, 2);
+        if (isGameFinished(rt)) return false;
+      }
 
       const needSelfDiscard = selfHit && rt.zone(playerId, 'HAND').length > 0;
       const needOppDiscard = oppHit && rt.zone(oppId, 'HAND').length > 0;
@@ -433,7 +514,7 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
         id: rt.choiceId('bp03-058-pick5'),
         playerId,
         choiceType: 'SELECT_CARDS',
-        prompt: '【BP03-058 莉莉丝·谬影】可从公开的牌与手牌中选择合计 5 张费用严格递增的卡牌放置到墓地（不选则全部洗回）：',
+        prompt: '【BP03-058 莉莉丝·谬影】可从公开的牌与手牌中选择合计 5 张费用依次+1递增的卡牌放置到墓地（不选则全部洗回）：',
         options: pool.map((c) => {
           const effCost = costMap.get(c.instanceId) ?? rt.def(c)?.cost ?? 0;
           return {
@@ -457,7 +538,13 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
     if (!revCard) return false;
     const revealedCost = getEffectiveRevealedCost(rt, revCard, vars);
     const oppId = rt.resolveSide(playerId, 'OPPONENT');
-    const higherCards = rt.zone(oppId, 'HAND').filter((c) => (rt.def(c)?.cost ?? 0) > revealedCost);
+    const higherCards = rt
+      .zone(oppId, 'HAND')
+      .filter(
+        (c) =>
+          (rt.ctx.continuousEffects?.getEffectiveCardCost(c.instanceId) ?? rt.def(c)?.cost ?? 0) >
+          revealedCost
+      );
     if (higherCards.length === 0) {
       const selfCard = rt.ctx.state.cards[sourceId];
       if (selfCard && selfCard.zone === 'BATTLEFIELD') {
@@ -495,7 +582,9 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
     if (stage === 'ASK_CONTINUE') {
       const deckRev = vars.bp03_059_deck_rev ?? [];
       const currentSum = sumLilithRevealedCosts(rt, [...(vars.bp03_059_hand_rev ?? []), ...deckRev], vars);
-      if (deckRev.length < 5 && rt.zone(playerId, 'DECK').length > 0) {
+      const canRevealMore =
+        rt.zone(playerId, 'DECK').length > 0 || rt.zone(playerId, 'GRAVEYARD').length > 0;
+      if (deckRev.length < 5 && canRevealMore) {
         rt.enqueueCustomChoice(
           {
             id: rt.choiceId('bp03-059-step'),
@@ -525,7 +614,7 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
     if (!revId || !declared) return false;
     const revCard = rt.ctx.state.cards[revId];
     const cost = revCard ? getEffectiveRevealedCost(rt, revCard, vars) : 0;
-    if (revCard) {
+    if (revCard && revCard.zone === 'PROCESSING') {
       rt.ctx.zoneMgr.moveCardToTopOfDeck(revId);
     }
     const actual = cost % 2 === 1 ? 'odd' : 'even';
@@ -539,7 +628,7 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
         choiceType: 'SELECT_CARDS',
         prompt: '【BP03-061 莉莉丝·谬影】费用奇偶与对方宣言不同！请选择我方战场 1 张<莉莉丝>角色，回合结束时将其竖直：',
         options: lilithRoles.map((r) => rt.effects.createRoleChoiceOption(r)),
-        effectType: 'DSL_CUSTOM_BP061_PICK_UNTAP',
+        effectType: 'DSL_CUSTOM_BP03_061_PICK_UNTAP',
         sourceCardInstanceId: sourceId,
         minSelections: 1,
         maxSelections: 1,
@@ -557,8 +646,8 @@ function continueCustomStage(rt: CustomHandlerRuntime, frame: CustomHandlerFrame
     const oppCard = oppTopId ? rt.ctx.state.cards[oppTopId] : undefined;
     const selfCost = selfCard ? getEffectiveRevealedCost(rt, selfCard, vars) : -1;
     const oppCost = oppCard ? (rt.def(oppCard)?.cost ?? 0) : -1;
-    if (selfId) rt.ctx.zoneMgr.moveCardToTopOfDeck(selfId);
-    if (oppTopId) rt.ctx.zoneMgr.moveCardToTopOfDeck(oppTopId);
+    if (selfId && selfCard?.zone === 'PROCESSING') rt.ctx.zoneMgr.moveCardToTopOfDeck(selfId);
+    if (oppTopId && oppCard?.zone === 'PROCESSING') rt.ctx.zoneMgr.moveCardToTopOfDeck(oppTopId);
     if (selfCost > oppCost && selfCost >= 0) {
       rt.ctx.zoneMgr.drawCards(playerId, 1);
     } else if (oppCost > selfCost && oppCost >= 0) {
@@ -590,8 +679,9 @@ function finishBp03058ShuffleRemaining(rt: CustomHandlerRuntime, frame: CustomHa
   for (const id of revIds) {
     const c = rt.ctx.state.cards[id];
     if (c && c.zone === 'PROCESSING') {
-      rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-      movedAny = true;
+      if (moveCardVerified(rt, id, 'DECK', { isFaceUp: false })) {
+        movedAny = true;
+      }
     }
   }
   if (movedAny) {
@@ -645,8 +735,9 @@ function finishBp03059Outcome(rt: CustomHandlerRuntime, frame: CustomHandlerFram
     for (const id of allRev) {
       const c = rt.ctx.state.cards[id];
       if (c && (c.zone === 'PROCESSING' || c.zone === 'HAND')) {
-        rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-        movedAny = true;
+        if (moveCardVerified(rt, id, 'DECK', { isFaceUp: false })) {
+          movedAny = true;
+        }
       }
     }
     if (movedAny) {
@@ -763,11 +854,11 @@ export function resolveCustomChoice(
         const entryList = getCardEntryList(rt, gyCard.cardNumber);
         if (entryList.length === 0) return { success: false, error: '该卡牌没有可复制的【出】能力' };
         vars.__bp03056_picked_gy = [gyId!];
-        const moveGyToBottomStep: EffectStep = {
-          op: 'MOVE_CARDS',
-          target: { kind: 'VAR', varName: '__bp03056_picked_gy' },
-          toZone: 'DECK_BOTTOM',
-        };
+        vars.__bp03056_picked_gy_ts = [String(gyCard.enteredZoneTimestamp ?? 0)];
+        const afterSteps: EffectStep[] = [
+          { op: 'CUSTOM_HANDLER', handlerId: 'BP03_056_RETURN_GY_TO_BOTTOM' },
+          ...remainingSteps,
+        ];
         if (entryList.length === 1) {
           const e = entryList[0]!;
           rt.executeEntryOnSource(
@@ -775,8 +866,9 @@ export function resolveCustomChoice(
             sourceId,
             playerId,
             e.cost,
-            [...e.steps, moveGyToBottomStep, ...remainingSteps],
-            vars
+            e.steps,
+            vars,
+            afterSteps
           );
           return { success: true };
         }
@@ -806,18 +898,18 @@ export function resolveCustomChoice(
         const entryList = getCardEntryList(rt, gyCardNumber);
         const picked = Number.isInteger(idx) ? entryList[idx] : undefined;
         if (!picked) return { success: false, error: '所选【出】能力索引无效' };
-        const moveGyToBottomStep: EffectStep = {
-          op: 'MOVE_CARDS',
-          target: { kind: 'VAR', varName: '__bp03056_picked_gy' },
-          toZone: 'DECK_BOTTOM',
-        };
+        const afterSteps: EffectStep[] = [
+          { op: 'CUSTOM_HANDLER', handlerId: 'BP03_056_RETURN_GY_TO_BOTTOM' },
+          ...remainingSteps,
+        ];
         rt.executeEntryOnSource(
           gyCardNumber,
           sourceId,
           playerId,
           picked.cost,
-          [...picked.steps, moveGyToBottomStep, ...remainingSteps],
-          vars
+          picked.steps,
+          vars,
+          afterSteps
         );
         return { success: true };
       }
@@ -832,7 +924,7 @@ export function resolveCustomChoice(
           return { success: true };
         }
         if (selected.length !== 5) {
-          return { success: false, error: '若选择放置到墓地，必须选择恰好 5 张费用递增的卡牌 (或 0 张跳过)' };
+          return { success: false, error: '若选择放置到墓地，必须选择恰好 5 张费用依次+1递增的卡牌 (或 0 张跳过)' };
         }
         const costs = selected
           .map((id) => {
@@ -841,29 +933,35 @@ export function resolveCustomChoice(
           })
           .sort((a, b) => a - b);
         for (let i = 1; i < costs.length; i++) {
-          if (costs[i]! <= costs[i - 1]!) {
+          if (costs[i]! !== costs[i - 1]! + 1) {
             return {
               success: false,
-              error: `所选 5 张卡牌费用 (${costs.join(', ')}) 不是严格递增`,
+              error: `所选 5 张卡牌费用 (${costs.join(', ')}) 不是依次+1递增`,
             };
           }
         }
+        let movedToGyCount = 0;
         for (const id of selected) {
           const c = rt.ctx.state.cards[id];
           if (!c) continue;
-          rt.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', {
-            isFaceUp: true,
-            countAsDeckToGy: c.zone === 'PROCESSING',
-          });
+          if (
+            moveCardVerified(rt, id, 'GRAVEYARD', {
+              isFaceUp: true,
+              countAsDeckToGy: c.zone === 'PROCESSING',
+            })
+          ) {
+            movedToGyCount++;
+          }
         }
         const gyCandidates = rt.zone(playerId, 'GRAVEYARD').filter((c) => {
           const d = rt.def(c);
           const isName =
             rt.ctx.continuousEffects?.hasCardName(c.instanceId, '莉莉丝·谬影') ??
             d?.name === '莉莉丝·谬影';
-          return isName && d?.cardType === 'ROLE' && d.cost <= 4;
+          const effectiveCost = rt.ctx.continuousEffects?.getEffectiveCardCost(c.instanceId) ?? d?.cost ?? 99;
+          return isName && d?.cardType === 'ROLE' && effectiveCost <= 4;
         });
-        if (gyCandidates.length > 0 && rt.hasEmptySlot(playerId)) {
+        if (movedToGyCount === 5 && gyCandidates.length > 0 && rt.hasEmptySlot(playerId)) {
           rt.enqueueCustomChoice(
             {
               id: rt.choiceId('bp03-058-deploy'),
@@ -904,8 +1002,9 @@ export function resolveCustomChoice(
         for (const id of selected) {
           const c = rt.ctx.state.cards[id];
           if (c && c.zone === 'HAND') {
-            rt.ctx.zoneMgr.moveCard(id, 'PROCESSING', { isFaceUp: true });
-            handRevealed.push(id);
+            if (moveCardVerified(rt, id, 'PROCESSING', { isFaceUp: true })) {
+              handRevealed.push(id);
+            }
           }
         }
         vars.bp03_059_hand_rev = handRevealed;
@@ -925,20 +1024,25 @@ export function resolveCustomChoice(
           if (!paused) rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
           return { success: true };
         }
-        if (rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId) && rt.zone(playerId, 'DECK').length > 0) {
+        const refreshed = rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId);
+        if (isGameFinished(rt)) {
+          return { success: true };
+        }
+        if (refreshed && rt.zone(playerId, 'DECK').length > 0) {
           const top = rt.zone(playerId, 'DECK')[0]!;
-          rt.ctx.zoneMgr.moveCard(top.instanceId, 'PROCESSING', { isFaceUp: true });
-          vars.bp03_059_deck_rev = [...(vars.bp03_059_deck_rev ?? []), top.instanceId];
-          if (
-            promptNextLilithCostDeclaration(
-              rt,
-              [top.instanceId],
-              vars,
-              { cardNumber, sourceCardInstanceId: sourceId, playerId, handlerId, remainingSteps },
-              'ASK_CONTINUE'
-            )
-          ) {
-            return { success: true };
+          if (moveCardVerified(rt, top.instanceId, 'PROCESSING', { isFaceUp: true })) {
+            vars.bp03_059_deck_rev = [...(vars.bp03_059_deck_rev ?? []), top.instanceId];
+            if (
+              promptNextLilithCostDeclaration(
+                rt,
+                [top.instanceId],
+                vars,
+                { cardNumber, sourceCardInstanceId: sourceId, playerId, handlerId, remainingSteps },
+                'ASK_CONTINUE'
+              )
+            ) {
+              return { success: true };
+            }
           }
         }
         const paused = continueCustomStage(rt, { ...frame, vars, stage: 'ASK_CONTINUE' });
@@ -965,8 +1069,9 @@ export function resolveCustomChoice(
           for (const id of allRev) {
             const c = rt.ctx.state.cards[id];
             if (c && (c.zone === 'PROCESSING' || c.zone === 'HAND')) {
-              rt.ctx.zoneMgr.moveCard(id, 'DECK', { isFaceUp: false });
-              movedAny = true;
+              if (moveCardVerified(rt, id, 'DECK', { isFaceUp: false })) {
+                movedAny = true;
+              }
             }
           }
           if (movedAny) {
@@ -982,12 +1087,18 @@ export function resolveCustomChoice(
     case 'BP03_061_GUESS_PARITY': {
       if (stage === 'OPP_GUESS') {
         vars.bp03_061_declared = [selected[0]!];
-        if (!rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId)) {
+        const refreshed = rt.ctx.zoneMgr.refreshDeckIfEmpty(playerId);
+        if (!refreshed || rt.ctx.state.status === 'FINISHED') {
+          if (rt.ctx.state.status !== 'FINISHED') {
+            rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
+          }
+          return { success: true };
+        }
+        const top = rt.zone(playerId, 'DECK')[0];
+        if (!top || !moveCardVerified(rt, top.instanceId, 'PROCESSING', { isFaceUp: true })) {
           rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
           return { success: true };
         }
-        const top = rt.zone(playerId, 'DECK')[0]!;
-        rt.ctx.zoneMgr.moveCard(top.instanceId, 'PROCESSING', { isFaceUp: true });
         vars.bp03_061_rev = [top.instanceId];
         if (
           promptNextLilithCostDeclaration(
@@ -1030,7 +1141,7 @@ export function resolveCustomChoice(
     case 'BP03_064_SIMULTANEOUS_REVEAL_ORB': {
       if (stage === 'SELF_DISCARD') {
         if (selected[0]) {
-          rt.ctx.zoneMgr.moveCard(selected[0], 'GRAVEYARD', { isFaceUp: true });
+          moveCardVerified(rt, selected[0], 'GRAVEYARD', { isFaceUp: true });
         }
         const oppId = rt.resolveSide(playerId, 'OPPONENT');
         if (extra?.oppPending && rt.zone(oppId, 'HAND').length > 0) {
@@ -1050,7 +1161,7 @@ export function resolveCustomChoice(
 
       if (stage === 'OPP_DISCARD') {
         if (selected[0]) {
-          rt.ctx.zoneMgr.moveCard(selected[0], 'GRAVEYARD', { isFaceUp: true });
+          moveCardVerified(rt, selected[0], 'GRAVEYARD', { isFaceUp: true });
         }
         rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
         return { success: true };
@@ -1061,12 +1172,11 @@ export function resolveCustomChoice(
     case 'BP03_057_LILITH_CHALLENGE': {
       if (stage === 'PICK_SELF') {
         const pickedId = selected[0];
-        if (!pickedId) {
+        if (!pickedId || !moveCardVerified(rt, pickedId, 'GRAVEYARD', { isFaceUp: true })) {
           rt.resumeSteps(cardNumber, sourceId, playerId, vars, remainingSteps);
           return { success: true };
         }
         vars.bp03_057_rev = [pickedId];
-        rt.ctx.zoneMgr.moveCard(pickedId, 'GRAVEYARD', { isFaceUp: true });
         if (
           promptNextLilithCostDeclaration(
             rt,
@@ -1085,9 +1195,11 @@ export function resolveCustomChoice(
 
       if (stage === 'OPP_DISCARD') {
         const pickedId = selected[0];
-        if (pickedId) {
-          rt.ctx.zoneMgr.moveCard(pickedId, 'GRAVEYARD', { isFaceUp: true });
-        } else {
+        const oppDiscarded = pickedId
+          ? moveCardVerified(rt, pickedId, 'GRAVEYARD', { isFaceUp: true })
+          : false;
+        // 若对方没有丢弃或丢弃被置换阻止未能进墓，仍赋予我方【贯通】
+        if (!oppDiscarded) {
           const selfCard = rt.ctx.state.cards[sourceId];
           if (selfCard && selfCard.zone === 'BATTLEFIELD') {
             addCardModifier(rt.ctx.state, selfCard, {

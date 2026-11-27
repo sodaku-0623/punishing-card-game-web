@@ -99,6 +99,52 @@ export class CardEffectEngine {
       : this.ctx.state.activePlayerId;
   }
 
+  private hasCardName(card: CardInstance, expectedName: string): boolean {
+    return this.ctx.continuousEffects
+      ? this.ctx.continuousEffects.hasCardName(card.instanceId, expectedName)
+      : this.getCardDef(card)?.name === expectedName;
+  }
+
+  private getEffectiveCardCost(card: CardInstance): number {
+    return (
+      this.ctx.continuousEffects?.getEffectiveCardCost(card.instanceId) ??
+      this.getCardDef(card)?.cost ??
+      99
+    );
+  }
+
+  private applyBp03028RoleEffect(
+    playerId: string,
+    target: CardInstance,
+    mode: 'opt_quick' | 'opt_untap',
+    sourceCardInstanceId?: string
+  ): void {
+    if (mode === 'opt_untap') {
+      this.ctx.triggerMgr?.registerDelayedTrigger({
+        eventType: 'END_PHASE_TRIGGERS',
+        triggerTurn: this.ctx.state.turnNumber,
+        sourceCardInstanceId: target.instanceId,
+        sourceCardNumber: target.cardNumber,
+        controllerPlayerId: target.controllerPlayerId,
+        abilityId: 'DELAYED_END_OF_TURN_UNTAP',
+        label: `【${this.getCardDef(target)?.name ?? target.cardNumber}】该回合结束时将其竖直`,
+        once: true,
+        payload: {
+          expectedZone: 'BATTLEFIELD',
+          expectedEnteredTimestamp: target.enteredZoneTimestamp,
+        },
+      });
+      return;
+    }
+    addCardModifier(this.ctx.state, target, {
+      keywords: ['速攻'],
+      untilTurn: this.ctx.state.turnNumber,
+      source: 'BP03-028',
+      sourceCardInstanceId,
+      appliedByPlayerId: playerId,
+    });
+  }
+
   /**
    * 8.10 统一角色效果/PP归零破坏入口：经由置换引擎拦截，被置换时返回 false (8.10.1.a 视为未破坏)
    */
@@ -616,8 +662,7 @@ export class CardEffectEngine {
         const player = this.ctx.state.players[playerId];
         const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
         const targets = this.getFriendlyRoles(playerId).filter((r) => {
-          const d = this.getCardDef(r);
-          if (!d || d.name !== '里·超刻' || d.cost >= 9) return false;
+          if (!this.hasCardName(r, '里·超刻') || this.getEffectiveCardCost(r) >= 9) return false;
           const totalCost = 3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [r.instanceId]);
           return availCost >= totalCost;
         });
@@ -670,7 +715,12 @@ export class CardEffectEngine {
         for (const id of selectedIds) {
           this.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
         }
-        if (this.ctx.fieldMgr.playRoleCard(playerId, chargeCardId!, slotIdx)) {
+        // 8.6.4 若 3 张手牌均实际进入墓地才出场；3.1.4 附带入场时间戳防止同实例离场后再入场误触发
+        if (!selectedIds.every((id) => this.ctx.state.cards[id]?.zone === 'GRAVEYARD')) {
+          break;
+        }
+        const deploySlotIdx = this.ctx.fieldMgr.findFirstEmptySlot(playerId);
+        if (deploySlotIdx !== undefined && this.ctx.fieldMgr.playRoleCard(playerId, chargeCardId!, deploySlotIdx)) {
           this.ctx.triggerMgr?.registerDelayedTrigger({
             eventType: 'END_PHASE_TRIGGERS',
             triggerTurn: this.ctx.state.turnNumber,
@@ -680,48 +730,53 @@ export class CardEffectEngine {
             abilityId: 'DELAYED_END_OF_TURN_TO_DECK_BOTTOM',
             label: '【里·超刻】该回合结束时放置到牌组底',
             once: true,
+            payload: { expectedEnteredTimestamp: chargeCard.enteredZoneTimestamp },
           });
         }
         break;
       }
 
-      // 10.2.1.b BP03-028 【充能自】进墓地并消1黄球：攻击中的《里·超刻》获得【速攻】
+      // 10.2.1.b BP03-028 【充能自】进墓地并消1黄球：自选我方战场《里·超刻》获得【速攻】或回合结束竖直
       case 'BP03_028_CHARGE_AUTO': {
         const orbId = selectedIds[0];
         const chargeCardId = choice.sourceCardInstanceId;
         if (!orbId || !chargeCardId) break;
         const chargeCard = this.ctx.state.cards[chargeCardId];
-        if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
+        const orbCard = this.ctx.state.cards[orbId];
+        if (!chargeCard || chargeCard.zone !== 'PROCESSING' || !orbCard || orbCard.zone !== 'SIGNAL_ORB') break;
         const orbColors =
           this.ctx.continuousEffects?.getEffectiveOrbInfo(orbId).colors ??
           ((): string[] => {
-            const c = this.ctx.state.cards[orbId];
-            const d = c ? this.getCardDef(c) : undefined;
+            const d = this.getCardDef(orbCard);
             return d?.signalOrb ? [d.signalOrb] : [];
           })();
-        this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
-        this.ctx.zoneMgr.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
-        this.ctx.events.push({
-          type: 'ORBS_ELIMINATED',
-          playerId,
-          orbCardIds: [orbId],
-          cardDrawnCount: 0,
-        });
-        this.ctx.triggerMgr?.emit({
-          type: 'ORBS_ELIMINATED',
-          playerId,
-          orbCardIds: [orbId],
-          orbColors: orbColors.length > 0 ? orbColors : ['YELLOW'],
-        });
-        const targetId = choice.metadata?.attackerCardId as string | undefined;
-        const target =
-          (targetId ? this.ctx.state.cards[targetId] : undefined) ??
-          this.getFriendlyRoles(playerId).find((r) =>
-            this.ctx.continuousEffects
-              ? this.ctx.continuousEffects.hasCardName(r.instanceId, '里·超刻')
-              : this.getCardDef(r)?.name === '里·超刻'
-          );
-        if (target && target.zone === 'BATTLEFIELD') {
+        const movedCharge = this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
+        const movedOrb = this.ctx.zoneMgr.moveCard(orbId, 'GRAVEYARD', { isFaceUp: true });
+        if (movedOrb && this.ctx.state.cards[orbId]?.zone === 'GRAVEYARD') {
+          this.ctx.events.push({
+            type: 'ORBS_ELIMINATED',
+            playerId,
+            orbCardIds: [orbId],
+            cardDrawnCount: 0,
+          });
+          this.ctx.triggerMgr?.emit({
+            type: 'ORBS_ELIMINATED',
+            playerId,
+            orbCardIds: [orbId],
+            orbColors: orbColors.length > 0 ? orbColors : ['YELLOW'],
+          });
+        }
+        // 8.6.4 须两张牌均实际进入墓地再执行后续选择
+        if (
+          !movedCharge ||
+          this.ctx.state.cards[chargeCardId]?.zone !== 'GRAVEYARD' ||
+          !movedOrb ||
+          this.ctx.state.cards[orbId]?.zone !== 'GRAVEYARD'
+        ) {
+          break;
+        }
+        const leeRoles = this.getFriendlyRoles(playerId).filter((r) => this.hasCardName(r, '里·超刻'));
+        if (leeRoles.length > 0) {
           this.ctx.setPendingChoice({
             id: nextChoiceId(this.ctx.state, 'effect'),
             playerId,
@@ -733,7 +788,6 @@ export class CardEffectEngine {
             ],
             effectType: 'BP03_028_PICK_MODE',
             sourceCardInstanceId: chargeCardId,
-            metadata: { targetRoleId: target.instanceId },
             minSelections: 1,
             maxSelections: 1,
           });
@@ -742,33 +796,39 @@ export class CardEffectEngine {
       }
 
       case 'BP03_028_PICK_MODE': {
-        const targetId = choice.metadata?.targetRoleId as string | undefined;
-        const target = targetId ? this.ctx.state.cards[targetId] : undefined;
-        if (!target || target.zone !== 'BATTLEFIELD') break;
-        if (selectedIds[0] === 'opt_untap') {
-          this.ctx.triggerMgr?.registerDelayedTrigger({
-            eventType: 'END_PHASE_TRIGGERS',
-            triggerTurn: this.ctx.state.turnNumber,
-            sourceCardInstanceId: target.instanceId,
-            sourceCardNumber: target.cardNumber,
-            controllerPlayerId: target.controllerPlayerId,
-            abilityId: 'DELAYED_END_OF_TURN_UNTAP',
-            label: `【${this.getCardDef(target)?.name ?? target.cardNumber}】该回合结束时将其竖直`,
-            once: true,
-            payload: {
-              expectedZone: 'BATTLEFIELD',
-              expectedEnteredTimestamp: target.enteredZoneTimestamp,
-            },
-          });
+        const mode: 'opt_quick' | 'opt_untap' =
+          selectedIds[0] === 'opt_untap' ? 'opt_untap' : 'opt_quick';
+        const leeRoles = this.getFriendlyRoles(playerId).filter((r) => this.hasCardName(r, '里·超刻'));
+        if (leeRoles.length === 0) break;
+        if (leeRoles.length === 1) {
+          this.applyBp03028RoleEffect(playerId, leeRoles[0]!, mode, choice.sourceCardInstanceId);
         } else {
-          addCardModifier(this.ctx.state, target, {
-            keywords: ['速攻'],
-            untilTurn: this.ctx.state.turnNumber,
-            source: 'BP03-028',
+          this.ctx.setPendingChoice({
+            id: nextChoiceId(this.ctx.state, 'effect'),
+            playerId,
+            choiceType: 'SELECT_CARDS',
+            prompt:
+              mode === 'opt_untap'
+                ? '【里·超刻】充能自：请选择我方战场 1 张《里·超刻》，该回合结束时将其竖直：'
+                : '【里·超刻】充能自：请选择我方战场 1 张《里·超刻》，直到回合结束获得【速攻】：',
+            options: leeRoles.map((r) => this.createRoleChoiceOption(r)),
+            effectType: 'BP03_028_PICK_ROLE',
             sourceCardInstanceId: choice.sourceCardInstanceId,
-            appliedByPlayerId: playerId,
+            metadata: { mode },
+            minSelections: 1,
+            maxSelections: 1,
           });
         }
+        break;
+      }
+
+      case 'BP03_028_PICK_ROLE': {
+        const targetId = selectedIds[0];
+        const target = targetId ? this.ctx.state.cards[targetId] : undefined;
+        if (!target || target.zone !== 'BATTLEFIELD') break;
+        const mode: 'opt_quick' | 'opt_untap' =
+          choice.metadata?.mode === 'opt_untap' ? 'opt_untap' : 'opt_quick';
+        this.applyBp03028RoleEffect(playerId, target, mode, choice.sourceCardInstanceId);
         break;
       }
 
@@ -780,8 +840,12 @@ export class CardEffectEngine {
         const chargeCard = this.ctx.state.cards[chargeCardId];
         if (!chargeCard || chargeCard.zone !== 'PROCESSING') break;
         if (!this.ctx.payCost(playerId, 3)) break;
-        this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
-        if (this.ctx.state.cards[targetId]?.zone === 'BATTLEFIELD') {
+        const moved = this.ctx.zoneMgr.moveCard(chargeCardId, 'GRAVEYARD', { isFaceUp: true });
+        if (
+          moved &&
+          this.ctx.state.cards[chargeCardId]?.zone === 'GRAVEYARD' &&
+          this.ctx.state.cards[targetId]?.zone === 'BATTLEFIELD'
+        ) {
           this.ctx.zoneMgr.moveCardToBottomOfDeck(targetId);
         }
         break;
@@ -1113,12 +1177,11 @@ export class CardEffectEngine {
     if (cardNum === 'BP03-023') {
       if (chargeKind !== 'ATTACK' || !attackerCardId) return false;
       const attacker = this.ctx.state.cards[attackerCardId];
-      if (!attacker || this.getCardDef(attacker)?.name !== '里·超刻') return false;
+      if (!attacker || !this.hasCardName(attacker, '里·超刻')) return false;
       this.ctx.zoneMgr.syncCostStats(playerId);
       const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
       const eligibleTargets = this.getFriendlyRoles(playerId).filter((r) => {
-        const d = this.getCardDef(r);
-        if (!d || d.name !== '里·超刻' || d.cost >= 9) return false;
+        if (!this.hasCardName(r, '里·超刻') || this.getEffectiveCardCost(r) >= 9) return false;
         const totalCost = 3 + this.ctx.fieldMgr.getTappedWanshiAscensionTax(playerId, [r.instanceId]);
         return availCost >= totalCost;
       });
@@ -1151,11 +1214,11 @@ export class CardEffectEngine {
     if (cardNum === 'BP03-024') {
       if (!player || (player.turnAbilityUsage['BP03-024:CHARGE_AUTO'] ?? 0) > 0) return false;
       const fieldRoles = this.getFriendlyRoles(playerId);
-      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.getCardDef(r)?.name === '里·超刻')) return false;
+      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.hasCardName(r, '里·超刻'))) return false;
       if (this.ctx.fieldMgr.findFirstEmptySlot(playerId) === undefined) return false;
       const handLees = this.ctx.zoneMgr
         .getCardsInZone(playerId, 'HAND')
-        .filter((c) => this.getCardDef(c)?.name === '里·超刻');
+        .filter((c) => this.hasCardName(c, '里·超刻'));
       if (handLees.length < 3) return false;
       this.ctx.setPendingChoice({
         id: nextChoiceId(this.ctx.state, 'effect'),
@@ -1175,7 +1238,7 @@ export class CardEffectEngine {
     if (cardNum === 'BP03-028') {
       if (chargeKind !== 'ATTACK' || !attackerCardId) return false;
       const attacker = this.ctx.state.cards[attackerCardId];
-      if (!attacker || this.getCardDef(attacker)?.name !== '里·超刻') return false;
+      if (!attacker || !this.hasCardName(attacker, '里·超刻')) return false;
       const yellowOrbs = this.ctx.zoneMgr.getCardsInZone(playerId, 'SIGNAL_ORB').filter((c) => {
         if (!this.ctx.continuousEffects) return c.isFaceUp && this.getCardDef(c)?.signalOrb === 'YELLOW';
         const info = this.ctx.continuousEffects.getEffectiveOrbInfo(c.instanceId);
@@ -1186,7 +1249,7 @@ export class CardEffectEngine {
         id: nextChoiceId(this.ctx.state, 'effect'),
         playerId,
         choiceType: 'SELECT_CARDS',
-        prompt: `【${cardDef.name}】充能自：可将其置入墓地并消除 1 张【黄色信号球】，使《里·超刻》获得【速攻】：`,
+        prompt: `【${cardDef.name}】充能自：可将其置入墓地并消除 1 张【黄色信号球】，选择我方战场 1 张《里·超刻》获得【速攻】或回合结束时竖直：`,
         options: yellowOrbs.map((c) => this.createGeneralCardChoiceOption(c)),
         effectType: 'BP03_028_CHARGE_AUTO',
         sourceCardInstanceId: cardInstanceId,
@@ -1199,7 +1262,8 @@ export class CardEffectEngine {
 
     if (cardNum === 'BP03-032') {
       const fieldRoles = this.getFriendlyRoles(playerId);
-      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.getCardDef(r)?.name === '里·超刻')) return false;
+      if (fieldRoles.length === 0 || !fieldRoles.every((r) => this.hasCardName(r, '里·超刻'))) return false;
+      this.ctx.zoneMgr.syncCostStats(playerId);
       const availCost = (player?.availableOpenCostCount ?? 0) + (player?.hiddenCostCount ?? 0);
       if (availCost < 3) return false;
       const oppRoles = this.getOpponentRoles(playerId);
@@ -1688,7 +1752,8 @@ export class CardEffectEngine {
 
     switch (cardDef.cardNumber) {
       case 'BP03-054': {
-        this.ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
+        const moved = this.ctx.zoneMgr.moveCardToBottomOfDeck(card.instanceId);
+        if (!moved || card.zone !== 'DECK') break;
         const irisRoles = this.getFriendlyRoles(playerId).filter((r) =>
           this.ctx.continuousEffects
             ? this.ctx.continuousEffects.hasTrait(r.instanceId, '艺术协会')

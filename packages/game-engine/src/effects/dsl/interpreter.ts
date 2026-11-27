@@ -91,6 +91,7 @@ export class DeclarativeEffectInterpreter {
       emptySlotCount: (playerId) => this.emptySlotCount(playerId),
       choiceId: (tag) => this.choiceId(tag),
       orbGroups: (playerId, size, filter) => this.orbGroups(playerId, size, filter),
+      snapshotEliminatedOrbColors: (ids) => this.snapshotEliminatedOrbColors(ids),
       eliminate: (playerId, ids, sourceId, excludeFromAbilityOrbCount, requiredCount?: number) =>
         this.eliminate(playerId, ids, sourceId, excludeFromAbilityOrbCount, requiredCount),
       peekTop: (playerId, count) => this.peekTop(playerId, count),
@@ -126,7 +127,8 @@ export class DeclarativeEffectInterpreter {
         markUsed,
         initialVars,
         markUsedKey,
-        costCardInstanceIds
+        costCardInstanceIds,
+        afterSteps
       ) =>
         this.costHandler.executeWithCost(
           cardNumber,
@@ -137,7 +139,8 @@ export class DeclarativeEffectInterpreter {
           markUsed,
           initialVars,
           markUsedKey,
-          costCardInstanceIds
+          costCardInstanceIds,
+          afterSteps
         ),
       runSteps: (cardNumber, sourceId, playerId, vars, queue) =>
         this.stepRunner.runSteps(cardNumber, sourceId, playerId, vars, queue),
@@ -757,6 +760,24 @@ export class DeclarativeEffectInterpreter {
     return findOrbGroupsFromInfos(zone, infos, size, filter);
   }
 
+  private snapshotEliminatedOrbColors(ids: string[]): string[] {
+    const colorSet = new Set<string>();
+    for (const id of ids) {
+      const card = this.ctx.state.cards[id];
+      if (!card) continue;
+      if (card.zone === 'SIGNAL_ORB' && this.ctx.continuousEffects) {
+        const info = this.ctx.continuousEffects.getEffectiveOrbInfo(id);
+        for (const col of info.colors) {
+          colorSet.add(col);
+        }
+      } else if (card.isFaceUp) {
+        const baseColor = this.def(card)?.signalOrb;
+        if (baseColor) colorSet.add(baseColor);
+      }
+    }
+    return Array.from(colorSet);
+  }
+
   private eliminate(
     playerId: string,
     ids: string[],
@@ -1024,16 +1045,22 @@ export class DeclarativeEffectInterpreter {
       resumeSteps: (cardNumber, sourceId, playerId, vars, queue) => {
         this.stepRunner.runSteps(cardNumber, sourceId, playerId, vars, queue);
       },
-      executeEntryOnSource: (entryCardNumber, sourceId, playerId, cost, steps, vars) => {
-        this.costHandler.executeWithCost(
+      executeEntryOnSource: (entryCardNumber, sourceId, playerId, cost, steps, vars, afterSteps) => {
+        const res = this.costHandler.executeWithCost(
           entryCardNumber,
           sourceId,
           playerId,
           cost,
           steps,
           false,
-          vars
+          vars,
+          undefined,
+          undefined,
+          afterSteps
         );
+        if (!res.success && afterSteps?.length) {
+          this.stepRunner.runSteps(entryCardNumber, sourceId, playerId, vars, [...afterSteps]);
+        }
       },
       bringToField: (playerId, cardId, triggerEntry, enterTapped, enterAbilitiesLost) =>
         this.bringToField(playerId, cardId, triggerEntry, enterTapped, enterAbilitiesLost),

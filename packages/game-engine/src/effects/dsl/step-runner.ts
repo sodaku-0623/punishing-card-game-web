@@ -18,6 +18,11 @@ export type StepPendingAction = Exclude<
   { kind: 'COST_DISCARD' | 'COST_ORB' | 'COST_ORB_OR_DISCARD' | 'COST_PAY_COST' }
 >;
 
+const LILITH_REVEAL_COST_CHOICES: Readonly<Record<string, number[]>> = {
+  'BP03-065': [2, 4, 6, 8],
+  'BP03-066': [1, 3, 5, 7],
+};
+
 /**
  * 声明式效果步骤执行器：
  * 承接 EffectStep 指令队列主循环及所有步骤类决策回流 (CONFIRM / CHOOSE_* / SAVE_CHOICE / REORDER_ZONE 等)。
@@ -89,6 +94,18 @@ export class DslStepRunner {
               targetPlayer,
               revealedIds,
               step.saveToVar,
+              vars,
+              queue
+            )
+          ) {
+            return;
+          }
+          if (
+            this.tryEnqueueLilithRevealCostDeclaration(
+              cardNumber,
+              sourceId,
+              playerId,
+              revealedIds,
               vars,
               queue
             )
@@ -530,6 +547,10 @@ export class DslStepRunner {
             break;
           }
           if (!optional && groups.length === 1) {
+            if (step.savePaidToVar) {
+              vars[step.savePaidToVar] = [...groups[0]!];
+              vars[`__orbColors:${step.savePaidToVar}`] = this.host.snapshotEliminatedOrbColors(groups[0]!);
+            }
             (this.host as HostWithRequiredOrbCount).eliminate(
               playerId,
               groups[0]!,
@@ -537,7 +558,6 @@ export class DslStepRunner {
               step.excludeFromAbilityOrbCount,
               step.count
             );
-            if (step.savePaidToVar) vars[step.savePaidToVar] = [...groups[0]!];
             queue.unshift(...step.onPaid);
             break;
           }
@@ -1820,6 +1840,47 @@ export class DslStepRunner {
             vars[pending.revealVar] = vars[pending.revealVar]!.filter((id) => !movedSet.has(id));
           }
         }
+        if (
+          this.tryEnqueueLilithRevealCostDeclaration(
+            cardNumber,
+            sourceCardInstanceId,
+            playerId,
+            vars[pending.revealVar] ?? [],
+            vars,
+            remaining
+          )
+        ) {
+          return { success: true };
+        }
+        this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+        return { success: true };
+      }
+
+      case 'LILITH_REVEAL_DECLARE_COST': {
+        const pickedNum = Number(selected[0]);
+        if (!Number.isFinite(pickedNum)) {
+          return { success: false, error: '无效的费用声明选择' };
+        }
+        const costMap = new Map<string, number>();
+        for (const item of vars.__lilith_cost_map ?? []) {
+          const [id, rawCost] = item.split(':');
+          const parsed = Number(rawCost);
+          if (id && Number.isFinite(parsed)) costMap.set(id, parsed);
+        }
+        costMap.set(pending.targetCardId, pickedNum);
+        vars.__lilith_cost_map = Array.from(costMap.entries()).map(([id, c]) => `${id}:${c}`);
+        if (
+          this.tryEnqueueLilithRevealCostDeclaration(
+            cardNumber,
+            sourceCardInstanceId,
+            playerId,
+            pending.remainingCardIds,
+            vars,
+            remaining
+          )
+        ) {
+          return { success: true };
+        }
         this.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
         return { success: true };
       }
@@ -1918,6 +1979,62 @@ export class DslStepRunner {
         vars,
         remainingSteps: queue,
         pendingAction: { kind: 'WANSHIMING_REVEAL_TO_COST', revealVar },
+      }
+    );
+    return true;
+  }
+
+  private tryEnqueueLilithRevealCostDeclaration(
+    cardNumber: string,
+    sourceId: string,
+    playerId: string,
+    candidateIds: string[],
+    vars: Record<string, string[]>,
+    queue: EffectStep[]
+  ): boolean {
+    const srcCard = sourceId ? this.host.ctx.state.cards[sourceId] : undefined;
+    if (!srcCard || !this.host.hasTrait(srcCard, '莉莉丝')) return false;
+    const declaredIds = new Set(
+      (vars.__lilith_cost_map ?? []).map((item) => item.split(':')[0]).filter(Boolean)
+    );
+    const eligibleIds = candidateIds.filter((id) => {
+      if (declaredIds.has(id)) return false;
+      const c = this.host.ctx.state.cards[id];
+      return Boolean(
+        c &&
+          c.controllerPlayerId === playerId &&
+          LILITH_REVEAL_COST_CHOICES[c.cardNumber]
+      );
+    });
+    if (eligibleIds.length === 0) return false;
+    const targetCardId = eligibleIds[0]!;
+    const remainingCardIds = eligibleIds.slice(1);
+    const targetCard = this.host.ctx.state.cards[targetCardId]!;
+    const def = this.host.def(targetCard);
+    const choices = LILITH_REVEAL_COST_CHOICES[targetCard.cardNumber]!;
+    this.host.enqueueDslChoice(
+      {
+        id: this.host.choiceId(`lilith-declare-${targetCard.cardNumber}`),
+        playerId,
+        choiceType: 'SELECT_OPTION',
+        prompt: `【${def?.name ?? targetCard.cardNumber}】被我方<莉莉丝>的效果公开，请选择该次处理中将其费用视为的数字：`,
+        options: choices.map((n) => ({ id: String(n), label: `费用视为 ${n}` })),
+        effectType: `DSL_LILITH_DECLARE_${targetCard.cardNumber}`,
+        sourceCardInstanceId: sourceId,
+        minSelections: 1,
+        maxSelections: 1,
+      },
+      {
+        cardNumber,
+        sourceCardInstanceId: sourceId,
+        playerId,
+        vars,
+        remainingSteps: queue,
+        pendingAction: {
+          kind: 'LILITH_REVEAL_DECLARE_COST',
+          targetCardId,
+          remainingCardIds,
+        },
       }
     );
     return true;

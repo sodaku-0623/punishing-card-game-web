@@ -29,6 +29,10 @@ type CostOrbOrDiscardActionWithCount = Extract<DslPendingAction, { kind: 'COST_O
   requiredCount?: number;
 };
 
+function mergeSteps(steps: EffectStep[], afterSteps?: EffectStep[]): EffectStep[] {
+  return afterSteps?.length ? [...steps, ...afterSteps] : [...steps];
+}
+
 export function isCostPendingAction(pending: DslPendingAction): pending is CostPendingAction {
   return (
     pending.kind === 'COST_DISCARD' ||
@@ -54,13 +58,14 @@ export class DslCostHandler {
     markUsed: boolean,
     initialVars: Record<string, string[]> = {},
     markUsedKey?: string,
-    costCardInstanceIds?: string[]
+    costCardInstanceIds?: string[],
+    afterSteps?: EffectStep[]
   ): DslResult {
     const vars = { ...initialVars };
     const effectiveUsageKey = markUsedKey ?? sourceId;
     if (!cost) {
       if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-      this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+      this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
       return { success: true };
     }
 
@@ -72,7 +77,7 @@ export class DslCostHandler {
         }
         this.host.ctx.zoneMgr.setCardReady(sourceId, false);
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
@@ -114,6 +119,7 @@ export class DslCostHandler {
             pendingAction: {
               kind: 'COST_DISCARD',
               onPaid: [...steps],
+              ...(afterSteps?.length ? { afterSteps: [...afterSteps] } : {}),
               optional: false,
               requiredMin: cost.count,
               markUsed,
@@ -146,13 +152,14 @@ export class DslCostHandler {
             cost.count
           );
           if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-          this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+          this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
           return { success: true };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_ORB_COST';
         const tapOrbPending: CostOrbActionWithCount = {
           kind: 'COST_ORB',
           onPaid: [...steps],
+          ...(afterSteps?.length ? { afterSteps: [...afterSteps] } : {}),
           optional: false,
           markUsed,
           markUsedKey: effectiveUsageKey,
@@ -194,7 +201,7 @@ export class DslCostHandler {
         }
         this.host.ctx.zoneMgr.moveCardToBottomOfDeck(sourceId);
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
@@ -203,7 +210,7 @@ export class DslCostHandler {
           return { success: false, error: `费用不足，需要支付 ${cost.amount} 费` };
         }
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
@@ -218,7 +225,7 @@ export class DslCostHandler {
           sentByEffectOrCost: cost.sentByEffectOrCost ?? fromField,
         });
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
@@ -230,7 +237,7 @@ export class DslCostHandler {
           };
         }
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
@@ -241,13 +248,14 @@ export class DslCostHandler {
         }
         this.host.ctx.zoneMgr.moveCard(sourceId, 'GRAVEYARD', { isFaceUp: true });
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
         return { success: true };
       }
 
       case 'DEAL_SELF_DAMAGE': {
+        const allSteps = mergeSteps(steps, afterSteps);
         this.host.ctx.zoneMgr.applyDamageToPlayer(playerId, cost.amount, sourceId, {
-          deferCheckTiming: steps.length > 0,
+          deferCheckTiming: allSteps.length > 0,
         });
         if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
         if (this.host.ctx.state.status === 'FINISHED') {
@@ -255,7 +263,7 @@ export class DslCostHandler {
         }
         if (
           (this.host.ctx.state.currentPendingChoice || this.host.ctx.zoneMgr.hasPendingCharges()) &&
-          steps.length > 0
+          allSteps.length > 0
         ) {
           this.host.ctx.state.pendingDslContinuations ??= [];
           this.host.ctx.state.pendingDslContinuations.push({
@@ -263,11 +271,11 @@ export class DslCostHandler {
             sourceCardInstanceId: sourceId,
             playerId,
             vars: { ...vars },
-            remainingSteps: [...steps],
+            remainingSteps: allSteps,
           });
           return { success: true };
         }
-        this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+        this.host.runSteps(cardNumber, sourceId, playerId, vars, allSteps);
         return { success: true };
       }
 
@@ -353,7 +361,7 @@ export class DslCostHandler {
         }
         if (interactive.length === 0) {
           if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-          this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+          this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
           return { success: true };
         }
         if (interactive.length === 1) {
@@ -365,7 +373,9 @@ export class DslCostHandler {
             steps,
             markUsed,
             vars,
-            effectiveUsageKey
+            effectiveUsageKey,
+            costCardInstanceIds,
+            afterSteps
           );
         }
         const extraSteps: EffectStep[] = [];
@@ -400,7 +410,9 @@ export class DslCostHandler {
           extraSteps.length > 0 ? extraSteps : steps,
           markUsed,
           vars,
-          effectiveUsageKey
+          effectiveUsageKey,
+          costCardInstanceIds,
+          afterSteps
         );
       }
 
@@ -410,12 +422,16 @@ export class DslCostHandler {
           .filter((c) => !cost.filter || this.host.evaluator.matchesFilter(c, cost.filter, sourceId));
         const optional = Boolean(cost.optional);
         if (hand.length < cost.count) {
-          return optional
-            ? { success: true }
-            : {
-                success: false,
-                error: `符合条件的手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)`,
-              };
+          if (optional) {
+            if (afterSteps?.length) {
+              this.host.runSteps(cardNumber, sourceId, playerId, vars, [...afterSteps]);
+            }
+            return { success: true };
+          }
+          return {
+            success: false,
+            error: `符合条件的手牌不足 ${cost.count} 张，无法支付丢弃代价 (8.4.2.b)`,
+          };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_DISCARD_COST';
         const promptBase = cost.prompt ?? `请选择 ${cost.count} 张手牌丢弃作为代价`;
@@ -440,6 +456,7 @@ export class DslCostHandler {
             pendingAction: {
               kind: 'COST_DISCARD',
               onPaid: [...steps],
+              ...(afterSteps?.length ? { afterSteps: [...afterSteps] } : {}),
               optional,
               requiredMin: cost.count,
               markUsed,
@@ -454,14 +471,22 @@ export class DslCostHandler {
         const groups = this.host.orbGroups(playerId, cost.count, cost.filter);
         const optional = Boolean(cost.optional);
         if (groups.length === 0) {
-          return optional
-            ? { success: true }
-            : {
-                success: false,
-                error: '信号球区没有满足代价的相邻信号球，无法发动 (8.4.2.b)',
-              };
+          if (optional) {
+            if (afterSteps?.length) {
+              this.host.runSteps(cardNumber, sourceId, playerId, vars, [...afterSteps]);
+            }
+            return { success: true };
+          }
+          return {
+            success: false,
+            error: '信号球区没有满足代价的相邻信号球，无法发动 (8.4.2.b)',
+          };
         }
         if (!optional && groups.length === 1) {
+          if (cost.savePaidToVar) {
+            vars[cost.savePaidToVar] = [...groups[0]!];
+            vars[`__orbColors:${cost.savePaidToVar}`] = this.host.snapshotEliminatedOrbColors(groups[0]!);
+          }
           (this.host as HostWithRequiredOrbCount).eliminate(
             playerId,
             groups[0]!,
@@ -469,9 +494,8 @@ export class DslCostHandler {
             undefined,
             cost.count
           );
-          if (cost.savePaidToVar) vars[cost.savePaidToVar] = [...groups[0]!];
           if (markUsed) this.host.markUsed(playerId, effectiveUsageKey);
-          this.host.runSteps(cardNumber, sourceId, playerId, vars, [...steps]);
+          this.host.runSteps(cardNumber, sourceId, playerId, vars, mergeSteps(steps, afterSteps));
           return { success: true };
         }
         const effectType = cost.choiceEffectType ?? 'PRESET_ORB_COST';
@@ -487,6 +511,7 @@ export class DslCostHandler {
         const orbPending: CostOrbActionWithCount = {
           kind: 'COST_ORB',
           onPaid: [...steps],
+          ...(afterSteps?.length ? { afterSteps: [...afterSteps] } : {}),
           optional,
           markUsed,
           markUsedKey: effectiveUsageKey,
@@ -536,13 +561,18 @@ export class DslCostHandler {
           })),
         ];
         if (options.length === (optional ? 1 : 0)) {
-          return optional
-            ? { success: true }
-            : { success: false, error: '没有可支付的信号球或手牌代价' };
+          if (optional) {
+            if (afterSteps?.length) {
+              this.host.runSteps(cardNumber, sourceId, playerId, vars, [...afterSteps]);
+            }
+            return { success: true };
+          }
+          return { success: false, error: '没有可支付的信号球或手牌代价' };
         }
         const orbOrDiscardPending: CostOrbOrDiscardActionWithCount = {
           kind: 'COST_ORB_OR_DISCARD',
           onPaid: [...steps],
+          ...(afterSteps?.length ? { afterSteps: [...afterSteps] } : {}),
           optional,
           markUsed,
           markUsedKey: effectiveUsageKey,
@@ -582,13 +612,14 @@ export class DslCostHandler {
     remaining: EffectStep[]
   ): DslResult {
     const { playerId, cardNumber, sourceCardInstanceId } = frame;
+    const postSteps = mergeSteps(pending.afterSteps ?? [], remaining);
 
     switch (pending.kind) {
       case 'COST_DISCARD': {
         if (selected.length === 0) {
           if (pending.optional) {
-            if (remaining.length > 0) {
-              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            if (postSteps.length > 0) {
+              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, postSteps);
             }
             return { success: true };
           }
@@ -609,7 +640,7 @@ export class DslCostHandler {
         }
         this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [
           ...pending.onPaid,
-          ...remaining,
+          ...postSteps,
         ]);
         return { success: true };
       }
@@ -618,14 +649,18 @@ export class DslCostHandler {
         const group = selected[0];
         if (!group || group === 'skip') {
           if (pending.optional) {
-            if (remaining.length > 0) {
-              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            if (postSteps.length > 0) {
+              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, postSteps);
             }
             return { success: true };
           }
           return { success: false, error: '必须支付消除信号球代价' };
         }
         const paidIds = group.split(',');
+        if (pending.savePaidToVar) {
+          vars[pending.savePaidToVar] = [...paidIds];
+          vars[`__orbColors:${pending.savePaidToVar}`] = this.host.snapshotEliminatedOrbColors(paidIds);
+        }
         (this.host as HostWithRequiredOrbCount).eliminate(
           playerId,
           paidIds,
@@ -633,13 +668,12 @@ export class DslCostHandler {
           pending.excludeFromAbilityOrbCount,
           (pending as CostOrbActionWithCount).requiredCount
         );
-        if (pending.savePaidToVar) vars[pending.savePaidToVar] = [...paidIds];
         if (pending.markUsed) {
           this.host.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         }
         this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [
           ...pending.onPaid,
-          ...remaining,
+          ...postSteps,
         ]);
         return { success: true };
       }
@@ -648,8 +682,8 @@ export class DslCostHandler {
         const pick = selected[0];
         if (!pick || pick === 'skip') {
           if (pending.optional) {
-            if (remaining.length > 0) {
-              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            if (postSteps.length > 0) {
+              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, postSteps);
             }
             return { success: true };
           }
@@ -657,6 +691,10 @@ export class DslCostHandler {
         }
         const [kind, id] = pick.split(':') as [string, string];
         if (kind === 'orb') {
+          if (pending.savePaidToVar) {
+            vars[pending.savePaidToVar] = [id];
+            vars[`__orbColors:${pending.savePaidToVar}`] = this.host.snapshotEliminatedOrbColors([id]);
+          }
           (this.host as HostWithRequiredOrbCount).eliminate(
             playerId,
             [id],
@@ -666,13 +704,14 @@ export class DslCostHandler {
           );
         } else {
           this.host.ctx.zoneMgr.moveCard(id, 'GRAVEYARD', { isFaceUp: true });
+          if (pending.savePaidToVar) vars[pending.savePaidToVar] = [id];
         }
         if (pending.markUsed) {
           this.host.markUsed(playerId, pending.markUsedKey ?? sourceCardInstanceId);
         }
         this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [
           ...pending.onPaid,
-          ...remaining,
+          ...postSteps,
         ]);
         return { success: true };
       }
@@ -680,8 +719,8 @@ export class DslCostHandler {
       case 'COST_PAY_COST': {
         if (selected[0] !== 'pay_cost') {
           if (pending.optional) {
-            if (remaining.length > 0) {
-              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, remaining);
+            if (postSteps.length > 0) {
+              this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, postSteps);
             }
             return { success: true };
           }
@@ -695,7 +734,7 @@ export class DslCostHandler {
         }
         this.host.runSteps(cardNumber, sourceCardInstanceId, playerId, vars, [
           ...pending.onPaid,
-          ...remaining,
+          ...postSteps,
         ]);
         return { success: true };
       }

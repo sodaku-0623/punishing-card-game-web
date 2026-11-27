@@ -59,6 +59,7 @@ const VALID_USABLE_ZONES = new Set(['BATTLEFIELD', 'HAND', 'GRAVEYARD', 'SIGNAL_
 const VALID_CUSTOM_HANDLERS = new Set([
   'BP02_048_WANSHIMING_SACRIFICE',
   'BP03_056_COPY_GY_ENTRY',
+  'BP03_056_RETURN_GY_TO_BOTTOM',
   'BP03_057_LILITH_CHALLENGE',
   'BP03_058_ASCENDING_COST_5',
   'BP03_059_BLACKJACK_21',
@@ -350,6 +351,9 @@ function validateFilter(filter: CardFilter | undefined, path: string): void {
   if (filter.cardNumbers !== undefined) {
     assert(Array.isArray(filter.cardNumbers) && filter.cardNumbers.length > 0, `${path}.cardNumbers 不能为空数组`);
   }
+  if (filter.excludeCoreCardNumbers !== undefined) {
+    assertNonEmptyStringArray(filter.excludeCoreCardNumbers, `${path}.excludeCoreCardNumbers`);
+  }
   if (filter.hasUnderneathOrEquipMatching !== undefined) {
     validateFilter(filter.hasUnderneathOrEquipMatching, `${path}.hasUnderneathOrEquipMatching`);
   }
@@ -573,6 +577,11 @@ function validateCondition(cond: ConditionExpr, definedVars: ReadonlySet<string>
       return;
     case 'VAR_HAS_DUPLICATE_COST':
       assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
+      return;
+    case 'ELIMINATED_ORB_COLOR_COUNT':
+      assert(definedVars.has(cond.varName), `${path} 引用了未定义变量 "${cond.varName}"`);
+      assert(VALID_COMPARE_OPS.has(cond.op), `${path}.op 非法`);
+      assertNonNegativeInt(cond.value, `${path}.value`);
       return;
     case 'HAS_ELIMINABLE_ORBS':
       assert(VALID_ORB_FILTERS.has(cond.filter), `${path}.filter 非法`);
