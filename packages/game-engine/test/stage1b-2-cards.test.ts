@@ -352,6 +352,8 @@ describe('Stage 1B-2 (§2.4) 全表 19 张白板/空桩/死分支/必败卡修�
 
     // 5B. BP03-060：牌组顶 3 张费用分别为 2, 2, 4（2 种不同费用）-> 目标<莉莉丝>获得 +2000 PP
     const bp03060 = findCards(engine, 'p1', 'BP03-060')[0]!;
+    engine.zoneMgr.moveCard(bp03060.instanceId, 'HAND');
+    fillCostZone(engine, 'p1', 8);
     const p1DeckCards = engine.zoneMgr.getCardsInZone('p1', 'DECK');
     const cCost2A = p1DeckCards.find((c) => db.getCard(c.cardNumber)?.cost === 2)!;
     const cCost2B = p1DeckCards.find((c) => c.instanceId !== cCost2A.instanceId && db.getCard(c.cardNumber)?.cost === 2)!;
@@ -361,8 +363,6 @@ describe('Stage 1B-2 (§2.4) 全表 19 张白板/空桩/死分支/必败卡修�
     engine.zoneMgr.moveCardToTopOfDeck(cCost2A.instanceId);
 
     const ppBefore = engine.continuousEffects.evaluateCard(bp03057.instanceId).pp;
-    engine.zoneMgr.moveCard(bp03060.instanceId, 'HAND');
-    fillCostZone(engine, 'p1', 8);
     const play60 = engine.dispatchAction({
       type: 'PLAY_CARD',
       playerId: 'p1',
@@ -377,8 +377,20 @@ describe('Stage 1B-2 (§2.4) 全表 19 张白板/空桩/死分支/必败卡修�
       pendingChoiceId: state.currentPendingChoice!.id,
       selectedIds: [bp03057.instanceId],
     });
+    expect(state.currentPendingChoice?.effectType).toBe('DSL_ORDER_MOVE_BP03-060');
+    const fixedTail = [cCost4.instanceId, cCost2B.instanceId, cCost2A.instanceId];
+    const orderOptionIds = state.currentPendingChoice!.options.map((o) => o.id);
+    const orderedIds = [...orderOptionIds.filter((id) => !fixedTail.includes(id)), ...fixedTail];
+    const orderRes = engine.dispatchAction({
+      type: 'SELECT_CHOICE_OPTION',
+      playerId: 'p1',
+      pendingChoiceId: state.currentPendingChoice!.id,
+      selectedIds: orderedIds,
+    });
+    expect(orderRes.success, orderRes.error).toBe(true);
     expect(engine.continuousEffects.evaluateCard(bp03057.instanceId).pp).toBe(ppBefore + 2000);
     expect(state.cards[cCost2A.instanceId]!.zone).toBe('DECK');
+    expect(engine.zoneMgr.getCardsInZone('p1', 'DECK').slice(-3).map((c) => c.instanceId)).toEqual(fixedTail);
 
     // 5C. BP03-062：牌组顶 3 张包含相同费用 (2, 2, 4) -> 触发从墓地回收 1 张<莉莉丝>
     const bp03062 = findCards(engine, 'p1', 'BP03-062')[0]!;

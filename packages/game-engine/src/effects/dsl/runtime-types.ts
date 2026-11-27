@@ -26,6 +26,7 @@ export type DslPendingAction =
   | {
       kind: 'COST_DISCARD';
       onPaid: EffectStep[];
+      afterSteps?: EffectStep[];
       optional: boolean;
       requiredMin?: number;
       markUsed?: boolean;
@@ -35,6 +36,7 @@ export type DslPendingAction =
   | {
       kind: 'COST_ORB';
       onPaid: EffectStep[];
+      afterSteps?: EffectStep[];
       optional: boolean;
       markUsed?: boolean;
       markUsedKey?: string;
@@ -44,14 +46,17 @@ export type DslPendingAction =
   | {
       kind: 'COST_ORB_OR_DISCARD';
       onPaid: EffectStep[];
+      afterSteps?: EffectStep[];
       optional: boolean;
       markUsed?: boolean;
       markUsedKey?: string;
+      savePaidToVar?: string;
     }
   | {
       kind: 'COST_PAY_COST';
       amount: number;
       onPaid: EffectStep[];
+      afterSteps?: EffectStep[];
       optional: boolean;
       markUsed?: boolean;
       markUsedKey?: string;
@@ -88,6 +93,11 @@ export type DslPendingAction =
     }
   | { kind: 'PLACE_ORB_AT_POSITION'; cardInstanceId: string }
   | { kind: 'WANSHIMING_REVEAL_TO_COST'; revealVar: string }
+  | {
+      kind: 'LILITH_REVEAL_DECLARE_COST';
+      targetCardId: string;
+      remainingCardIds: string[];
+    }
   | {
       kind: 'CHOOSE_ACTIVATED_ABILITY';
       costCardInstanceIds?: string[];
@@ -159,6 +169,7 @@ export interface DslInterpreterHost {
   emptySlotCount(playerId: string): number;
   choiceId(tag: string): string;
   orbGroups(playerId: string, size: number, filter: OrbColorFilter): string[][];
+  snapshotEliminatedOrbColors(ids: string[]): string[];
   eliminate(
     playerId: string,
     ids: string[],
@@ -189,7 +200,8 @@ export interface DslInterpreterHost {
     markUsed: boolean,
     initialVars?: Record<string, string[]>,
     markUsedKey?: string,
-    costCardInstanceIds?: string[]
+    costCardInstanceIds?: string[],
+    afterSteps?: EffectStep[]
   ): DslResult;
   runSteps(
     cardNumber: string,

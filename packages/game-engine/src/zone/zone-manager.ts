@@ -233,10 +233,12 @@ export class ZoneManager {
     const wasUnderneath =
       fromZone === 'BATTLEFIELD' &&
       Object.values(this.state.battlefields).some((slots) =>
-        slots.some(
-          (s) =>
-            Boolean(s.roleCardId) &&
-            Boolean(this.state.cards[s.roleCardId!]?.underneathCardIds?.includes(card.instanceId))
+        slots.some((s) =>
+          [s.roleCardId, s.assistCardId, s.standaloneEquipmentId].some(
+            (hostId) =>
+              Boolean(hostId) &&
+              Boolean(this.state.cards[hostId!]?.underneathCardIds?.includes(card.instanceId))
+          )
         )
       );
 
@@ -258,7 +260,7 @@ export class ZoneManager {
           options?.preserveAttachments,
           skipUnderneathOrphanCleanup
         )
-      : { orphanIds: [], partnerId: undefined };
+      : { underneathOrphanIds: [], equipmentOrphanIds: [], partnerId: undefined };
 
     card.zone = effectiveToZone;
 
@@ -365,10 +367,21 @@ export class ZoneManager {
     });
 
     // 9.6 宿主完成离场移动后，依次处理原本下方的无所属卡牌与协战搭档 (允许置换效果介入，如 BP04-065)
-    for (const orphanId of orphanInfo.orphanIds) {
+    for (const orphanId of orphanInfo.underneathOrphanIds) {
       const orphan = this.state.cards[orphanId];
       if (orphan && orphan.zone === 'BATTLEFIELD') {
         this.moveCard(orphanId, 'GRAVEYARD', {
+          isFaceUp: true,
+          isOrphanCleanup: true,
+          orphanHostCardId: cardInstanceId,
+          skipLeftFieldTrigger: true,
+        });
+      }
+    }
+    for (const eqId of orphanInfo.equipmentOrphanIds) {
+      const eq = this.state.cards[eqId];
+      if (eq && eq.zone === 'BATTLEFIELD') {
+        this.moveCard(eqId, 'GRAVEYARD', {
           isFaceUp: true,
           isOrphanCleanup: true,
           orphanHostCardId: cardInstanceId,
@@ -542,7 +555,7 @@ export class ZoneManager {
     card: CardInstance,
     preserveAttachments?: boolean,
     skipUnderneathCleanup?: boolean
-  ): { orphanIds: string[]; partnerId?: string } {
+  ): { underneathOrphanIds: string[]; equipmentOrphanIds: string[]; partnerId?: string } {
     const playerId = card.controllerPlayerId;
     for (const slot of this.state.battlefields[playerId] ?? []) {
       if (slot.roleCardId === card.instanceId) slot.roleCardId = undefined;
@@ -606,18 +619,20 @@ export class ZoneManager {
     }
 
     if (preserveAttachments) {
-      return { orphanIds: [], partnerId };
+      return { underneathOrphanIds: [], equipmentOrphanIds: [], partnerId };
     }
 
-    const orphanIds = skipUnderneathCleanup ? [] : [...(card.underneathCardIds ?? [])];
-    if (card.attachedEquipmentId) orphanIds.push(card.attachedEquipmentId);
-    if (card.extraAttachedEquipmentIds?.length) orphanIds.push(...card.extraAttachedEquipmentIds);
+    const underneathOrphanIds = skipUnderneathCleanup ? [] : [...(card.underneathCardIds ?? [])];
+    const equipmentOrphanIds = [
+      ...(card.attachedEquipmentId ? [card.attachedEquipmentId] : []),
+      ...(card.extraAttachedEquipmentIds ?? []),
+    ];
     if (!skipUnderneathCleanup) {
       card.underneathCardIds = [];
     }
     card.attachedEquipmentId = undefined;
     card.extraAttachedEquipmentIds = undefined;
-    return { orphanIds, partnerId };
+    return { underneathOrphanIds, equipmentOrphanIds, partnerId };
   }
 
   /**
@@ -1002,8 +1017,9 @@ export class ZoneManager {
     });
 
     const cardDef = this.cardDb.getCard(topCard.cardNumber) || (topCard.cardId ? this.cardDb.getCard(topCard.cardId) : undefined);
-    // 10.2.1.b 处理充能时自动能力【充能自】(覆盖信号球牌及非信号球牌带条件/代价的【充能自】)
-    if (cardDef && cardDef.rulesText.includes('充能自')) {
+    // 10.2.1.b 处理充能时自动能力【充能自】(覆盖信号球牌及非信号球牌带条件/代价的【充能自】，排除仅文本提及的卡牌 Q&A·6)
+    const hasChargeAuto = Boolean(cardDef && (cardDef.signalOrb || /【充能自】\s*[：:]/.test(cardDef.rulesText)));
+    if (hasChargeAuto) {
       if (chargeKind === 'ATTACK') {
         if (this.state.currentCombat) {
           this.state.currentCombat.attackChargedHasChargeAuto = true;

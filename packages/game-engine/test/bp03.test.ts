@@ -247,7 +247,6 @@ describe('BP03 露西亚·誓焰 浮空体系', () => {
     expect(engine.fieldMgr.calculateRoleEffectiveDP(lucia1.instanceId)).toBe(2);
 
     // 验证将浮空模式角色作为升变对象升变成功后，再让侵蚀>=4且己方角色少于对方时从浮空(PROCESSING)回场全选 2 项
-    // (注：battlefield-manager.ts:246 在 263 行检查 wasTargetAirborne 前清除了 targetCard.isAirborne，导致 ascendedFromAirborne 恒为 false，共享层缺陷将在报告中上报)
     const airborneHost = placeRole(engine, 'p1', 'BP03-006', 1);
     expect(engine.fieldMgr.airborneRole(airborneHost.instanceId)).toBe(true);
     engine.getState().players.p1!.erosionCount = 4;
@@ -507,7 +506,7 @@ describe('BP03 七实·芒星之迹 体系', () => {
 
   it('BP03-013 攻击置雷手牌至球区底(选0张不触发) + 起动置墓3球给速攻，BP03-015 暗费出场突进，BP03-022 攻击<=4费竖直', () => {
     const engine = createEngine(
-      makeDeck('ST03', ['BP03-013', 'BP03-015', 'BP03-018', 'BP03-021', 'BP03-022']),
+      makeDeck('ST03', ['BP03-013', 'BP03-015', 'BP03-018', 'BP03-021', 'BP03-022', 'BP03-081', 'BP03-082', 'BP03-083', 'BP03-084', 'BP03-085', 'BP03-086', 'BP03-087', 'BP03-088']),
       makeDeck('ST02', ['ST02-003', 'ST02-002'])
     );
     setOpenCosts(engine, 'p1', ['BP03-013', 'BP03-015'], 5);
@@ -582,9 +581,13 @@ describe('BP03 七实·芒星之迹 体系', () => {
     expect(engine.fieldMgr.calculateRoleEffectivePP(bp03013.instanceId)).toBe(6000);
     finishCombat(engine);
 
-    // BP03-018 在信号球>=7 时起动置墓3球给【速攻】
+    // BP03-013 在信号球>=7 时发动【起】自动将最上方 3 张信号球置墓，并选 BP03-018 给【速攻】
     const bp03018 = placeRole(engine, 'p1', 'BP03-018', 2);
+    for (const existingOrb of engine.zoneMgr.getCardsInZone('p1', 'SIGNAL_ORB')) {
+      engine.zoneMgr.moveCardToBottomOfDeck(existingOrb.instanceId);
+    }
     const extraOrbs = engine.zoneMgr.getCardsInZone('p1', 'DECK').filter((c) => db.getCard(c.cardNumber)?.signalOrb).slice(0, 7);
+    expect(extraOrbs).toHaveLength(7);
     for (const o of extraOrbs) engine.zoneMgr.moveCard(o.instanceId, 'SIGNAL_ORB', { isFaceUp: true });
     expect(engine.getState().currentPendingChoice).toBeUndefined();
 
@@ -596,8 +599,9 @@ describe('BP03 七实·芒星之迹 体系', () => {
       }).success
     ).toBe(true);
     pickChoice(engine, 'p1', ['opt_yes']);
-    pickChoice(engine, 'p1', extraOrbs.slice(-3).map((c) => c.instanceId));
     pickChoice(engine, 'p1', [bp03018.instanceId]);
+    expect(extraOrbs.slice(-3).every((c) => cardState(engine, c.instanceId).zone === 'GRAVEYARD')).toBe(true);
+    expect(extraOrbs.slice(0, 4).every((c) => cardState(engine, c.instanceId).zone === 'SIGNAL_ORB')).toBe(true);
     expect(engine.fieldMgr.evaluateRoleStats(bp03018.instanceId).keywords).toContain('速攻');
   });
 });
@@ -1149,7 +1153,7 @@ describe('BP03 莉莉丝·谬影 赌场博弈体系', () => {
     ).toBe(true);
   });
 
-  it('BP03-063 拼点抽牌、BP03-064 双方同时公开至信号球洗牌抽2弃1、BP03-065 血色醍醐攻击瞬时洗回4张改DP', () => {
+  it('BP03-064 双方同时公开至信号球洗牌抽2弃1、BP03-065 血色醍醐攻击瞬时洗回4张改DP', () => {
     const engine = createEngine(
       makeDeck('ST02', ['BP03-063', 'BP03-064', 'BP03-065', 'BP03-057', 'BP03-058', 'BP03-061', 'BP03-062', 'BP03-081']),
       makeDeck('ST02', ['ST02-005'])
@@ -1157,11 +1161,20 @@ describe('BP03 莉莉丝·谬影 赌场博弈体系', () => {
     const st = engine.getState();
     setOpenCosts(engine, 'p1', ['BP03-063', 'BP03-065'], 8);
 
-    // 1. BP03-064：双方牌组顶第 1 张保证是非信号球，第 2 张 p1 放信号球 BP03-081
+    // 1. BP03-064：双方牌组顶第 1 张保证是非信号球（避开 BP03-065/066 以免触发公开改费宣言），第 2 张 p1 放信号球 BP03-081
     putNonOrbOnDeckTop(engine, 'p2');
     const p1Orb = findCard(engine, 'p1', 'BP03-081');
     engine.zoneMgr.moveCardToTopOfDeck(p1Orb.instanceId);
-    putNonOrbOnDeckTop(engine, 'p1');
+    const p1SafeNonOrb = engine.zoneMgr
+      .getCardsInZone('p1', 'DECK')
+      .find(
+        (c) =>
+          c.cardNumber !== 'BP03-065' &&
+          c.cardNumber !== 'BP03-066' &&
+          !db.getCard(c.cardNumber)?.signalOrb &&
+          !db.getCard(c.cardNumber)?.rulesText.includes('充能自')
+      )!;
+    engine.zoneMgr.moveCardToTopOfDeck(p1SafeNonOrb.instanceId);
 
     const bp03064 = findCard(engine, 'p1', 'BP03-064');
     engine.zoneMgr.moveCard(bp03064.instanceId, 'HAND', { isFaceUp: true });
@@ -1493,6 +1506,10 @@ describe('BP03 核心卡牌机制扩展测试', () => {
 
     expect(engine.getState().currentPendingChoice?.effectType).toBe('BP03_028_CHARGE_AUTO');
     pickChoice(engine, 'p1', [yellowOrb.instanceId]);
+    expect(engine.getState().currentPendingChoice?.effectType).toBe('BP03_028_PICK_MODE');
+    pickChoice(engine, 'p1', ['opt_quick']);
+    expect(engine.getState().currentPendingChoice?.effectType).toBe('BP03_028_PICK_ROLE');
+    pickChoice(engine, 'p1', [lee025.instanceId]);
     finishCombat(engine);
     expect(cardState(engine, lee028.instanceId).zone).toBe('GRAVEYARD');
     expect(cardState(engine, yellowOrb.instanceId).zone).toBe('GRAVEYARD');

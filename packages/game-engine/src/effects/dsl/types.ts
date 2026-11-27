@@ -24,6 +24,7 @@ export type UsableActivationZone =
 export type CustomHandlerId =
   | 'BP02_048_WANSHIMING_SACRIFICE'
   | 'BP03_056_COPY_GY_ENTRY'
+  | 'BP03_056_RETURN_GY_TO_BOTTOM'
   | 'BP03_057_LILITH_CHALLENGE'
   | 'BP03_058_ASCENDING_COST_5'
   | 'BP03_059_BLACKJACK_21'
@@ -51,6 +52,8 @@ export interface CardFilter {
   excludeName?: string;
   /** 指定匹配的卡号集合 */
   cardNumbers?: string[];
+  /** 排除指定核心卡号集合 (经 extractCoreCardNumber 匹配，排除异画/冠军版) */
+  excludeCoreCardNumbers?: string[];
   maxCost?: number;
   minCost?: number;
   exactCost?: number;
@@ -159,6 +162,7 @@ export type ConditionExpr =
   | { kind: 'VAR_COUNT_COMPARE'; varName: string; op: CompareOp; value: number }
   | { kind: 'VAR_HAS_CARD_MATCHING'; varName: string; filter: CardFilter }
   | { kind: 'VAR_HAS_DUPLICATE_COST'; varName: string }
+  | { kind: 'ELIMINATED_ORB_COLOR_COUNT'; varName: string; op: CompareOp; value: number }
   | { kind: 'HAS_ELIMINABLE_ORBS'; filter: OrbColorFilter; count: number }
   | { kind: 'IS_STANDALONE_EQUIPMENT' }
   | { kind: 'PARTNER_FROM_ZONE'; zones: ZoneId[] }

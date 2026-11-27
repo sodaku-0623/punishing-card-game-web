@@ -611,11 +611,25 @@ export class BattlefieldManager {
       return false;
     }
 
-    // 如果装备牌原本单独占位，清空原卡位
-    if (prevZone === 'BATTLEFIELD' && origSlotIdx !== undefined) {
-      const origSlot = this.getSlots(playerId)[origSlotIdx];
-      if (origSlot && origSlot.standaloneEquipmentId === equipmentCardId) {
-        origSlot.standaloneEquipmentId = undefined;
+    // 如果装备牌原本单独占位，清空原卡位并清理其下方孤儿卡牌 (9.6 / Q&A·6《冈格尼尔》)
+    if (prevZone === 'BATTLEFIELD') {
+      if (origSlotIdx !== undefined) {
+        const origSlot = this.getSlots(playerId)[origSlotIdx];
+        if (origSlot && origSlot.standaloneEquipmentId === equipmentCardId) {
+          origSlot.standaloneEquipmentId = undefined;
+        }
+      }
+      if (equipCard.underneathCardIds?.length) {
+        const orphanUnderIds = [...equipCard.underneathCardIds];
+        equipCard.underneathCardIds = [];
+        for (const uid of orphanUnderIds) {
+          this.zoneMgr.moveCard(uid, 'GRAVEYARD', {
+            isFaceUp: true,
+            isOrphanCleanup: true,
+            orphanHostCardId: equipmentCardId,
+            skipLeftFieldTrigger: true,
+          });
+        }
       }
     }
 
@@ -760,6 +774,7 @@ export class BattlefieldManager {
           isFaceUp: true,
           isOrphanCleanup: true,
           orphanHostCardId: cardInstanceId,
+          skipLeftFieldTrigger: true,
         });
       }
     }

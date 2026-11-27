@@ -378,8 +378,8 @@ export class DslEvaluator {
         const distinctCosts = new Set<number>();
         for (const id of vars[expr.varName] ?? []) {
           const c = this.host.ctx.state.cards[id];
-          const d = c ? this.host.def(c) : undefined;
-          if (d !== undefined) distinctCosts.add(d.cost);
+          const cost = c ? this.getRevealedCardEffectiveCost(c, vars) : undefined;
+          if (cost !== undefined) distinctCosts.add(cost);
         }
         return distinctCosts.size * expr.multiplier;
       }
@@ -626,12 +626,29 @@ export class DslEvaluator {
         const seen = new Set<number>();
         for (const id of vars[cond.varName] ?? []) {
           const c = state.cards[id];
-          const d = c ? this.host.def(c) : undefined;
-          if (d === undefined) continue;
-          if (seen.has(d.cost)) return true;
-          seen.add(d.cost);
+          const cost = c ? this.getRevealedCardEffectiveCost(c, vars) : undefined;
+          if (cost === undefined) continue;
+          if (seen.has(cost)) return true;
+          seen.add(cost);
         }
         return false;
+      }
+      case 'ELIMINATED_ORB_COLOR_COUNT': {
+        const validOrbColors = new Set<string>(['RED', 'BLUE', 'YELLOW']);
+        const distinctColors = new Set<string>();
+        const snapshot = vars[`__orbColors:${cond.varName}`];
+        if (snapshot !== undefined) {
+          for (const col of snapshot) {
+            if (validOrbColors.has(col)) distinctColors.add(col);
+          }
+        } else {
+          for (const id of vars[cond.varName] ?? []) {
+            const c = state.cards[id];
+            const col = c ? this.host.def(c)?.signalOrb : undefined;
+            if (col && validOrbColors.has(col)) distinctColors.add(col);
+          }
+        }
+        return this.compare(distinctColors.size, cond.op, cond.value);
       }
       case 'HAS_ELIMINABLE_ORBS': {
         if (!inStaticEval) {
@@ -1027,6 +1044,12 @@ export class DslEvaluator {
     if (filter.cardNumbers !== undefined && !filter.cardNumbers.includes(card.cardNumber)) {
       return false;
     }
+    if (
+      filter.excludeCoreCardNumbers !== undefined &&
+      filter.excludeCoreCardNumbers.includes(extractCoreCardNumber(card.cardNumber))
+    ) {
+      return false;
+    }
 
     if (filter.exactName !== undefined && !view.hasName(filter.exactName)) return false;
     if (filter.excludeName !== undefined && view.hasName(filter.excludeName)) return false;
@@ -1176,6 +1199,20 @@ export class DslEvaluator {
       case '<':
         return actual < target;
     }
+  }
+
+  private getRevealedCardEffectiveCost(
+    card: CardInstance,
+    vars: Record<string, string[]>
+  ): number | undefined {
+    for (const item of vars.__lilith_cost_map ?? []) {
+      const [id, rawCost] = item.split(':');
+      if (id === card.instanceId) {
+        const parsed = Number(rawCost);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return this.host.def(card)?.cost;
   }
 
   formatPrompt(prompt: string, playerId: string, extra?: Record<string, string | number>): string {

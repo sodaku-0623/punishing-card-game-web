@@ -15,34 +15,18 @@ function onlyFieldRoleName(exactName: string): ConditionExpr {
 
 /**
  * 共享条件：判定已消除的信号球变量中至少包含 2 种不同信号球颜色
- * (注：若使用了在信号球区时「视为多色」的卡牌，移入墓地后仅保留自身原色标记)
+ * (按 8.12.1 保留在信号球区时的「视为多色/视为某色」信息)
  */
 function hasAtLeastTwoOrbColors(varName: string): ConditionExpr {
-  const hasRed: ConditionExpr = { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'RED' } };
-  const hasBlue: ConditionExpr = { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'BLUE' } };
-  const hasYellow: ConditionExpr = { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'YELLOW' } };
-  return {
-    kind: 'ANY',
-    conditions: [
-      { kind: 'ALL', conditions: [hasRed, hasBlue] },
-      { kind: 'ALL', conditions: [hasRed, hasYellow] },
-      { kind: 'ALL', conditions: [hasBlue, hasYellow] },
-    ],
-  };
+  return { kind: 'ELIMINATED_ORB_COLOR_COUNT', varName, op: '>=', value: 2 };
 }
 
 /**
  * 共享条件：判定已消除的信号球变量中包含红/蓝/黄全部 3 种信号球颜色
+ * (按 8.12.1 保留在信号球区时的「视为多色/视为某色」信息)
  */
 function hasThreeOrbColors(varName: string): ConditionExpr {
-  return {
-    kind: 'ALL',
-    conditions: [
-      { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'RED' } },
-      { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'BLUE' } },
-      { kind: 'VAR_HAS_CARD_MATCHING', varName, filter: { signalOrbColor: 'YELLOW' } },
-    ],
-  };
+  return { kind: 'ELIMINATED_ORB_COLOR_COUNT', varName, op: '>=', value: 3 };
 }
 
 /**
@@ -56,26 +40,6 @@ const CARD_HAS_CHARGE_AUTO_FILTER: CardFilter = {
     { cardNumbers: ['BP03-023', 'BP03-024', 'BP03-028', 'BP03-032', 'BP04-020', 'BP04-021', 'PR-030'] },
   ],
 };
-
-/**
- * 全卡表中《艾拉·万华》的完整卡号集合 (供 Q&A·6「该牌以外 = 编号不同」精确排除自身卡号)
- */
-const ALL_AYLA_CARD_NUMBERS = [
-  'BP03-045',
-  'BP03-046',
-  'BP03-047',
-  'BP03-048',
-  'BP03-049',
-  'BP03-050',
-  'BP03-051',
-  'BP03-052',
-  'BP03-053',
-  'BP03-054',
-] as const;
-
-function otherAylaCardNumbers(selfCardNumber: string): string[] {
-  return ALL_AYLA_CARD_NUMBERS.filter((num) => num !== selfCardNumber);
-}
 
 /**
  * 复用：露西亚·誓焰【起】【1费】：只存在《露西亚·誓焰》时将自身【浮空】
@@ -119,13 +83,14 @@ function makeRevealTopPickOneToHandSteps(
       op: 'MOVE_CARDS',
       target: { kind: 'REST_OF_VAR', allVar: 'rev', excludeVar: 'kept' },
       toZone: 'DECK_BOTTOM',
+      chooseOrder: true,
+      orderPrompt: '【检索】请按顺序依次点选全部 {count} 张剩余公开牌放置到牌组底（先选者靠上、后选者在最底）：',
     },
   ];
 }
 
 /**
- * 复用：将我方牌组顶 N 张牌经处理区以背面表示放置到信号球区最下方
- * (注：DSL 暂缺不公开直接移动牌组顶的 MOVE_TOP_DECK，借由 REVEAL_TOP + 背面置底实现)
+ * 复用：将我方牌组顶 N 张牌以背面表示放置到信号球区最下方 (经 PEEK_TOP 私密查看实现，不公开)
  */
 function makeDeckTopToOrbBottomSteps(count: number): EffectStep[] {
   const steps: EffectStep[] = [];
@@ -210,7 +175,6 @@ function createBp03003Spec(cardNumber: string): CardEffectSpec {
  * 复用：BP03-045 / BP03-046 费用区【起】【5费】《艾拉·万华》>=7张时换人出场
  */
 function makeAylaCostDeployActivate(cardNumber: string): NonNullable<CardEffectSpec['activate']> {
-  const otherNumbers = otherAylaCardNumbers(cardNumber);
   return {
     usableZones: ['COST'],
     condition: {
@@ -228,7 +192,7 @@ function makeAylaCostDeployActivate(cardNumber: string): NonNullable<CardEffectS
         op: 'CHOOSE_ROLES',
         side: 'SELF',
         prompt: '【艾拉·万华】【起】选择我方战场1张该牌以外(不同卡号)的《艾拉·万华》放置到牌组底',
-        filter: { exactName: '艾拉·万华', cardNumbers: otherNumbers },
+        filter: { exactName: '艾拉·万华', excludeCoreCardNumbers: [cardNumber] },
         min: 1,
         max: 1,
         saveToVar: 'bounceTarget',
@@ -270,7 +234,7 @@ function makeAylaCostSwapEntry(cardNumber: string, aylaThreshold: number): NonNu
       choiceEffectType: `DSL_${cardNumber}_DISCARD`,
     },
     steps: [
-      { op: 'REVEAL_TOP', count: 1, saveToVar: 'top1' },
+      { op: 'PEEK_TOP', count: 1, saveToVar: 'top1' },
       {
         op: 'MOVE_CARDS',
         target: { kind: 'VAR', varName: 'top1' },
@@ -483,6 +447,8 @@ function makeBp03078Modes(suffix: string): { id: string; label: string; steps: E
           op: 'MOVE_CARDS',
           target: { kind: 'REST_OF_VAR', allVar: 'rev', excludeVar: 'pickedBlue' },
           toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
+          orderPrompt: '【命定之战】请按顺序依次点选全部 {count} 张剩余公开牌放置到牌组底（先选者靠上、后选者在最底）：',
         },
       ],
     },
@@ -642,8 +608,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
   createBp03003Spec('BP03-003'),
   createBp03003Spec('BP03-003【冠军】'),
 
-  // 受限点：CardFilter 缺少 isAirborne 且 CHOOSE_ZONE_CARDS 暂不支持 'PROCESSING' 区域；
-  // 前置判定仅能检查处理区存在《露西亚·誓焰》，第 1 项从处理区直接出场浮空角色待扩展 PROCESSING 选择后接入。
   {
     cardNumber: 'BP03-004',
     name: '露西亚·誓焰',
@@ -730,8 +694,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：CardFilter / OTHER_FRIENDLY_ROLE_ENTERED 尚缺少 enteredFromZones 与 wasAscendedFromAirborne 匹配；
-  // 当前 condition 校验监听者自身从处理区出场或从浮空升变 (覆盖 Q&A·6 自身浮空回场触发，避免普通手牌出场误触发)。
   {
     cardNumber: 'BP03-005',
     name: '露西亚·誓焰',
@@ -760,13 +722,9 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           kind: 'OTHER_FRIENDLY_ROLE_ENTERED',
           enteredName: '露西亚·誓焰',
           includeSelf: true,
-        },
-        condition: {
-          kind: 'ANY',
-          conditions: [
-            { kind: 'CARD_ENTERED_FROM_ZONE', zones: ['PROCESSING'] },
-            { kind: 'CARD_WAS_ASCENDED_FROM_AIRBORNE' },
-          ],
+          enteredFilter: {
+            anyFilters: [{ enteredFromZones: ['PROCESSING'] }, { ascendedFromAirborne: true }],
+          },
         },
         label: '【露西亚·誓焰】【自】【回合1】从处理区出场或从浮空升变出场时可消2任意球获【速攻】PP+1000',
         cost: {
@@ -845,7 +803,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     activate: makeOnlyLuciaAirborneActivate(1),
   },
 
-  // 受限点：CardFilter 尚缺 isAirborne 字段，当前条件近似检查我方处理区存在角色牌
   {
     cardNumber: 'BP03-009',
     name: '露西亚·誓焰',
@@ -858,7 +815,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           kind: 'ZONE_COUNT',
           side: 'SELF',
           zone: 'PROCESSING',
-          filter: { cardType: CardType.ROLE },
+          filter: { cardType: CardType.ROLE, isAirborne: true },
           op: '>=',
           value: 1,
         },
@@ -867,8 +824,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // 受限点：CHOOSE_ZONE_CARDS 尚不支持 'PROCESSING' 区域且 CardFilter 缺少 isAirborne，
-  // 暂无法从处理区选择浮空模式的《露西亚·誓焰》出场 (Q&A·6 置换判定亦需依赖该选牌目标)。
   {
     cardNumber: 'BP03-010',
     name: '旋光灿昼',
@@ -998,8 +953,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：【起】要求「将信号球区最上方 3 张牌放置到墓地」，当前 DSL 缺按顶位截取原语，
-  // 暂以 CHOOSE_ZONE_CARDS(min/max 3) 提示按信号球区最上方 3 张选取。
   {
     cardNumber: 'BP03-013',
     name: '七实·芒星之迹',
@@ -1060,18 +1013,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
               choiceEffectType: 'DSL_BP03-013_ACT_CONFIRM',
               onYes: [
                 {
-                  op: 'CHOOSE_ZONE_CARDS',
-                  side: 'SELF',
-                  zone: 'SIGNAL_ORB',
-                  prompt: '【七实·芒星之迹】请选择我方信号球区最上方 3 张牌放置到墓地',
-                  min: 3,
-                  max: 3,
-                  saveToVar: 'topOrbs',
-                  choiceEffectType: 'DSL_BP03-013_TOP_ORBS',
-                },
-                {
                   op: 'MOVE_CARDS',
-                  target: { kind: 'VAR', varName: 'topOrbs' },
+                  target: { kind: 'ZONE_SLICE', side: 'SELF', zone: 'SIGNAL_ORB', edge: 'TOP', count: 3 },
                   toZone: 'GRAVEYARD',
                   isFaceUp: true,
                   saveMovedToVar: 'movedOrbs',
@@ -1106,7 +1049,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：第 2 项「信号球区最上方 4 张牌」暂由 CHOOSE_ZONE_CARDS(min/max 4) 替代顶部截取原语。
   {
     cardNumber: 'BP03-014',
     name: '七实·芒星之迹',
@@ -1125,11 +1067,11 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
               modes: [
                 {
                   id: 'deck_to_orb_bottom',
-                  label: '若信号球区<=7张，可将牌组顶2张背面放信号球区最下方',
+                  label: '若信号球区<7张（6张及以下），可将牌组顶2张背面放信号球区最下方',
                   steps: [
                     {
                       op: 'IF',
-                      condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<=', value: 7 },
+                      condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<', value: 7 },
                       then: [
                         {
                           op: 'CONFIRM_YES_NO',
@@ -1159,18 +1101,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
                           choiceEffectType: 'DSL_BP03-014_OPT2_CONFIRM',
                           onYes: [
                             {
-                              op: 'CHOOSE_ZONE_CARDS',
-                              side: 'SELF',
-                              zone: 'SIGNAL_ORB',
-                              prompt: '【七实·芒星之迹】请选择我方信号球区最上方 4 张牌放置到墓地',
-                              min: 4,
-                              max: 4,
-                              saveToVar: 'top4',
-                              choiceEffectType: 'DSL_BP03-014_TOP4',
-                            },
-                            {
                               op: 'MOVE_CARDS',
-                              target: { kind: 'VAR', varName: 'top4' },
+                              target: { kind: 'ZONE_SLICE', side: 'SELF', zone: 'SIGNAL_ORB', edge: 'TOP', count: 4 },
                               toZone: 'GRAVEYARD',
                               isFaceUp: true,
                               saveMovedToVar: 'moved4',
@@ -1226,8 +1158,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
         abilityId: 'dsl:BP03-015:attack_deck_to_orb_bottom',
         eventType: 'ATTACK_DECLARED',
         matcher: { kind: 'SELF_ATTACKING' },
-        condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<=', value: 7 },
-        label: '【七实·芒星之迹】【自】攻击时若信号球区<=7张，可将牌组顶2张背面放信号球区最下方',
+        condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<', value: 7 },
+        label: '【七实·芒星之迹】【自】攻击时若信号球区<7张（6张及以下），可将牌组顶2张背面放信号球区最下方',
         steps: [
           {
             op: 'CONFIRM_YES_NO',
@@ -1242,7 +1174,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // 受限点：「信号球区最上方 2 张牌」暂由 CHOOSE_ZONE_CARDS(min/max 2) 替代顶部截取原语。
   {
     cardNumber: 'BP03-016',
     name: '七实·芒星之迹',
@@ -1260,18 +1191,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
               choiceEffectType: 'DSL_BP03-016_CONFIRM',
               onYes: [
                 {
-                  op: 'CHOOSE_ZONE_CARDS',
-                  side: 'SELF',
-                  zone: 'SIGNAL_ORB',
-                  prompt: '【七实·芒星之迹】请选择我方信号球区最上方 2 张牌放置到墓地',
-                  min: 2,
-                  max: 2,
-                  saveToVar: 'top2',
-                  choiceEffectType: 'DSL_BP03-016_TOP2',
-                },
-                {
                   op: 'MOVE_CARDS',
-                  target: { kind: 'VAR', varName: 'top2' },
+                  target: { kind: 'ZONE_SLICE', side: 'SELF', zone: 'SIGNAL_ORB', edge: 'TOP', count: 2 },
                   toZone: 'GRAVEYARD',
                   isFaceUp: true,
                   saveMovedToVar: 'moved2',
@@ -1396,8 +1317,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
         abilityId: 'dsl:BP03-020:battle_destroy_to_orb_bottom',
         eventType: 'CARD_DESTROYED',
         matcher: { kind: 'SELF_DESTROYED', destroyReason: 'BATTLE' },
-        condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<=', value: 7 },
-        label: '【七实·芒星之迹】【自】因战斗被破坏时若信号球区<=7张，可背面放置到信号球区最下方',
+        condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<', value: 7 },
+        label: '【七实·芒星之迹】【自】因战斗被破坏时若信号球区<7张（6张及以下），可背面放置到信号球区最下方',
         steps: [
           {
             op: 'IF',
@@ -1430,8 +1351,8 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     name: '鮟棘',
     vanillaEntry: true,
     activate: {
-      condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<=', value: 7 },
-      conditionError: '需要我方信号球区的牌为 7 张及以下',
+      condition: { kind: 'ZONE_COUNT', side: 'SELF', zone: 'SIGNAL_ORB', op: '<', value: 7 },
+      conditionError: '需要我方信号球区的牌为 <7张（6张及以下）',
       cost: { kind: 'TAP_SELF' },
       steps: [
         { op: 'REVEAL_TOP', count: 1, saveToVar: 'top1' },
@@ -1552,6 +1473,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'CHOOSE_ZONE_CARDS',
           side: 'SELF',
           zone: 'HAND',
+          revealPickedToProcessing: true,
           prompt: '【里·超刻】【出】可公开手牌最多 1 张《里·超刻》放置到牌组顶',
           filter: { exactName: '里·超刻' },
           min: 0,
@@ -1646,6 +1568,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           op: 'MODIFY_STATS',
           target: { kind: 'SELF' },
           charge: 1,
+          chargeIsAbility: true,
           duration: 'END_OF_TURN',
         },
       ],
@@ -1675,6 +1598,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
             op: 'CHOOSE_ZONE_CARDS',
             side: 'SELF',
             zone: 'HAND',
+            revealPickedToProcessing: true,
             prompt: '【里·超刻】【自】可选择我方手牌最多 1 张《里·超刻》放置到牌组顶',
             filter: { exactName: '里·超刻' },
             min: 0,
@@ -1761,6 +1685,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
         scope: 'EQUIPPED_HOST',
         targetFilter: { exactName: '里·超刻' },
         charge: 1,
+        chargeIsAbility: true,
       },
     ],
   },
@@ -2005,9 +1930,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：第 2 项「将该牌下方的所有牌放置到墓地并消除2同色信号球」中，
-  // CardTargetRef 缺少 { kind: 'SELF_UNDERNEATH' } (且 HOST_UNDERNEATH_MATCHING 仅遍历角色位而不含独立装备)，
-  // 暂无法把独立《冈格尼尔》下方所有卡牌移入墓地；待补充 SELF_UNDERNEATH 原语后接入。
   {
     cardNumber: 'BP03-042',
     name: '冈格尼尔',
@@ -2652,9 +2574,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：缺少让「对方」玩家自选丢弃 1 张费用严格高于我方公开牌的手牌交互与动态费用比较过滤
-  // (CHOOSE_ZONE_CARDS 只能由控制者选择)，且普通手牌选择尚无 BP03-065/066 公开声明费用钩子；
-  // 当前支持公开并丢弃我方手牌 1 张<莉莉丝>，对方无手牌时直接赋予【贯通】，有手牌时需补充自定义处理器交互。
   {
     cardNumber: 'BP03-057',
     name: '莉莉丝·谬影',
@@ -2680,8 +2599,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：当前 NumberExpr 尚无统计公开卡牌「费用各不相同的牌张数 (DISTINCT_COST_COUNT)」表达式，
-  // 且普通 REVEAL_TOP 未接入 BP03-065/066 公开费用宣言；当前先执行公开 3 张、选目标并将公开牌放回牌组底。
   {
     cardNumber: 'BP03-060',
     name: '莉莉丝·谬影',
@@ -2704,7 +2621,13 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
           pp: { kind: 'VAR_DISTINCT_COST_MULT', varName: 'rev', multiplier: 1000 },
           duration: 'END_OF_NEXT_TURN',
         },
-        { op: 'MOVE_CARDS', target: { kind: 'VAR', varName: 'rev' }, toZone: 'DECK_BOTTOM' },
+        {
+          op: 'MOVE_CARDS',
+          target: { kind: 'VAR', varName: 'rev' },
+          toZone: 'DECK_BOTTOM',
+          chooseOrder: true,
+          orderPrompt: '【莉莉丝·谬影】请按顺序依次点选全部 {count} 张公开牌放置到牌组底（先选者靠上、后选者在最底）：',
+        },
       ],
     },
   },
@@ -2722,8 +2645,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // 受限点：ConditionExpr 尚无检测公开卡牌中「存在费用相同的牌 (VAR_HAS_DUPLICATE_COST)」条件，
-  // 且普通 REVEAL_TOP 未接入 BP03-065/066 公开费用宣言；当前先完成公开顶 3 张牌并放置到墓地。
   {
     cardNumber: 'BP03-062',
     name: '莉莉丝·谬影',
@@ -2775,8 +2696,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 公开时的费用视为 2/4/6/8 宣言已在 custom-handlers.ts (LILITH_COST_DECL_CARDS) 中内置支持；
-  // 受限点：CardFilter 缺少 isAttacking 战斗中状态过滤字段，暂以 CHOOSE_ROLES(side: 'ANY') 配合提示实现。
+  // 公开时的费用视为 2/4/6/8 宣言已在 custom-handlers.ts (LILITH_COST_DECL_CARDS) 中内置支持。
   {
     cardNumber: 'BP03-065',
     name: '血色醍醐',
@@ -2821,6 +2741,7 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
                 op: 'CHOOSE_ROLES',
                 side: 'ANY',
                 prompt: '【血色醍醐】选择我方或对方战场 1 张攻击中的角色',
+                filter: { isAttacking: true },
                 min: 1,
                 max: 1,
                 saveToVar: 'combatRole',
@@ -3115,8 +3036,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     },
   },
 
-  // 受限点：fieldCardCostRule 目前仅支持 targetName 与 cardType (且 firstPerTurnOnly 仅判定同名卡与 EQUIPMENT)，
-  // 尚缺 targetTrait?: string 及联动 player.turnArtAssocTacticsPlayedCount 的首次判断支持。
   {
     cardNumber: 'BP03-073',
     name: '赛琳娜·岚音',
@@ -3199,8 +3118,6 @@ export const BP03_EFFECT_SPECS: readonly CardEffectSpec[] = [
     ],
   },
 
-  // 受限点：使用该牌时将信号球区任意张【蓝色信号球】(非消除、可不相邻、含「视为蓝色」) 置墓每张费用 -2；
-  // playDiscardDiscount 当前仅支持 HAND 丢弃减费，尚缺支持 SIGNAL_ORB 区域移动减费的钩子。
   {
     cardNumber: 'BP03-075',
     name: '露西亚·深红之渊',
